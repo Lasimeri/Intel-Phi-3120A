@@ -1,0 +1,25 @@
+#!/bin/sh
+# knc-cc: clang driver for the card (knc64-x87 ABI).
+# Requires the patched LLVM (toolchain/llvm/README.md). See knc-cc.md.
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+LLVM="${PHI_LLVM:-$here/../build/llvm}"
+SYSROOT="${PHI_SYSROOT:-$here/../build/sysroot}"
+if [ ! -x "$LLVM/bin/clang" ]; then
+    echo "knc-cc: patched clang not found at $LLVM/bin/clang (set PHI_LLVM)" >&2
+    exit 127
+fi
+exec "$LLVM/bin/clang" \
+    --target=x86_64-unknown-linux-musl \
+    --sysroot="$SYSROOT" \
+    -march=x86-64 \
+    -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-sse4a \
+    -mno-avx -mno-avx2 -mno-fma -mno-f16c \
+    -mno-movbe -mno-popcnt -mno-lzcnt -mno-bmi -mno-bmi2 -mno-xsave -mno-cx16 \
+    -mno-prfchw -mno-clflushopt -mno-rdrnd -mno-rdseed -mno-adx -mno-fsgsbase \
+    -mno-pclmul -mno-aes -mno-sha \
+    -Xclang -target-feature -Xclang -cmov \
+    -fcf-protection=none \
+    -fno-jump-tables \
+    -fuse-ld=lld \
+    "$@"
