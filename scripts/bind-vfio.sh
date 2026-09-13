@@ -5,6 +5,7 @@
 set -euo pipefail
 
 action="${1:-bind}"
+case "$action" in bind|unbind) ;; *) echo "usage: bind-vfio.sh [bind|unbind] [BDF]" >&2; exit 2;; esac
 bdf="${2:-${PHI_BDF:-}}"
 if [ -z "$bdf" ]; then
     bdf=$(lspci -Dn -d 8086:225d | awk '{print $1}' | head -1 || true)

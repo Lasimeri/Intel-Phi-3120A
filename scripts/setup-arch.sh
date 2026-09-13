@@ -11,12 +11,18 @@ fi
 # --- 1. Packages -------------------------------------------------------------
 # Kept minimal on purpose. Card-side toolchain builds (LLVM, musl, kernel)
 # document their own additional packages under toolchain/ and card/.
+# Required for the host workspace and the scripts.
 packages=(
     base-devel git curl
     pciutils usbutils
     clang lld llvm
     tcc
     cpio bc flex bison libelf openssl perl
+)
+# Optional: only needed for the card toolchain (phase P2) and for reading
+# the Intel PDFs. Installed one by one so a missing mirror file (seen on
+# CachyOS v3 mirrors for musl on 2026-09-13) does not abort the setup.
+optional=(
     poppler            # pdftotext, used to read Intel PDFs from vendor/
     musl kernel-headers-musl
 )
@@ -29,6 +35,9 @@ else
     packages+=(rust)
 fi
 pacman -S --needed --noconfirm "${packages[@]}"
+for p in "${optional[@]}"; do
+    pacman -S --needed --noconfirm "$p" || echo "WARNING: optional package $p failed to install; needed only for the card toolchain" >&2
+done
 
 # --- 2. Group and udev --------------------------------------------------------
 getent group phi >/dev/null || groupadd --system phi
