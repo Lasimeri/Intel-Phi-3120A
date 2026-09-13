@@ -46,3 +46,17 @@ section that the audit does not scan; `.text` must be clean.
 loads its own GDT immediately, so the bootstrap's unusual descriptor order
 (SSDG 2.2.4.2) does not matter. The decompressor's own `verify_cpu` call is
 patch 2's other target.
+
+## Confirmed sites in v7.2.3 (inspected 2026-09-13, tree in `build/linux`)
+
+| Patch | Site | Finding |
+| --- | --- | --- |
+| 1, 6 | `arch/x86/kernel/cpu/hypervisor.c` `hypervisors[]`, `arch/x86/kernel/jailhouse.c` | The hook is the hypervisor table: `x86_hyper_jailhouse` provides `.detect` and `.init.init_platform`, called from `init_hypervisor_platform()` in `setup_arch` before timers and APIC setup. `x86_hyper_knc` does the same with `detect` = CPUID family 0x0B model 0x01. |
+| 2 | `arch/x86/Kconfig.cpufeatures` lines 48 to 99 | `CMOV` (via `X86_CMOV`), `PSE`, `PGE`, `FXSR`, `XMM`, `XMM2` are required on `X86_64`. `verify_cpu.S` builds its `SSE_MASK` from `REQUIRED_MASK0`, so once `XMM`/`XMM2` are not required the decompressor's SSE test passes without touching assembly. `FXSR` stays required (KNC has it). |
+| 2 | `arch/x86/kernel/head_64.S:232` | `btsl $X86_CR4_PGE_BIT, %ecx` unconditionally on the way to 64-bit mode for the boot CPU and every AP. SSDG 4.2.10: this write is a #GP on KNC. Guarded out under `CONFIG_X86_KNC`. `arch/x86/mm/init.c:243` sets PGE only behind the feature bit, which patch 6 clears. |
+| 4 | `arch/x86/include/asm/vdso/processor.h:13` | `native_pause()` is a bare `pause`; becomes a compiler barrier under KNC. |
+| 4 | `arch/x86/include/asm/processor.h:621` | `BASE_PREFETCH` is `prefetcht0` on 64-bit, `prefetchnta` and `prefetchw` via alternatives; all become empty under KNC. |
+| 9 | `arch/x86/include/asm/special_insns.h:185-203` | `clflush()`, `clflushopt()`, `clwb()` are the only inline sites; `clflush_cache_range` in `mm/pat/set_memory.c` builds on them. Under KNC: `wbinvd` fallback. |
+| 6 | `arch/x86/kernel/apic/apic.c:743` | `calibrate_APIC_clock` returns early when `lapic_timer_period` is preset, exactly the jailhouse trick; the platform layer sets it from the core frequency. |
+| risk | `arch/x86/kernel/cpu/intel.c` | `early_init_intel` reads `MSR_IA32_MISC_ENABLE` through the `_safe` helpers (no fault on a missing MSR), but `init_intel` later uses unguarded `rdmsrq` on family checks. KNC is family 0x0B, so family-6 paths are skipped; the rest is verified against Intel's tree once `vendor/` is populated. |
+| n/a | `arch/x86/boot/compressed/head_64.S:168` | The decompressor sets only `CR4.PAE` at entry; no PGE there. |
