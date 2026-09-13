@@ -17,7 +17,7 @@ pub struct Card {
     aperture: Mapping,
 }
 
-/// What `Card::reset` observed.
+/// What [`Card::reset`] observed.
 #[derive(Debug, Clone)]
 pub struct ResetReport {
     /// Total time from the RGCR write to the ready flag.
@@ -138,14 +138,18 @@ impl Card {
             sleep(Duration::from_millis(10));
         }
         // Intel cleared the ready bit after reset so that a stale value could
-        // not be mistaken for the bootstrap fresh announcement.
+        // not be mistaken for the bootstrap's fresh announcement.
         self.set_spad(sbox::SPAD_DOWNLOAD_INFO, 0);
         let deadline = start + timeout;
         loop {
             self.sample_postcode(start, &mut trace);
             let d = self.download_info();
             if d.ready() {
-                log::info!("bootstrap ready: download addr {:#x}, BSP APIC id {}", d.download_addr(), d.apic_id());
+                log::info!(
+                    "bootstrap ready: download addr {:#x}, BSP APIC id {}",
+                    d.download_addr(),
+                    d.apic_id()
+                );
                 break;
             }
             if Instant::now() >= deadline {
@@ -153,7 +157,12 @@ impl Card {
             }
             sleep(Duration::from_millis(10));
         }
-        Ok(ResetReport { took: start.elapsed(), spad2_before, spad2_after: self.spad(sbox::SPAD_DOWNLOAD_INFO), trace })
+        Ok(ResetReport {
+            took: start.elapsed(),
+            spad2_before,
+            spad2_after: self.spad(sbox::SPAD_DOWNLOAD_INFO),
+            trace,
+        })
     }
 
     fn sample_postcode(&self, start: Instant, trace: &mut Vec<(Duration, Postcode)>) {
@@ -161,13 +170,6 @@ impl Card {
         if trace.last().map(|(_, last)| *last) != Some(p) {
             trace.push((start.elapsed(), p));
         }
-    }| sbox::RGCR_RESET);
-        sleep(Duration::from_secs(1));
-        // Intel cleared the ready bit after reset so that a stale value could
-        // not be mistaken for the bootstrap's fresh announcement.
-        self.set_spad(sbox::SPAD_DOWNLOAD_INFO, 0);
-        self.wait_ready(timeout.saturating_sub(start.elapsed()))?;
-        Ok(start.elapsed())
     }
 
     /// Poll until the bootstrap reports ready (`SPAD2` bit 0) or `timeout`.

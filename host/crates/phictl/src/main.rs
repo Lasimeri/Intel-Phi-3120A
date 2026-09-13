@@ -160,9 +160,9 @@ fn cmd_info(bdf: Option<&str>) -> Result<()> {
     );
     println!("aperture      {} MiB mapped", s.aperture_len >> 20);
     println!(
-        "postcode      {:#010x} -> {:#04x} {}",
+        "postcode      {:#010x} -> \"{}\" {}",
         s.postcode.0,
-        s.postcode.code(),
+        s.postcode.text(),
         s.postcode.describe().unwrap_or("(unknown code)")
     );
     println!(
@@ -190,9 +190,9 @@ fn cmd_postcode(bdf: Option<&str>, watch: bool, timeout: Option<u64>) -> Result<
         let now = card.postcode();
         if now != last {
             println!(
-                "+{:>8.3}s {:#04x} {}",
+                "+{:>8.3}s \"{}\" {}",
                 start.elapsed().as_secs_f64(),
-                now.code(),
+                now.text(),
                 now.describe().unwrap_or("")
             );
             last = now;
@@ -365,9 +365,9 @@ fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
         let post = card.postcode();
         if post != last_post {
             eprintln!(
-                "[phictl] +{:>8.3}s postcode {:#04x} {}",
+                "[phictl] +{:>8.3}s postcode \"{}\" {}",
                 start.elapsed().as_secs_f64(),
-                post.code(),
+                post.text(),
                 post.describe().unwrap_or("")
             );
             last_post = post;
