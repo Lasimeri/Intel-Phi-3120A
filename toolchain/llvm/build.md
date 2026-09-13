@@ -33,3 +33,20 @@ Environment overrides: `PHI_LLVM_TAG`, `PHI_LLVM_SRC`, `PHI_LLVM_BUILD`,
 ## Disk and time
 
 Source about 2 GB, build directory about 10 GB, install about 1.5 GB.
+
+## The `dylib` variant (for rustc)
+
+`PHI_LLVM_VARIANT=dylib toolchain/llvm/build.sh all` builds `libLLVM.so`
+with the same patches but the options Arch's `llvm-libs` package uses
+(`LLVM_TARGETS_TO_BUILD=all`, `LLVM_ENABLE_RTTI=ON`, `LLVM_ENABLE_FFI=ON`,
+`LLVM_BUILD_LLVM_DYLIB=ON`, `LLVM_LINK_LLVM_DYLIB=ON`, checked against the
+PKGBUILD on 2026-09-13), no clang, no lld, target `LLVM` only, installed to
+`toolchain/build/llvm-dylib/lib`.
+
+Why: Arch's `rustc` links `/usr/lib/libLLVM.so.22.1` dynamically
+(`ldd librustc_driver-*.so`) and its driver references the `TargetInfo`
+initializers of all 16 backends, so a same-version dylib with the same
+ABI-relevant options can be substituted with `LD_LIBRARY_PATH` and rustc
+then emits knc64-x87 code without a rustc rebuild. `toolchain/rust/build-std.sh`
+uses it. RTTI must match because rustc's C++ wrapper derives from LLVM
+classes and would otherwise reference typeinfo symbols the dylib lacks.

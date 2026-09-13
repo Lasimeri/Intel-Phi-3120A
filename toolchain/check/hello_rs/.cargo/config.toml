@@ -1,0 +1,13 @@
+# Cargo settings for the card target probe. The target spec lives two
+# directories up; build-std is required because no prebuilt std exists for
+# a custom target. RUSTC_BOOTSTRAP=1 is set by build-std.sh so the distro
+# stable rustc accepts -Z flags.
+[build]
+target = "../../rust/x86_64-knc-linux-musl.json"
+
+[unstable]
+build-std = ["core", "alloc", "std", "panic_abort"]
+build-std-features = ["panic_immediate_abort"]
+
+[target.x86_64-knc-linux-musl]
+linker = "../../clang/knc-cc"

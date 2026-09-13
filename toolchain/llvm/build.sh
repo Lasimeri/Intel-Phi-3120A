@@ -1,4 +1,30 @@
-#!/usr/bin/env bash
+configure() {
+    local gen="Ninja"
+    command -v ninja >/dev/null || gen="Unix Makefiles"
+    echo "== configuring ($gen, variant $VARIANT) into $BUILD, install to $PREFIX"
+    if [ "$VARIANT" = dylib ]; then
+        cmake -S "$SRC/llvm" -B "$BUILD" -G "$gen" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DLLVM_ENABLE_PROJECTS="" \
+            -DLLVM_TARGETS_TO_BUILD=all \
+            -DLLVM_BUILD_LLVM_DYLIB=ON \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DLLVM_ENABLE_FFI=ON \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_PARALLEL_LINK_JOBS=2 \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld
+        return
+    fi
+    cmake -S "$SRC/llvm" -B "$BUILD" -G "$gen" \#!/usr/bin/env bash
 # build.sh: fetch, patch, build, and install the project's LLVM (clang + lld)
 # into toolchain/build/llvm. Reproducible: pinned tag, patches from
 # toolchain/llvm/patches/ applied in SERIES order, fixed cmake options.
@@ -8,8 +34,18 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 TAG="${PHI_LLVM_TAG:-llvmorg-22.1.8}"
 SRC="${PHI_LLVM_SRC:-$root/toolchain/build/llvm-project}"
-BUILD="${PHI_LLVM_BUILD:-$root/toolchain/build/llvm-build}"
-PREFIX="${PHI_LLVM:-$root/toolchain/build/llvm}"
+# VARIANT=clang (default): static X86-only clang+lld, the card C compiler.
+# VARIANT=dylib: libLLVM.so mirroring Arch's llvm-libs options (all targets,
+# RTTI, FFI) so the distro rustc can load the patched backend via
+# LD_LIBRARY_PATH; no clang, no lld. See build.md.
+VARIANT="${PHI_LLVM_VARIANT:-clang}"
+if [ "$VARIANT" = dylib ]; then
+    BUILD="${PHI_LLVM_BUILD:-$root/toolchain/build/llvm-build-dylib}"
+    PREFIX="${PHI_LLVM:-$root/toolchain/build/llvm-dylib}"
+else
+    BUILD="${PHI_LLVM_BUILD:-$root/toolchain/build/llvm-build}"
+    PREFIX="${PHI_LLVM:-$root/toolchain/build/llvm}"
+fi
 JOBS="${PHI_JOBS:-$(nproc)}"
 step="${1:-all}"
 
@@ -67,13 +103,25 @@ configure() {
 
 build() {
     echo "== building with $JOBS jobs"
-    cmake --build "$BUILD" -j "$JOBS"
+    if [ "$VARIANT" = dylib ]; then
+        cmake --build "$BUILD" -j "$JOBS" --target LLVM
+    else
+        cmake --build "$BUILD" -j "$JOBS"
+    fi
 }
 
 install() {
     echo "== installing to $PREFIX"
+    if [ "$VARIANT" = dylib ]; then
+        # Only the shared library is needed; cmake --install would want every tool built.
+        mkdir -p "$PREFIX/lib"
+        cp -a "$BUILD"/lib/libLLVM*.so* "$PREFIX/lib/"
+        ls -l "$PREFIX/lib/" | grep libLLVM
+        return
+    fi
     cmake --install "$BUILD"
     "$PREFIX/bin/clang" --version | head -1
+}| head -1
 }
 
 # check: compile the two probe files from docs/research/abi-and-toolchain.md

@@ -10,8 +10,11 @@ mkdir -p "$out"
 CC="$root/toolchain/clang/knc-cc"
 AUDIT="$root/host/target/debug/phi-isa-audit"
 
+rs="$here/hello_rs/target/x86_64-knc-linux-musl/release/libhello_rs.a"
+extra=""
+if [ -f "$rs" ]; then extra="$rs"; echo "== linking the Rust half"; fi
 echo "== compile"
-"$CC" -O2 -static -o "$out/hello" "$here/hello.c" -lm -lpthread
+"$CC" -O2 -static -o "$out/hello" "$here/hello.c" $extra -lm -lpthread
 echo "== audit (must be clean)"
 "$AUDIT" "$out/hello"
 echo "== run on host"
