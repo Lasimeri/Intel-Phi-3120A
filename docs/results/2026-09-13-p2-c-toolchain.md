@@ -40,3 +40,5 @@ phase P2 check: PASS
   `exp2l.s` (drop rule), `pause` in `a_spin` (musl patch 0001), SSE
   conversion asm and `xgetbv` in compiler-rt (patch 0007), and
   `ldmxcsr`/`stmxcsr` false positives (audit allowlist, ISA App. B.3/B.7).
+  After a clean compiler-rt rebuild with the patched clang the builtins
+  archive also reports 0 illegal, 0 suspect.
