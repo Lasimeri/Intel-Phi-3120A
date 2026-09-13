@@ -1,13 +1,16 @@
 diff --git a/llvm/lib/Target/X86/X86Subtarget.h b/llvm/lib/Target/X86/X86Subtarget.h
-index 3b920bc4e..20aa62fd1 100644
+index 3b920bc4e..daa0965f9 100644
 --- a/llvm/lib/Target/X86/X86Subtarget.h
 +++ b/llvm/lib/Target/X86/X86Subtarget.h
-@@ -1,4 +1,7 @@
--//===-- X86Subtarget.h - Define Subtarget for the X86 ----------*- C++ -*--===//
+@@ -185,7 +185,10 @@ public:
+   }
+   // SSE codegen depends on cmovs, and all SSE1+ processors support them.
+   // All 64-bit processors support cmov.
+-  bool canUseCMOV() const { return hasCMOV() || hasSSE1() || is64Bit(); }
 +  // Intel Phi 3120A project (knc64-x87): Knights Corner is a 64-bit core
 +  // without CMOV, so 64-bit mode must not imply it. The -cmov feature is
 +  // honored; SSE1 still implies CMOV because every SSE-capable core has it.
-+  bool canUseCMOV() const { return hasCMOV() || hasSSE1(); }//===-- X86Subtarget.h - Define Subtarget for the X86 ----------*- C++ -*--===//
- //
- // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
- // See https://llvm.org/LICENSE.txt for license information.
++  bool canUseCMOV() const { return hasCMOV() || hasSSE1(); }
+   bool hasSSE1() const { return X86SSELevel >= SSE1; }
+   bool hasSSE2() const { return X86SSELevel >= SSE2; }
+   bool hasSSE3() const { return X86SSELevel >= SSE3; }
