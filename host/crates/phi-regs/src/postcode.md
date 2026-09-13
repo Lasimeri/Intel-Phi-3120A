@@ -13,10 +13,10 @@ The earlier assumption that the low byte was a small integer was wrong and
 is corrected here; `docs/results/2026-09-13-first-contact.md` has the raw
 values.
 
-## Open item
+## Resolved by the reset trace (`docs/results/2026-09-13-reset-2.md`)
 
-`"0c"` ("Cache C code") is an early bootstrap stage, yet `SPAD2` reported
-the ready state at the same moment. Either the register is not updated
-after the early stages on this flash version, or it is not the live POST
-register. `phictl reset` traces the register at 10 ms resolution through
-a reset to settle this; the answer is recorded in `docs/results/`.
+The register is live. A reset walks `"0c"`, the GDDR training codes
+`"30"`..`"3F"` (7.4 s), an undocumented `"16"`, `"09"`, `"0F"`, `"10"`,
+and ends at `"12"` after 9.3 s. The characters match Intel table mixed
+case exactly, so the table was transcribed from this register. `"16"` is
+decoded as "undocumented" with the observation date.

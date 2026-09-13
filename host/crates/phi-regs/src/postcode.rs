@@ -57,6 +57,7 @@ impl Postcode {
             "12" => "Wait for coprocessor OS download (ready)",
             "13" => "Signal received from host to boot coprocessor OS",
             "15" => "Report platform information",
+            "16" => "(undocumented; observed between GDDR finalize and enable caching, 2026-09-13)",
             "17" => "Page table setup",
             "30" => "Begin memory training",
             "31" => "Begin GDDR training to query memory modules",

@@ -80,3 +80,11 @@ clear `SPAD2` to 0 and wait for the bootstrap to set bit 0 again
   `SIAC0` (0x9014) for MSI-X only.
 - Host to card: write an `APICICRn` pair as in step 7 with the target APIC ID
   and a vector the card kernel registered.
+
+## Observed bootstrap sequence (this card, 2026-09-13)
+
+From `docs/results/2026-09-13-reset-2.md`: after an `RGCR` reset the POST
+register walks `"0c"`, then GDDR training `"30" "39" "34" "37" "39" "3C"
+"3d" "3E" "3F"` over 7.4 s, then `"16"` (undocumented), `"09"`, `"0F"`,
+`"10"`, `"12"` at 9.3 s. The device is off the bus for about 10 ms some
+200 ms after the reset write. Budget 10 s per reset.
