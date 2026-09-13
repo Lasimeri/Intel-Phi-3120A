@@ -1,0 +1,16 @@
+diff --git a/llvm/lib/Target/X86/MCTargetDesc/X86AsmBackend.cpp b/llvm/lib/Target/X86/MCTargetDesc/X86AsmBackend.cpp
+index 0a98331da..80ea5c7aa 100644
+--- a/llvm/lib/Target/X86/MCTargetDesc/X86AsmBackend.cpp
++++ b/llvm/lib/Target/X86/MCTargetDesc/X86AsmBackend.cpp
+@@ -949,7 +949,10 @@ bool X86AsmBackend::finishLayout() const {
+ unsigned X86AsmBackend::getMaximumNopSize(const MCSubtargetInfo &STI) const {
+   if (STI.hasFeature(X86::Is16Bit))
+     return 4;
+-  if (!STI.hasFeature(X86::FeatureNOPL) && !STI.hasFeature(X86::Is64Bit))
++  // Intel Phi 3120A project: honor -nopl in 64-bit mode too. Knights Corner
++  // is a 64-bit core whose support for the 0F 1F multi-byte NOP is
++  // undocumented; single-byte NOP padding is always safe.
++  if (!STI.hasFeature(X86::FeatureNOPL))
+     return 1;
+   if (STI.hasFeature(X86::TuningFast7ByteNOP))
+     return 7;

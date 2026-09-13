@@ -19,6 +19,7 @@ exec "$LLVM/bin/clang" \
     -mno-prfchw -mno-clflushopt -mno-rdrnd -mno-rdseed -mno-adx -mno-fsgsbase \
     -mno-pclmul -mno-aes -mno-sha \
     -Xclang -target-feature -Xclang -cmov \
+    -Xclang -target-feature -Xclang -nopl \
     -fcf-protection=none \
     -fno-jump-tables \
     -fuse-ld=lld \

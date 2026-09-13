@@ -8,6 +8,7 @@ Driver wrapper so that every C/C++ build for the card gets the same flags.
 | `--target=x86_64-unknown-linux-musl --sysroot=...` | musl sysroot from `card/userland/components/musl.md` |
 | `-march=x86-64` plus the `-mno-*` list | The deletion list. Each `-mno-` corresponds to a row in `docs/research/isa-deletions.md`. |
 | `-Xclang -target-feature -Xclang -cmov` | No `-mno-cmov` driver flag exists; the backend feature is passed directly. Effective only with the patched LLVM. |
+| `-Xclang -target-feature -Xclang -nopl` | Single-byte NOP padding (patched LLVM honors it in 64-bit mode); the `0F 1F` multi-byte NOP is unverified on KNC. |
 | `-fcf-protection=none` | No `endbr64` (CET is absent; the encoding is unverified on KNC). |
 | `-fno-jump-tables` | Jump tables are fine for the ISA; this keeps `.text` free of embedded data so `phi-isa-audit`'s linear sweep does not misdecode. Small code-size cost. |
 | `-fuse-ld=lld` | The LLVM linker from the same install. |

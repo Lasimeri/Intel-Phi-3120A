@@ -6,7 +6,7 @@ with these changes:
 
 | Field | Value | Why |
 | --- | --- | --- |
-| `features` | every SIMD family, CMOV, MOVBE, POPCNT, LZCNT, BMI, XSAVE, CX16, PRFCHW, CLFLUSHOPT, RDRND, RDSEED, ADX, FSGSBASE, PCLMUL, AES, SHA disabled; `+x87` | The deletion list (`docs/research/isa-deletions.md`). Rust knows these names (`rustc --print target-features`). |
+| `features` | every SIMD family, CMOV, NOPL, MOVBE, POPCNT, LZCNT, BMI, XSAVE, CX16, PRFCHW, CLFLUSHOPT, RDRND, RDSEED, ADX, FSGSBASE, PCLMUL, AES, SHA disabled; `+x87` | The deletion list (`docs/research/isa-deletions.md`). Rust knows these names (`rustc --print target-features`). |
 | `cpu` | `x86-64` | The baseline; features above override its implications. Requires the patched LLVM so that `-cmov` is honored in 64-bit mode and `f64` returns do not error. |
 | `max-atomic-width` | 64 | No `CMPXCHG16B`. (The musl target already says 64.) |
 | `panic-strategy` | `abort` | Unwinding needs `libunwind` built for the card; deferred. |

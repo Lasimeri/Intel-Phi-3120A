@@ -1,0 +1,13 @@
+diff --git a/llvm/lib/Target/X86/X86Subtarget.h b/llvm/lib/Target/X86/X86Subtarget.h
+index 3b920bc4e..20aa62fd1 100644
+--- a/llvm/lib/Target/X86/X86Subtarget.h
++++ b/llvm/lib/Target/X86/X86Subtarget.h
+@@ -1,4 +1,7 @@
+-//===-- X86Subtarget.h - Define Subtarget for the X86 ----------*- C++ -*--===//
++  // Intel Phi 3120A project (knc64-x87): Knights Corner is a 64-bit core
++  // without CMOV, so 64-bit mode must not imply it. The -cmov feature is
++  // honored; SSE1 still implies CMOV because every SSE-capable core has it.
++  bool canUseCMOV() const { return hasCMOV() || hasSSE1(); }//===-- X86Subtarget.h - Define Subtarget for the X86 ----------*- C++ -*--===//
+ //
+ // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ // See https://llvm.org/LICENSE.txt for license information.

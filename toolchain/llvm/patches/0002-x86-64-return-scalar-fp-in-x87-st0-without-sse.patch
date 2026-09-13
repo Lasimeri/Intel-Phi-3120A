@@ -1,0 +1,20 @@
+diff --git a/llvm/lib/Target/X86/X86CallingConv.td b/llvm/lib/Target/X86/X86CallingConv.td
+index f020e0b55..c67534dd0 100644
+--- a/llvm/lib/Target/X86/X86CallingConv.td
++++ b/llvm/lib/Target/X86/X86CallingConv.td
+@@ -364,6 +364,15 @@ def RetCC_X86_32_VectorCall : CallingConv<[
+ 
+ // X86-64 C return-value convention.
+ def RetCC_X86_64_C : CallingConv<[
++  // Intel Phi 3120A project (knc64-x87 ABI): Knights Corner has no XMM
++  // registers. With SSE disabled and x87 present, return scalar FP values on
++  // the x87 stack exactly as the i386 convention does. The diagnostics in
++  // X86ISelLoweringCall.cpp only fire when an XMM register was assigned, so
++  // this rule is sufficient on its own.
++  CCIfNotSubtarget<"hasSSE1()",
++    CCIfSubtarget<"hasX87()",
++      CCIfType<[f32, f64], CCAssignToReg<[FP0, FP1]>>>>,
++
+   // The X86-64 calling convention always returns FP values in XMM0.
+   CCIfType<[f16], CCAssignToReg<[XMM0, XMM1]>>,
+   CCIfType<[f32], CCAssignToReg<[XMM0, XMM1]>>,

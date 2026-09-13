@@ -1,0 +1,19 @@
+diff --git a/clang/lib/CodeGen/Targets/X86.cpp b/clang/lib/CodeGen/Targets/X86.cpp
+index e6203db8b..6fb161fad 100644
+--- a/clang/lib/CodeGen/Targets/X86.cpp
++++ b/clang/lib/CodeGen/Targets/X86.cpp
+@@ -3069,6 +3069,14 @@ RValue X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+   if (AI.isIgnore())
+     return Slot.asRValue();
+ 
++  // Intel Phi 3120A project (knc64-x87 ABI): without SSE registers the
++  // backend passes SSE-class scalars on the stack and the callee never
++  // fills the XMM part of the register save area, so read them from the
++  // overflow area. (Aggregates needing both INTEGER and SSE eightbytes are
++  // a known limitation of this ABI as varargs.)
++  if (neededSSE && !neededInt && !getTarget().hasFeature("sse"))
++    neededSSE = 0;
++
+   // AMD64-ABI 3.5.7p5: Step 1. Determine whether type may be passed
+   // in the registers. If not go to step 7.
+   if (!neededInt && !neededSSE)

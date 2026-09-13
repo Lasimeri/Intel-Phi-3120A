@@ -57,7 +57,9 @@ solution exists; one small LLVM patch is required.
 
 ## The chosen ABI: "knc64-x87"
 
-x86-64 SysV with two amendments, both already half-implemented in LLVM:
+x86-64 SysV with two amendments, both already half-implemented in LLVM
+(the exact patches, after inspecting the 22.1.8 sources, are described in
+`toolchain/llvm/README.md`; they turned out smaller than estimated here):
 
 1. **Arguments** of class SSE (`float`, `double`) are passed on the stack.
    LLVM does this today when SSE is disabled (`X86CallingConv.td`: "In the
