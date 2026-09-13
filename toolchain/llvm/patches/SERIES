@@ -3,3 +3,4 @@
 0002-x86-64-return-scalar-fp-in-x87-st0-without-sse.patch
 0003-x86-honor-nopl-off-in-64-bit-nop-padding.patch
 0004-clang-x86-64-va_arg-sse-class-from-overflow-area-without-sse.patch
+0005-x86-cmov-gr64-pseudo-for-64-bit-select-without-cmov.patch
