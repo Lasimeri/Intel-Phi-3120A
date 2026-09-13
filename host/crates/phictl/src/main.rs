@@ -181,7 +181,7 @@ fn cmd_info(bdf: Option<&str>) -> Result<()> {
 fn cmd_postcode(bdf: Option<&str>, watch: bool, timeout: Option<u64>) -> Result<()> {
     let card = open(bdf)?;
     let mut last = card.postcode();
-    println!("{:#04x} {}", last.code(), last.describe().unwrap_or(""));
+    println!("\"{}\" {}", last.text(), last.describe().unwrap_or(""));
     if !watch {
         return Ok(());
     }
@@ -259,14 +259,26 @@ fn cmd_regs(bdf: Option<&str>) -> Result<()> {
 
 fn cmd_reset(bdf: Option<&str>, timeout: u64) -> Result<()> {
     let card = open(bdf)?;
-    println!("before: postcode {:#04x}, spad2 {:#010x}", card.postcode().code(), card.spad(2));
-    let took = card.reset(Duration::from_secs(timeout))?;
+    let r = card.reset(Duration::from_secs(timeout))?;
+    println!(
+        "spad2 before {:#010x}, after {:#010x}; ready after {:.2}s",
+        r.spad2_before,
+        r.spad2_after,
+        r.took.as_secs_f64()
+    );
+    println!("POST code trace ({} distinct values):", r.trace.len());
+    for (t, p) in &r.trace {
+        println!(
+            "  +{:>8.3}s {:#010x} \"{}\" {}",
+            t.as_secs_f64(),
+            p.0,
+            p.text(),
+            p.describe().unwrap_or("")
+        );
+    }
     let d = card.download_info();
     println!(
-        "after {:.2}s: postcode {:#04x}, spad2 {:#010x} (ready={} apic_id={} download_addr={:#x})",
-        took.as_secs_f64(),
-        card.postcode().code(),
-        d.0,
+        "now: ready={} apic_id={} download_addr={:#x}",
         d.ready(),
         d.apic_id(),
         d.download_addr()

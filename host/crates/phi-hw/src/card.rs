@@ -17,6 +17,19 @@ pub struct Card {
     aperture: Mapping,
 }
 
+/// What `Card::reset` observed.
+#[derive(Debug, Clone)]
+pub struct ResetReport {
+    /// Total time from the RGCR write to the ready flag.
+    pub took: Duration,
+    /// `SPAD2` before the reset.
+    pub spad2_before: u32,
+    /// `SPAD2` after the bootstrap reported ready.
+    pub spad2_after: u32,
+    /// Every distinct POST code seen, with the time it first appeared.
+    pub trace: Vec<(Duration, Postcode)>,
+}
+
 /// Snapshot of the registers `phictl info` prints.
 #[derive(Debug, Clone)]
 pub struct Status {
@@ -109,13 +122,46 @@ impl Card {
     /// Reset the card to its bootstrap: set `RGCR` bit 0, wait one second
     /// (Intel: "we really want to delay at least 1 second after touching
     /// reset"), clear `SPAD2`, then wait up to `timeout` for the bootstrap
-    /// to report ready again. Returns the time it took.
-    pub fn reset(&self, timeout: Duration) -> Result<Duration> {
+    /// to report ready again. The POST code register is sampled every 10 ms
+    /// throughout and every change is recorded in the report.
+    pub fn reset(&self, timeout: Duration) -> Result<ResetReport> {
         let start = Instant::now();
+        let spad2_before = self.spad(sbox::SPAD_DOWNLOAD_INFO);
+        let mut trace: Vec<(Duration, Postcode)> = vec![(Duration::ZERO, self.postcode())];
         // Read back once so any earlier posted writes have landed.
         let _ = self.sbox_read(sbox::RGCR);
         let rgcr = self.sbox_read(sbox::RGCR);
         self.sbox_write(sbox::RGCR, rgcr | sbox::RGCR_RESET);
+        let settle = start + Duration::from_secs(1);
+        while Instant::now() < settle {
+            self.sample_postcode(start, &mut trace);
+            sleep(Duration::from_millis(10));
+        }
+        // Intel cleared the ready bit after reset so that a stale value could
+        // not be mistaken for the bootstrap fresh announcement.
+        self.set_spad(sbox::SPAD_DOWNLOAD_INFO, 0);
+        let deadline = start + timeout;
+        loop {
+            self.sample_postcode(start, &mut trace);
+            let d = self.download_info();
+            if d.ready() {
+                log::info!("bootstrap ready: download addr {:#x}, BSP APIC id {}", d.download_addr(), d.apic_id());
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::NotReady(self.postcode().text(), d.0));
+            }
+            sleep(Duration::from_millis(10));
+        }
+        Ok(ResetReport { took: start.elapsed(), spad2_before, spad2_after: self.spad(sbox::SPAD_DOWNLOAD_INFO), trace })
+    }
+
+    fn sample_postcode(&self, start: Instant, trace: &mut Vec<(Duration, Postcode)>) {
+        let p = self.postcode();
+        if trace.last().map(|(_, last)| *last) != Some(p) {
+            trace.push((start.elapsed(), p));
+        }
+    }| sbox::RGCR_RESET);
         sleep(Duration::from_secs(1));
         // Intel cleared the ready bit after reset so that a stale value could
         // not be mistaken for the bootstrap's fresh announcement.
@@ -138,7 +184,7 @@ impl Card {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(Error::NotReady(self.postcode().code(), d.0));
+                return Err(Error::NotReady(self.postcode().text(), d.0));
             }
             sleep(Duration::from_millis(50));
         }

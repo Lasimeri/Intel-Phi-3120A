@@ -27,8 +27,8 @@ pub enum Error {
     #[error("kernel image: {0}")]
     Image(#[from] phi_regs::bootparams::BzImageError),
     /// The bootstrap is not in the ready state.
-    #[error("bootstrap not ready: POST code {0:#04x}, SPAD2 {1:#010x} (reset the card first)")]
-    NotReady(u8, u32),
+    #[error("bootstrap not ready: POST code {0:?}, SPAD2 {1:#010x} (reset the card first)")]
+    NotReady(String, u32),
     /// A loader address or size is out of range.
     #[error("{0}")]
     Range(String),

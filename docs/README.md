@@ -9,6 +9,7 @@
 | [decisions/](decisions/README.md) | Architecture decision records with alternatives considered |
 | [spec/sbox-registers.md](spec/sbox-registers.md) | The SBOX/DBOX register subset this project touches, with sources |
 | [spec/ring-protocol.md](spec/ring-protocol.md) | The host/card shared-memory transport (console and network) |
+| [results/](results/) | Dated records of every measurement made on the card |
 
 Reading order for a newcomer: `hardware.md`, then `research/isa-deletions.md`
 and `research/os-limitations.md`, then `decisions/`, then `plan.md`.

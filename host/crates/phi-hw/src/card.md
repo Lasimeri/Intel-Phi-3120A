@@ -29,3 +29,11 @@ P6 and will live in sibling modules with the same shape.
 
 Only on hardware, through `phictl` with `PHI_BDF` set. The register
 arithmetic it relies on is tested in `phi-regs`.
+
+## Reset trace
+
+`reset` samples the POST register every 10 ms from the `RGCR` write until
+the ready flag returns and records each distinct value with its timestamp.
+This is how the meaning of the register on this flash is established
+(`phi-regs/src/postcode.md`, open item) and it costs nothing during a
+normal reset.

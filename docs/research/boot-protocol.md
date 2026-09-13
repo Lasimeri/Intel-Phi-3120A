@@ -32,9 +32,13 @@ documentation inside `vendor/`):
 | 0x12 | Waiting for coprocessor OS download (the "ready" state) |
 
 The register is read as a 32-bit value at MMIO BAR offset 0x242c
-(`MIC_X100_POSTCODE`). Values written by the running kernel (after the
-bootstrap) are the kernel's business; Intel's kernel wrote progress codes
-there too, and this project's kernel will write its own.
+(`MIC_X100_POSTCODE`). Its low two bytes are two ASCII characters, low
+byte first (`"12"` reads as `0x3231`); the full table is in
+`phi-regs/src/postcode.rs`. Measured 2026-09-13: `0x6330` = `"0c"` while
+`SPAD2` reported ready (`docs/results/2026-09-13-first-contact.md`).
+Values written by the running kernel (after the bootstrap) are the
+kernel business; Intel kernel wrote progress codes there too, and this
+project kernel will write its own.
 
 ## Host loader sequence (what Intel's driver did)
 
