@@ -54,11 +54,12 @@ fn main() -> ExitCode {
         for h in report.hits.iter().take(args.max) {
             let sym = h.symbol.as_ref().map(|(n, o)| format!(" <{n}+{o:#x}>")).unwrap_or_default();
             println!(
-                "{:<8} {:<24} {:#012x}{sym}: {}",
+                "{:<8} {:<24} {:#012x}{sym}: {}  [{}]",
                 format!("{:?}", h.severity).to_uppercase(),
                 h.reason,
                 h.address,
-                h.text
+                h.text,
+                h.section
             );
         }
         if report.hits.len() > args.max {

@@ -1,0 +1,14 @@
+--- a/arch/x86_64/atomic_arch.h
++++ b/arch/x86_64/atomic_arch.h
+@@ -99,7 +99,10 @@
+ #define a_spin a_spin
+ static inline void a_spin()
+ {
+-	__asm__ __volatile__( "pause" : : : "memory" );
++	/* Intel Phi 3120A project: Knights Corner has no PAUSE (ISA ref App.
++	 * B.2); a compiler barrier keeps the spin loop correct, only less
++	 * polite to the sibling hardware threads. */
++	__asm__ __volatile__( "" : : : "memory" );
+ }
+ 
+ #define a_crash a_crash

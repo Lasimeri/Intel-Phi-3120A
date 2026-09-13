@@ -1,0 +1,6 @@
+#!/bin/sh
+# knc-c++: C++ driver for the card, same flags as knc-cc plus libc++.
+# Requires the runtimes (libc++/libc++abi/libunwind) built for the card;
+# until then, C++ code that needs the standard library will not link.
+here=$(cd "$(dirname "$0")" && pwd)
+exec "$here/knc-cc" -x c++ -stdlib=libc++ "$@"

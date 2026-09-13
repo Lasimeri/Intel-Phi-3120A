@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # build.sh: build musl with knc-cc into the card sysroot (toolchain/build/sysroot).
-# Pinned version, trust-on-first-use checksum, SSE-dependent arch files
-# removed before configure. See build.md.
+# Pinned version, trust-on-first-use checksum, XMM-using arch files removed,
+# project patches applied, archive audited. See build.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+. "$here/../env.sh"
+root="$phi_root"
+here="$root/toolchain/musl"
 VER="${PHI_MUSL_VERSION:-1.2.5}"
 URL="https://musl.libc.org/releases/musl-$VER.tar.gz"
 DL="$root/toolchain/build/downloads"
 SRC="$root/toolchain/build/musl-$VER"
-SYSROOT="${PHI_SYSROOT:-$root/toolchain/build/sysroot}"
-CC="$root/toolchain/clang/knc-cc"
-SUMS="$root/toolchain/build/downloads/SHA256SUMS"
+SYSROOT="$PHI_SYSROOT"
+SUMS="$DL/SHA256SUMS"
 mkdir -p "$DL"; touch "$SUMS"
 
 tarball="$DL/musl-$VER.tar.gz"
@@ -30,35 +31,45 @@ fi
 rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xzf "$tarball" -C "$SRC" --strip-components=1
 
-# x86_64-specific sources that use SSE registers or instructions. Removing
-# them makes musl's build pick the portable C implementations instead.
-# Everything else under arch/x86_64 and src/*/x86_64 is integer, x87, or
-# rep-string code, all of which Knights Corner executes.
-for f in sqrt.c sqrtf.c lrint.c lrintf.c llrint.c llrintf.c; do
-    rm -f "$SRC/src/math/x86_64/$f"
+# 1. Drop every x86_64 math source that touches XMM registers. musl's build
+#    uses an arch file when present and the portable C file otherwise, so
+#    deleting is the whole port. The rest of arch/x86_64 and src/*/x86_64 is
+#    x87, rep-string, or integer code, all executed by Knights Corner.
+echo "== dropping XMM-using arch files"
+for f in "$SRC"/src/math/x86_64/*; do
+    if grep -qiE '"[=+]?x"|%xmm|cvtsd2si|cvtss2si|sqrtsd|sqrtss|andps|pcmpeqd|fcomi|fucomi|fcmov|cmov|pause|prefetch|mfence|lfence|sfence|clflush' "$f"; then
+        echo "   $(basename "$f")"; rm -f "$f"
+    fi
 done
 
+# 2. Project patches, in SERIES order (toolchain/musl/patches/README.md).
+while IFS= read -r p; do
+    case "$p" in ''|'#'*) continue ;; esac
+    echo "== applying $p"
+    patch -p1 -d "$SRC" < "$here/patches/$p" > /dev/null
+done < "$here/patches/SERIES"
+
+# 3. Configure, build, install. AR/RANLIB are named explicitly because musl
+#    derives them from the --target prefix otherwise.
 cd "$SRC"
 echo "== configuring musl $VER with knc-cc"
-CC="$CC" CFLAGS="-O2" ./configure \
+CC=knc-cc AR=llvm-ar RANLIB=llvm-ranlib CFLAGS="-O2" ./configure \
     --target=x86_64-unknown-linux-musl \
     --prefix=/usr --syslibdir=/lib \
-    --disable-shared --enable-static --disable-gcc-wrapper
+    --disable-shared --enable-static --disable-gcc-wrapper > configure.log
 echo "== building"
-make -j"$(nproc)" >/dev/null
+make -j"$(nproc)" > build.log
 echo "== installing into $SYSROOT"
-make DESTDIR="$SYSROOT" install >/dev/null
+make DESTDIR="$SYSROOT" install > install.log
 
-# Kernel UAPI headers: Arch's kernel-headers-musl package installs them
-# under /usr/lib/musl/include; they are architecture-independent for
-# x86-64 and are what musl expects to find alongside its own headers.
+# 4. Kernel UAPI headers from Arch's kernel-headers-musl package.
 if [ -d /usr/lib/musl/include/linux ]; then
     cp -rn /usr/lib/musl/include/. "$SYSROOT/usr/include/"
 else
     echo "WARNING: /usr/lib/musl/include missing (pacman -S extra/kernel-headers-musl); no <linux/*.h> in the sysroot" >&2
 fi
 
+# 5. Audit every member of libc.a; one illegal instruction fails the build.
 echo "== audit"
-"$root/host/target/debug/phi-isa-audit" --allow-suspect "$SYSROOT/usr/lib/libc.a" || {
-    echo "musl contains KNC-illegal instructions; see the audit above" >&2; exit 1; }
+"$root/host/target/debug/phi-isa-audit" "$SYSROOT/usr/lib/libc.a"
 echo "musl $VER installed in $SYSROOT"

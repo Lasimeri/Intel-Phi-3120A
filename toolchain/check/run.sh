@@ -4,10 +4,12 @@
 # (same instruction subset), and check the exit status. See run.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+. "$here/../env.sh"
+root="$phi_root"
+here="$root/toolchain/check"
 out="$root/toolchain/build/check"
 mkdir -p "$out"
-CC="$root/toolchain/clang/knc-cc"
+CC=knc-cc
 AUDIT="$root/host/target/debug/phi-isa-audit"
 
 rs="$here/hello_rs/target/x86_64-knc-linux-musl/release/libhello_rs.a"

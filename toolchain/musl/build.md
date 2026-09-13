@@ -8,10 +8,13 @@ Builds the card libc into `toolchain/build/sysroot` with `knc-cc`.
 1. Fetch `musl-<version>.tar.gz` from musl.libc.org (default 1.2.5), record
    or verify its SHA-256 in `toolchain/build/downloads/SHA256SUMS`.
 2. Extract fresh (the tree is never patched in place).
-3. Delete the six `src/math/x86_64/` files that use SSE (`sqrt`, `sqrtf`,
-   `lrint`, `lrintf`, `llrint`, `llrintf`): musl's build system uses an
-   arch file when present and the portable C file otherwise, so deleting is
-   the whole port. The remaining arch files use x87 (`fabs`, `sqrtl`,
+3. Delete every `src/math/x86_64/` file that mentions an XMM constraint or
+   register, or any deleted mnemonic (`fcomi`, `fucomi`, `fcmov`, `cmov`,
+   `pause`, `prefetch`, fences, `clflush`): musl uses an arch file when
+   present and the portable C file otherwise, so deleting is the whole
+   port. On 1.2.5 this drops `fabs`, `fabsf`, `fma`, `fmaf`, `sqrt`,
+   `sqrtf`, `lrint`, `lrintf`, `llrint`, `llrintf` (XMM) and `exp2l.s`
+   (`fucomip`); the script prints the list. The remaining arch files use x87 (`fabs`, `sqrtl`,
    `rintl`, the `*l` transcendental functions), `rep movs/stos`
    (`memcpy`, `memset`), or integer code (`setjmp`, `clone`, `syscall`),
    all supported on Knights Corner (ISA reference App. B). `fenv.s` uses
@@ -34,3 +37,5 @@ A knc64-x87 binary is an ordinary x86-64 ELF that avoids instructions the
 host also has, so `toolchain/check/run.sh` executes it on the host. The
 only difference the host would hide is a float ABI mismatch between two
 objects, and the check covers that by mixing C and Rust in one binary.
+
+4a. Apply the project patches in `patches/SERIES` (`patches/README.md`).

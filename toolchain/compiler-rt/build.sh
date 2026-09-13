@@ -4,12 +4,13 @@
 # directory so `knc-cc` finds libclang_rt.builtins automatically. See build.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+. "$here/../env.sh"
+root="$phi_root"
 SRC="${PHI_LLVM_SRC:-$root/toolchain/build/llvm-project}"
-PREFIX="${PHI_LLVM:-$root/toolchain/build/llvm}"
-SYSROOT="${PHI_SYSROOT:-$root/toolchain/build/sysroot}"
+PREFIX="$PHI_LLVM"
+SYSROOT="$PHI_SYSROOT"
 BUILD="$root/toolchain/build/compiler-rt-build"
-CC="$root/toolchain/clang/knc-cc"
+CC=knc-cc
 resdir=$("$PREFIX/bin/clang" -print-resource-dir)
 
 cmake -S "$SRC/compiler-rt" -B "$BUILD" -G Ninja \
@@ -35,7 +36,8 @@ cmake -S "$SRC/compiler-rt" -B "$BUILD" -G Ninja \
     -DCOMPILER_RT_BUILD_GWP_ASAN=OFF \
     -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF \
     -DCOMPILER_RT_INSTALL_PATH="$resdir" \
-    -DCOMPILER_RT_BAREMETAL_BUILD=OFF
+    -DCOMPILER_RT_BAREMETAL_BUILD=OFF \
+    -DCOMPILER_RT_X86_NO_SSE=ON
 cmake --build "$BUILD" -j"$(nproc)"
 cmake --install "$BUILD"
 lib=$(find "$resdir/lib" -name 'libclang_rt.builtins*.a' | head -1)

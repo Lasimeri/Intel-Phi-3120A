@@ -5,7 +5,8 @@
 # musl sysroot and compiler-rt built (the linker is knc-cc). See build-std.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+. "$here/../env.sh"
+root="$phi_root"
 DYLIB="${PHI_LLVM_DYLIB:-$root/toolchain/build/llvm-dylib}"
 if [ ! -e "$DYLIB/lib/libLLVM.so.22.1" ]; then
     echo "build-std.sh: patched libLLVM.so.22.1 not found in $DYLIB/lib; run: PHI_LLVM_VARIANT=dylib toolchain/llvm/build.sh all" >&2

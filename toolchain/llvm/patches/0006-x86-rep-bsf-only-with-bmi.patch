@@ -1,0 +1,19 @@
+diff --git a/llvm/lib/Target/X86/X86MCInstLower.cpp b/llvm/lib/Target/X86/X86MCInstLower.cpp
+index 1dd702069..d45771d1e 100644
+--- a/llvm/lib/Target/X86/X86MCInstLower.cpp
++++ b/llvm/lib/Target/X86/X86MCInstLower.cpp
+@@ -516,9 +516,13 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
+     // recognize as TZCNT, which has better performance than BSF.
+     // BSF and TZCNT have different interpretations on ZF bit. So make sure
+     // it won't be used later.
++    // Intel Phi 3120A project: only when the target actually has BMI. The
++    // hack relies on pre-BMI CPUs ignoring the REP prefix, which is not
++    // documented for Knights Corner, and the audit tool flags the encoding.
+     const MachineOperand *FlagDef =
+         MI->findRegisterDefOperand(X86::EFLAGS, /*TRI=*/nullptr);
+-    if (!MF.getFunction().hasOptSize() && FlagDef && FlagDef->isDead())
++    if (!MF.getFunction().hasOptSize() && FlagDef && FlagDef->isDead() &&
++        MF.getSubtarget<X86Subtarget>().hasBMI())
+       OutMI.setFlags(X86::IP_HAS_REPEAT);
+     break;
+   }

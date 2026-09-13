@@ -168,6 +168,13 @@ pub fn classify_feature(f: CpuidFeature) -> Option<Severity> {
     None
 }
 
+/// Instructions iced-x86 files under an SSE feature bit but which Knights
+/// Corner documents as supported: the MXCSR load/store pair (ISA reference
+/// App. B.3 LDMXCSR, B.6 STMXCSR) touches no XMM register.
+pub fn allowed_despite_feature(m: Mnemonic) -> bool {
+    matches!(m, Mnemonic::Ldmxcsr | Mnemonic::Stmxcsr)
+}
+
 /// Mnemonic rules for base-ISA instructions KNC deletes (ISA App. B.2).
 pub fn classify_mnemonic(m: Mnemonic) -> Option<(Severity, &'static str)> {
     use Mnemonic::*;
@@ -195,6 +202,9 @@ pub fn scan_bytes(code: &[u8], base: u64, section: &str, symbols: &[(u64, u64, S
             continue;
         }
         let mut worst: Option<(Severity, String)> = None;
+        if allowed_despite_feature(instr.mnemonic()) {
+            continue;
+        }
         for &f in instr.cpuid_features() {
             if let Some(sev) = classify_feature(f) {
                 let name = format!("{f:?}");
@@ -230,8 +240,36 @@ pub fn scan_bytes(code: &[u8], base: u64, section: &str, symbols: &[(u64, u64, S
     count
 }
 
-/// Audit an ELF file's bytes.
+/// Audit a file: an ELF object, executable, or shared object, or an `ar`
+/// archive (`libc.a`, `libclang_rt.builtins.a`) whose ELF members are
+/// audited one by one with the member name prefixed to each section.
 pub fn audit_elf(data: &[u8]) -> anyhow::Result<Report> {
+    if data.starts_with(b"!<arch>\n") {
+        return audit_archive(data);
+    }
+    audit_one(data, "")
+}
+
+fn audit_archive(data: &[u8]) -> anyhow::Result<Report> {
+    use object::read::archive::ArchiveFile;
+    let archive = ArchiveFile::parse(data)?;
+    let mut report = Report::default();
+    for member in archive.members() {
+        let member = member?;
+        let name = String::from_utf8_lossy(member.name()).into_owned();
+        let bytes = member.data(data)?;
+        if !bytes.starts_with(b"\x7FELF") {
+            continue; // symbol table, string table
+        }
+        let r = audit_one(bytes, &format!("{name}:"))?;
+        report.instructions += r.instructions;
+        report.sections.extend(r.sections);
+        report.hits.extend(r.hits);
+    }
+    Ok(report)
+}
+
+fn audit_one(data: &[u8], prefix: &str) -> anyhow::Result<Report> {
     let file = object::File::parse(data)?;
     if file.architecture() != Architecture::X86_64 {
         anyhow::bail!("not an x86-64 ELF (architecture {:?})", file.architecture());
@@ -252,7 +290,7 @@ pub fn audit_elf(data: &[u8]) -> anyhow::Result<Report> {
         if section.kind() != SectionKind::Text {
             continue;
         }
-        let name = section.name().unwrap_or("?").to_string();
+        let name = format!("{prefix}{}", section.name().unwrap_or("?"));
         let data = match section.data() {
             Ok(d) if !d.is_empty() => d,
             _ => continue,

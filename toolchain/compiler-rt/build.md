@@ -11,3 +11,8 @@ without SSE and none are wanted on the card.
 
 Must run after `toolchain/llvm/build.sh` and `toolchain/musl/build.sh`.
 Ends with an audit of the archive.
+
+`-DCOMPILER_RT_X86_NO_SSE=ON` is the option added by LLVM patch 0007; it
+is what keeps the SSE conversion assembly and `cpu_model` out of the
+archive. The generic C conversions (`floatdidf.c` and friends) are used
+instead.

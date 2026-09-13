@@ -1,0 +1,30 @@
+diff --git a/compiler-rt/lib/builtins/CMakeLists.txt b/compiler-rt/lib/builtins/CMakeLists.txt
+index c3dbd6599..88aa674e9 100644
+--- a/compiler-rt/lib/builtins/CMakeLists.txt
++++ b/compiler-rt/lib/builtins/CMakeLists.txt
+@@ -292,6 +292,14 @@ set(x86_ARCH_SOURCES
+   cpu_model/x86.c
+   )
+ 
++# Intel Phi 3120A project: Knights Corner has no SSE. With this option the
++# generic C conversions replace the x86_64 SSE sources, and cpu_model (which
++# executes xgetbv behind a runtime CPUID check) is left out.
++option(COMPILER_RT_X86_NO_SSE "Build x86 builtins without SSE sources" OFF)
++if (COMPILER_RT_X86_NO_SSE)
++  set(x86_ARCH_SOURCES)
++endif()
++
+ if (NOT MSVC)
+   set(x86_ARCH_SOURCES
+     ${x86_ARCH_SOURCES}
+@@ -350,6 +358,10 @@ if (NOT MSVC)
+     endif()
+   endif()
+ 
++  if (COMPILER_RT_X86_NO_SSE)
++    list(FILTER x86_64_SOURCES EXCLUDE REGEX "x86_64/float")
++  endif()
++
+   # Darwin x86_64 Haswell
+   set(x86_64h_SOURCES ${x86_64_SOURCES})
+ 
