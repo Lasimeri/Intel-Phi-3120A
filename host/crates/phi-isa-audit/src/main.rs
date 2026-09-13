@@ -47,7 +47,11 @@ fn main() -> ExitCode {
         "{}: {} executable section(s) [{}], {} instructions",
         args.file.display(),
         report.sections.len(),
-        report.sections.join(", "),
+        if report.sections.len() <= 8 {
+            report.sections.join(", ")
+        } else {
+            format!("{} ... {}", report.sections[0], report.sections[report.sections.len() - 1])
+        },
         report.instructions
     );
     if args.list {

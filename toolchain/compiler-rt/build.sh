@@ -12,6 +12,9 @@ SYSROOT="$PHI_SYSROOT"
 BUILD="$root/toolchain/build/compiler-rt-build"
 CC=knc-cc
 resdir=$("$PREFIX/bin/clang" -print-resource-dir)
+# Always a clean build: it takes two minutes, and ninja would otherwise keep
+# objects compiled by an older clang when only the compiler changed.
+rm -rf "$BUILD"
 
 cmake -S "$SRC/compiler-rt" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
