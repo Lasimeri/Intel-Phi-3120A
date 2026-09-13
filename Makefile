@@ -33,7 +33,7 @@ clippy: ## Lint
 docs-check: ## Enforce sibling .md files and the no-em-dash rule
 	scripts/check-docs.sh
 
-check: docs-check fmt clippy test layout-check ## Everything CI would run
+check: docs-check fmt clippy build test layout-check ## Everything CI would run (also rebuilds the binaries)
 
 audit: build ## Audit a binary for KNC-illegal instructions: make audit BIN=path
 	$(HOST)/target/debug/phi-isa-audit $(BIN)
