@@ -1,0 +1,25 @@
+# Reference material (fetched by scripts/fetch-vendor.sh)
+/vendor/*
+!/vendor/README.md
+
+# Rust
+/host/target/
+**/*.rs.bk
+
+# Build outputs
+/card/kernel/build/
+/card/initramfs/build/
+/card/userland/build/
+/toolchain/build/
+/tools/*.out
+*.o
+*.ko
+*.cpio
+*.cpio.gz
+*.img
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
