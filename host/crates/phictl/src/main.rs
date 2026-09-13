@@ -172,6 +172,23 @@ fn cmd_info(bdf: Option<&str>) -> Result<()> {
         s.download.apic_id(),
         s.download.download_addr()
     );
+    println!(
+        "spad4         {:#010x}: threads/core {:#x} l2 {} KiB channels {} icc_div {} ref {} MHz soft_reset={}",
+        s.platform.0,
+        s.platform.thread_mask(),
+        s.platform.l2_kib(),
+        s.platform.memory_channels(),
+        s.platform.icc_divider(),
+        s.platform.reference_mhz(),
+        s.platform.soft_reset()
+    );
+    println!(
+        "clk ratio     {:#010x}: fb {} ff {} -> core {} MHz",
+        s.clock_ratio.0,
+        s.clock_ratio.feedback(),
+        s.clock_ratio.feedforward_div(),
+        s.clock_ratio.core_mhz(s.platform)
+    );
     for (i, v) in s.spads.iter().enumerate() {
         println!("spad{i:<2}        {v:#010x}");
     }

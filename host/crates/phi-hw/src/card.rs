@@ -47,6 +47,10 @@ pub struct Status {
     pub download: DownloadInfo,
     /// Aperture BAR size in bytes.
     pub aperture_len: usize,
+    /// Decoded scratchpad 4 (platform word).
+    pub platform: sbox::PlatformInfo,
+    /// Raw and decoded current clock ratio register.
+    pub clock_ratio: sbox::ClockRatio,
 }
 
 impl Card {
@@ -116,6 +120,8 @@ impl Card {
             spads,
             download: DownloadInfo(spads[sbox::SPAD_DOWNLOAD_INFO as usize]),
             aperture_len: self.aperture.len(),
+            platform: sbox::PlatformInfo(spads[sbox::SPAD_PLATFORM_INFO as usize]),
+            clock_ratio: sbox::ClockRatio(self.sbox_read(sbox::CURRENT_CLK_RATIO)),
         })
     }
 

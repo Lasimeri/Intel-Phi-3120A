@@ -177,3 +177,112 @@ mod tests {
         assert!((POSTCODE as u64) < SBOX_BASE as u64, "POSTCODE is a DBOX-side offset");
     }
 }
+
+/// Current core clock ratio register (`MIC_SBOX_CURRENT_CLK_RATIO` in
+/// Intel's `intelmic.c`, KNC value). SBOX offset.
+pub const CURRENT_CLK_RATIO: u32 = 0x3004;
+/// Core frequency register (`SBOX_COREFREQ`, `CONFIG_MK1OM` branch of `micsboxdefine.h`). SBOX offset.
+pub const COREFREQ: u32 = 0x4100;
+/// Core voltage register (`SBOX_COREVOLT`, KNC). SBOX offset.
+pub const COREVOLT: u32 = 0x4104;
+/// Elapsed time counter, low and high halves (`SBOX_ELAPSED_TIME_LOW/HIGH`, `micsboxdefine.h`). SBOX offsets.
+pub const ELAPSED_TIME_LOW: u32 = 0x1074;
+/// High half of the elapsed time counter.
+pub const ELAPSED_TIME_HIGH: u32 = 0x1078;
+/// Thermal status register (`SBOX_THERMAL_STATUS`, `micsboxdefine.h`). SBOX offset.
+pub const THERMAL_STATUS: u32 = 0x1018;
+/// Scratchpad index holding the bootstrap's platform word (`MIC_SBOX_SCRATCH4` in `intelmic.c`).
+pub const SPAD_PLATFORM_INFO: u32 = 4;
+/// The PLL reference the ICC divider divides, in MHz (`CORE_VCO` in `intelmic.c`).
+pub const CORE_VCO_MHZ: u32 = 4000;
+
+/// Decoded scratchpad 4, the bootstrap's platform description word
+/// (`sboxScratch4RegDef` in Intel's `intelmic.c`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlatformInfo(pub u32);
+
+impl PlatformInfo {
+    /// Mask of enabled hardware threads per core (bits 3:0); 0xF means four.
+    pub const fn thread_mask(self) -> u32 {
+        self.0 & 0xF
+    }
+    /// L2 size per core in KiB (bits 5:4: 0, 1, 2 mean 512, 3 means 256).
+    pub const fn l2_kib(self) -> u32 {
+        if (self.0 >> 4) & 0x3 == 3 {
+            256
+        } else {
+            512
+        }
+    }
+    /// Number of memory channels (bits 9:6 hold the count minus one).
+    pub const fn memory_channels(self) -> u32 {
+        ((self.0 >> 6) & 0xF) + 1
+    }
+    /// ICC divider (bits 29:25); the reference clock is 4000 MHz divided by it.
+    pub const fn icc_divider(self) -> u32 {
+        (self.0 >> 25) & 0x1F
+    }
+    /// Reference clock in MHz, or 0 if the divider is 0.
+    pub const fn reference_mhz(self) -> u32 {
+        match CORE_VCO_MHZ.checked_div(self.icc_divider()) {
+            Some(v) => v,
+            None => 0,
+        }
+    }
+    /// True if this boot followed a soft reset (bit 30).
+    pub const fn soft_reset(self) -> bool {
+        (self.0 >> 30) & 1 == 1
+    }
+    /// True if the flash is an internal (Intel-internal) build (bit 31).
+    pub const fn internal_flash(self) -> bool {
+        (self.0 >> 31) & 1 == 1
+    }
+}
+
+/// Decoded [`CURRENT_CLK_RATIO`] (`mclkRatioEncoding` in Intel's `intelmic.c`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockRatio(pub u32);
+
+impl ClockRatio {
+    /// Feedback divider (bits 8:1).
+    pub const fn feedback(self) -> u32 {
+        (self.0 >> 1) & 0xFF
+    }
+    /// Feedforward divider code (bits 10:9).
+    pub const fn feedforward_code(self) -> u32 {
+        (self.0 >> 9) & 0x3
+    }
+    /// Feedforward divider value (`BITS_TO_DIV`: 3 means 1, 2 means 2, else 4).
+    pub const fn feedforward_div(self) -> u32 {
+        match self.feedforward_code() {
+            3 => 1,
+            2 => 2,
+            _ => 4,
+        }
+    }
+    /// Core frequency in MHz given the platform word (`get_core_freq` in `intelmic.c`).
+    pub const fn core_mhz(self, platform: PlatformInfo) -> u32 {
+        platform.reference_mhz() * self.feedback() / self.feedforward_div()
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn spad4_measured_on_this_card_decodes() {
+        // First contact 2026-09-13: spad4 = 0x2800e6cf (docs/results).
+        let p = PlatformInfo(0x2800_e6cf);
+        assert_eq!(p.thread_mask(), 0xF);
+        assert_eq!(p.l2_kib(), 512);
+        assert_eq!(p.memory_channels(), 12, "the 3120A has 12 GDDR channels");
+        assert_eq!(p.icc_divider(), 20);
+        assert_eq!(p.reference_mhz(), 200);
+        assert!(!p.soft_reset());
+        assert!(!p.internal_flash());
+        // fb = 11, ff code 2 (div 2): 200 * 11 / 2 = 1100 MHz, the 3120A's clock.
+        let r = ClockRatio((11 << 1) | (2 << 9));
+        assert_eq!(r.core_mhz(p), 1100);
+    }
+}
