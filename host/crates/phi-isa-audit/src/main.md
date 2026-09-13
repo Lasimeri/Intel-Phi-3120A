@@ -1,0 +1,30 @@
+# phi-isa-audit / main.rs
+
+Command-line front end for the audit engine.
+
+```
+phi-isa-audit vmlinux                 # summary: one line per reason
+phi-isa-audit --list --max 50 a.out   # every hit with address and symbol
+phi-isa-audit --allow-suspect libc.so # do not fail on multi-byte NOPs
+```
+
+Exit status is the contract for build scripts: 0 clean, 1 hits, 2 error.
+`make audit BIN=path` wraps it.
+
+## Where it is used
+
+- Phase P2 exit criterion: a static `hello` in C and Rust from the card
+  toolchain must report `0 illegal`.
+- Phase P3: `vmlinux` of the card kernel, plus every `.ko`.
+- Phase P4 onward: every binary that goes into the initramfs, run from the
+  initramfs build script.
+
+## Reading the output
+
+A hit inside a function that is provably never executed on KNC (an
+`alternative()` slot the kernel patches out, an IFUNC variant selected only
+when CPUID advertises the feature) is a false positive. The kernel keeps
+such code in `.altinstr_replacement`, a non-`Text` section, so it is not
+scanned; IFUNC variants in musl do not exist. When a hit is a genuine false
+positive, record it in the build script that invokes the audit, with the
+reason.

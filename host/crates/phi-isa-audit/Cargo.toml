@@ -1,0 +1,13 @@
+[package]
+name = "phi-isa-audit"
+description = "Reports instructions in an x86-64 ELF that Knights Corner cannot execute"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+iced-x86.workspace = true
+object.workspace = true
+clap.workspace = true
+anyhow.workspace = true

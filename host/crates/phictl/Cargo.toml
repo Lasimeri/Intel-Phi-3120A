@@ -1,0 +1,17 @@
+[package]
+name = "phictl"
+description = "Command-line control of the Xeon Phi 3120A over VFIO"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phi-regs = { path = "../phi-regs" }
+phi-vfio = { path = "../phi-vfio" }
+phi-hw = { path = "../phi-hw" }
+phi-ring = { path = "../phi-ring" }
+clap.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true

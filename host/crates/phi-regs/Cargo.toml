@@ -1,0 +1,9 @@
+[package]
+name = "phi-regs"
+description = "Register map, POST codes, boot header offsets and memory constants for the Xeon Phi 3120A (Knights Corner)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

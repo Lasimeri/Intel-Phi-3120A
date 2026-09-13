@@ -1,0 +1,32 @@
+# Host-side workspace. Every crate here runs on the host CPU (x86-64 with the
+# usual ISA); nothing in this workspace is compiled for the card.
+[workspace]
+resolver = "2"
+members = [
+    "crates/phi-regs",
+    "crates/phi-vfio",
+    "crates/phi-hw",
+    "crates/phi-ring",
+    "crates/phictl",
+    "crates/phi-isa-audit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Lasimeri/Intel-Phi-3120A"
+rust-version = "1.85"
+
+[workspace.dependencies]
+libc = "0.2"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel"] }
+object = { version = "0.36", default-features = false, features = ["std", "read", "elf"] }
+
+[profile.release]
+debug = 1

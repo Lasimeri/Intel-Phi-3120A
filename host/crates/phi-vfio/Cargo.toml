@@ -1,0 +1,13 @@
+[package]
+name = "phi-vfio"
+description = "Minimal VFIO type1 container/group/device access for the Xeon Phi host side"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+phi-regs = { path = "../phi-regs" }
+log.workspace = true

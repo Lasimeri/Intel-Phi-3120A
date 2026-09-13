@@ -1,0 +1,199 @@
+//! Open the card and perform register-level operations.
+
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+use phi_regs::postcode::Postcode;
+use phi_regs::sbox::{self, DownloadInfo};
+use phi_vfio::mapping::Mapping;
+use phi_vfio::VfioPci;
+
+use crate::{Error, Result};
+
+/// An opened Xeon Phi.
+pub struct Card {
+    vfio: VfioPci,
+    mmio: Mapping,
+    aperture: Mapping,
+}
+
+/// Snapshot of the registers `phictl info` prints.
+#[derive(Debug, Clone)]
+pub struct Status {
+    /// PCI address.
+    pub bdf: String,
+    /// Vendor, device, subsystem vendor, subsystem device.
+    pub ids: (u16, u16, u16, u16),
+    /// PCI COMMAND register after enabling memory decode.
+    pub command: u16,
+    /// Raw POST code register.
+    pub postcode: Postcode,
+    /// Scratchpads 0..16.
+    pub spads: [u32; 16],
+    /// Decoded scratchpad 2.
+    pub download: DownloadInfo,
+    /// Aperture BAR size in bytes.
+    pub aperture_len: usize,
+}
+
+impl Card {
+    /// Open the card at `bdf` through VFIO and map both BARs.
+    pub fn open(bdf: &str) -> Result<Self> {
+        phi_vfio::sysfs::require_phi(bdf)?;
+        let vfio = VfioPci::open(bdf)?;
+        let cmd = vfio.device().enable_memory_and_bus_master()?;
+        log::debug!("PCI COMMAND now {cmd:#06x}");
+        let mmio = vfio.device().map_region(sbox::MMIO_BAR_INDEX)?;
+        let aperture = vfio.device().map_region(sbox::APER_BAR_INDEX)?;
+        log::info!("mapped MMIO {} bytes, aperture {} bytes", mmio.len(), aperture.len());
+        Ok(Self { vfio, mmio, aperture })
+    }
+
+    /// The underlying VFIO handle.
+    pub fn vfio(&self) -> &VfioPci {
+        &self.vfio
+    }
+
+    /// The aperture mapping (card memory).
+    pub fn aperture(&self) -> &Mapping {
+        &self.aperture
+    }
+
+    /// Read an SBOX register (offset relative to the SBOX base).
+    pub fn sbox_read(&self, off: u32) -> u32 {
+        self.mmio.read32((sbox::SBOX_BASE + off) as usize)
+    }
+
+    /// Write an SBOX register.
+    pub fn sbox_write(&self, off: u32, v: u32) {
+        self.mmio.write32((sbox::SBOX_BASE + off) as usize, v)
+    }
+
+    /// Current POST code.
+    pub fn postcode(&self) -> Postcode {
+        Postcode(self.mmio.read32(sbox::POSTCODE as usize))
+    }
+
+    /// Scratchpad `n`.
+    pub fn spad(&self, n: u32) -> u32 {
+        self.sbox_read(sbox::spad(n))
+    }
+
+    /// Write scratchpad `n`.
+    pub fn set_spad(&self, n: u32, v: u32) {
+        self.sbox_write(sbox::spad(n), v)
+    }
+
+    /// Decoded scratchpad 2.
+    pub fn download_info(&self) -> DownloadInfo {
+        DownloadInfo(self.spad(sbox::SPAD_DOWNLOAD_INFO))
+    }
+
+    /// Everything `phictl info` shows.
+    pub fn status(&self) -> Result<Status> {
+        let mut spads = [0u32; 16];
+        for (i, s) in spads.iter_mut().enumerate() {
+            *s = self.spad(i as u32);
+        }
+        Ok(Status {
+            bdf: self.vfio.bdf().to_string(),
+            ids: self.vfio.device().ids()?,
+            command: self.vfio.device().read_config_u16(phi_vfio::device::pci_cfg::COMMAND)?,
+            postcode: self.postcode(),
+            spads,
+            download: DownloadInfo(spads[sbox::SPAD_DOWNLOAD_INFO as usize]),
+            aperture_len: self.aperture.len(),
+        })
+    }
+
+    /// Reset the card to its bootstrap: set `RGCR` bit 0, wait one second
+    /// (Intel: "we really want to delay at least 1 second after touching
+    /// reset"), clear `SPAD2`, then wait up to `timeout` for the bootstrap
+    /// to report ready again. Returns the time it took.
+    pub fn reset(&self, timeout: Duration) -> Result<Duration> {
+        let start = Instant::now();
+        // Read back once so any earlier posted writes have landed.
+        let _ = self.sbox_read(sbox::RGCR);
+        let rgcr = self.sbox_read(sbox::RGCR);
+        self.sbox_write(sbox::RGCR, rgcr | sbox::RGCR_RESET);
+        sleep(Duration::from_secs(1));
+        // Intel cleared the ready bit after reset so that a stale value could
+        // not be mistaken for the bootstrap's fresh announcement.
+        self.set_spad(sbox::SPAD_DOWNLOAD_INFO, 0);
+        self.wait_ready(timeout.saturating_sub(start.elapsed()))?;
+        Ok(start.elapsed())
+    }
+
+    /// Poll until the bootstrap reports ready (`SPAD2` bit 0) or `timeout`.
+    pub fn wait_ready(&self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let d = self.download_info();
+            if d.ready() {
+                log::info!(
+                    "bootstrap ready: download addr {:#x}, BSP APIC id {}",
+                    d.download_addr(),
+                    d.apic_id()
+                );
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::NotReady(self.postcode().code(), d.0));
+            }
+            sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Send interrupt `vector` to `apic_id` through SBOX ICR `n`. Writes the
+    /// destination (high dword) first, reads it back to order the posted
+    /// write, then writes the low dword with the send bit.
+    pub fn send_icr(&self, n: u32, apic_id: u32, vector: u32) {
+        let icr = sbox::apicicr(n);
+        self.sbox_write(icr + 4, apic_id);
+        let _ = self.sbox_read(icr + 4);
+        self.sbox_write(icr, (vector & 0xff) | sbox::ICR_SEND);
+        let _ = self.sbox_read(icr);
+    }
+
+    /// The boot interrupt: vector 229 to the BSP through ICR 7, as
+    /// `mic_x100_send_firmware_intr` did.
+    pub fn send_boot_interrupt(&self) {
+        let apic = self.download_info().apic_id();
+        self.send_icr(7, apic, sbox::BSP_INTERRUPT_VECTOR);
+    }
+
+    /// Copy `data` into card memory at card physical `addr` through the aperture.
+    pub fn write_card_memory(&self, addr: u64, data: &[u8]) -> Result<()> {
+        let end = addr
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| Error::Range("address overflow".into()))?;
+        if end > self.aperture.len() as u64 {
+            return Err(Error::Range(format!(
+                "write {addr:#x}+{:#x} exceeds aperture {:#x}",
+                data.len(),
+                self.aperture.len()
+            )));
+        }
+        if end > phi_regs::memory::GDDR_BYTES_3120A {
+            return Err(Error::Range(format!(
+                "write {addr:#x}+{:#x} exceeds card GDDR ({:#x})",
+                data.len(),
+                phi_regs::memory::GDDR_BYTES_3120A
+            )));
+        }
+        self.aperture.write_bytes(addr as usize, data);
+        Ok(())
+    }
+
+    /// Read `buf.len()` bytes of card memory at card physical `addr`.
+    pub fn read_card_memory(&self, addr: u64, buf: &mut [u8]) -> Result<()> {
+        let end = addr
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| Error::Range("address overflow".into()))?;
+        if end > self.aperture.len() as u64 {
+            return Err(Error::Range(format!("read {addr:#x}+{:#x} exceeds aperture", buf.len())));
+        }
+        self.aperture.read_bytes(addr as usize, buf);
+        Ok(())
+    }
+}

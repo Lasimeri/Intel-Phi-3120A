@@ -1,0 +1,10 @@
+[package]
+name = "phi-ring"
+description = "Host side of the host/card shared-memory ring transport (docs/spec/ring-protocol.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
