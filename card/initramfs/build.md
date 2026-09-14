@@ -11,6 +11,11 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
   script, traps busybox's poweroff, halt and reboot signals (USR2, USR1,
   TERM) into `poweroff -f`, which the kernel answers with POST `KH` and a
   halt, and respawns the shell when one exits.
+- Files under `card/initramfs/extra/` are copied in at the same paths
+  (`extra/opt/hello` becomes `/opt/hello`), each ELF audited first; the
+  directory is git-ignored except for its README. This is how programs
+  built with the card toolchain reach the card until phase P5 brings a
+  network (`docs/howto/build-and-run.md`).
 - `etc/passwd` and `etc/group` for root only.
 - Packed with `bsdtar --format newc` (libarchive, part of Arch base) and
   gzip; no Python anywhere.
