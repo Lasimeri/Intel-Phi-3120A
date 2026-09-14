@@ -10,8 +10,7 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
   `cttyhack`, so job control and Ctrl-C work over the ring); PID 1 stays the
   script, traps busybox's poweroff, halt and reboot signals (USR2, USR1,
   TERM) into `poweroff -f`, which the kernel answers with POST `KH` and a
-  halt, and respawns the shell when one exits
-  tty.
+  halt, and respawns the shell when one exits.
 - `etc/passwd` and `etc/group` for root only.
 - Packed with `bsdtar --format newc` (libarchive, part of Arch base) and
   gzip; no Python anywhere.
