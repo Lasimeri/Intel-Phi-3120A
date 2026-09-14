@@ -20,13 +20,19 @@ Two more sites on the boot path:
   the k1om tree); skip the read for family 0xb.
 - head_64.S sets CR4.PGE unconditionally for the boot CPU and every AP
   on the way to 64-bit mode. Leave it clear.
+- x86_64_start_kernel() flushes the trampoline TLB entries with
+  __native_tlb_flush_global(), which toggles CR4.PGE, before any
+  exception handler exists: on the card that #GP was a triple fault
+  (measured 2026-09-14, the boot stopped between the bss clear and the
+  early IDT). A CR3 reload does the flush without global pages.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/Kconfig.cpufeatures | 8 ++++----
+ arch/x86/kernel/head64.c     | 9 ++++++++-
  arch/x86/kernel/head_64.S    | 5 ++++-
  arch/x86/kernel/verify_cpu.S | 6 ++++++
- 3 files changed, 14 insertions(+), 5 deletions(-)
+ 4 files changed, 22 insertions(+), 6 deletions(-)
 
 diff --git a/arch/x86/Kconfig.cpufeatures b/arch/x86/Kconfig.cpufeatures
 index 09833c88f..83861977a 100644
@@ -64,6 +70,26 @@ index 09833c88f..83861977a 100644
  
  config X86_REQUIRED_FEATURE_LM
  	def_bool y
+diff --git a/arch/x86/kernel/head64.c b/arch/x86/kernel/head64.c
+index fd28b53db..595ebcb34 100644
+--- a/arch/x86/kernel/head64.c
++++ b/arch/x86/kernel/head64.c
+@@ -271,7 +271,14 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
+ 	 * instrument native_write_cr4() so KASAN must be initialized for that
+ 	 * instrumentation to work.
+ 	 */
+-	__native_tlb_flush_global(this_cpu_read(cpu_tlbstate.cr4));
++	/*
++	 * Knights Corner has no global pages and a CR4.PGE write faults
++	 * (SSDG 4.2.10); a CR3 reload flushes the whole TLB there.
++	 */
++	if (IS_ENABLED(CONFIG_X86_KNC))
++		native_write_cr3(__native_read_cr3());
++	else
++		__native_tlb_flush_global(this_cpu_read(cpu_tlbstate.cr4));
+ 
+ 	idt_setup_early_handler();
+ 
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
 index 7ed5520dd..f882849c3 100644
 --- a/arch/x86/kernel/head_64.S

@@ -203,7 +203,7 @@ index f3e921984..d8b443498 100644
  	&x86_hyper_acrn,
  #endif
 diff --git a/arch/x86/kernel/head64.c b/arch/x86/kernel/head64.c
-index fd28b53db..72241d916 100644
+index 595ebcb34..b672ec92b 100644
 --- a/arch/x86/kernel/head64.c
 +++ b/arch/x86/kernel/head64.c
 @@ -42,6 +42,7 @@
@@ -230,8 +230,8 @@ index fd28b53db..72241d916 100644
  
  	/*
  	 * This needs to happen *before* kasan_early_init() because latter maps stuff
-@@ -274,6 +277,8 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
- 	__native_tlb_flush_global(this_cpu_read(cpu_tlbstate.cr4));
+@@ -281,6 +284,8 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
+ 		__native_tlb_flush_global(this_cpu_read(cpu_tlbstate.cr4));
  
  	idt_setup_early_handler();
 +	knc_boot_mark = KNC_POST('K', 'R'); /* early exception handlers installed */
