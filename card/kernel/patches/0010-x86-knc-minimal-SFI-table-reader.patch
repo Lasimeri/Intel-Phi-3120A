@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 22:15:07 -0500
-Subject: [PATCH 10/15] x86/knc: minimal SFI table reader
+Subject: [PATCH 10/16] x86/knc: minimal SFI table reader
 
 The Knights Corner bootstrap hands the kernel its CPU list, I/O APIC
 address and memory map in Simple Firmware Interface (SFI 0.7) tables

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 22:37:40 -0500
-Subject: [PATCH 13/15] x86: inline assembly without CMOV on Knights Corner
+Subject: [PATCH 13/16] x86: inline assembly without CMOV on Knights Corner
 
 The compiler is told not to use CMOV, but two headers write it by hand.
 mask_user_address() clamps a user pointer with "cmova" so that the

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 23:24:27 -0500
-Subject: [PATCH 15/15] x86/lib: cached copy instead of non-temporal stores on
+Subject: [PATCH 15/16] x86/lib: cached copy instead of non-temporal stores on
  Knights Corner
 
 __copy_user_nocache() is hand-written with MOVNTI and SFENCE, both SSE2

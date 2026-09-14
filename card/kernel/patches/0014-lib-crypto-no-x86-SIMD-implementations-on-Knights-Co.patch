@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 23:18:43 -0500
-Subject: [PATCH 14/15] lib/crypto: no x86 SIMD implementations on Knights
+Subject: [PATCH 14/16] lib/crypto: no x86 SIMD implementations on Knights
  Corner
 
 lib/crypto selects the x86 assembly implementations of SHA-1, SHA-2,

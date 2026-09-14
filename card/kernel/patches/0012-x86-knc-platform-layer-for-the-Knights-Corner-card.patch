@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 22:18:17 -0500
-Subject: [PATCH 12/15] x86/knc: platform layer for the Knights Corner card
+Subject: [PATCH 12/16] x86/knc: platform layer for the Knights Corner card
 
 Hook the Xeon Phi x100 card into setup_arch() through the hypervisor
 detection table, as arch/x86/kernel/jailhouse.c does, with detection by

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 22:07:51 -0500
-Subject: [PATCH 01/15] x86/Kconfig: add X86_KNC for the Xeon Phi x100 (Knights
+Subject: [PATCH 01/16] x86/Kconfig: add X86_KNC for the Xeon Phi x100 (Knights
  Corner) card
 
 The Knights Corner coprocessor (CPUID family 0x0B, model 0x01) runs a

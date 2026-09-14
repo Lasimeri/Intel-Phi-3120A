@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 22:10:04 -0500
-Subject: [PATCH 09/15] x86/ioapic: accept I/O APIC addresses above 4 GiB
+Subject: [PATCH 09/16] x86/ioapic: accept I/O APIC addresses above 4 GiB
 
 mp_register_ioapic() takes the I/O APIC base as u32 and keeps it in
 struct mpc_ioapic, whose apicaddr field mirrors the 32-bit MP-table

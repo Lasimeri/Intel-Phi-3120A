@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 22:07:51 -0500
-Subject: [PATCH 02/15] x86/cpufeatures: relax the required-feature set for
+Subject: [PATCH 02/16] x86/cpufeatures: relax the required-feature set for
  Knights Corner
 
 Kconfig.cpufeatures folds CMOV, PGE, XMM and XMM2 into the set every
@@ -23,8 +23,7 @@ Two more sites on the boot path:
 - x86_64_start_kernel() flushes the trampoline TLB entries with
   __native_tlb_flush_global(), which toggles CR4.PGE, before any
   exception handler exists: on the card that #GP was a triple fault
-  (measured 2026-09-14, the boot stopped between the bss clear and the
-  early IDT). A CR3 reload does the flush without global pages.
+  (measured 2026-09-14). A CR3 reload does the flush without global pages.
 - fpu__init_cpu() sets CR4.OSFXSR when FXSR is present; that write
   faults on the card as well (measured: 0x30 to 0x230, #GP). The bit
   only gates SSE, which the core lacks; FXSAVE works without it.

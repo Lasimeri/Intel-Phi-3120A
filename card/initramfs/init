@@ -1,0 +1,15 @@
+#!/bin/sh
+# init: first process on the card. Mounts the pseudo filesystems, reports
+# what it runs on, and hands the console to a shell. See build.md.
+/bin/busybox mkdir -p /proc /sys /dev /tmp
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
+/bin/busybox mount -t tmpfs tmpfs /tmp
+echo
+echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) online"
+/bin/busybox grep -m1 "model name" /proc/cpuinfo
+/bin/busybox free -m | /bin/busybox head -2
+echo "type 'poweroff' to halt the card"
+echo
+exec /bin/busybox setsid /bin/busybox cttyhack /bin/sh

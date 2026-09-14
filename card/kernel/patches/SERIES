@@ -14,3 +14,4 @@
 0013-x86-inline-assembly-without-CMOV-on-Knights-Corner.patch
 0014-lib-crypto-no-x86-SIMD-implementations-on-Knights-Co.patch
 0015-x86-lib-cached-copy-instead-of-non-temporal-stores-o.patch
+0016-x86-knc-tty-on-the-host-card-ring.patch

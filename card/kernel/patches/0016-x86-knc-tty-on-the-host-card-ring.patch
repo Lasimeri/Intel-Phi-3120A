@@ -1,0 +1,499 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 09:00:04 -0500
+Subject: [PATCH 16/16] x86/knc: tty on the host/card ring
+
+The early console is output only, so init cannot open /dev/console and
+nothing typed on the host reaches the card. Add ttyPHI0: output shares
+the card-to-host console ring with the early console (now under a lock
+in knc_earlycon.c, which also keeps the host-to-card ring once the
+permanent mapping is up), input is polled from the host-to-card ring
+every 10 ms by a delayed work (ring protocol v1 has no signaling). The
+console registers as ttyPHI so console=ttyPHI0 makes it the kernel
+console and the boot console is dropped.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/knc.h     |   5 +-
+ arch/x86/kernel/Makefile       |   2 +-
+ arch/x86/kernel/knc_earlycon.c | 180 ++++++++++++++++++++++-----------
+ arch/x86/kernel/knc_tty.c      | 126 +++++++++++++++++++++++
+ 4 files changed, 250 insertions(+), 63 deletions(-)
+ create mode 100644 arch/x86/kernel/knc_tty.c
+
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+index bce9a4165..abe87b61b 100644
+--- a/arch/x86/include/asm/knc.h
++++ b/arch/x86/include/asm/knc.h
+@@ -75,12 +75,15 @@ struct knc_sfi_info {
+ 
+ int __init knc_sfi_parse(struct knc_sfi_info *info);
+ 
+-/* Ring early console (knc_earlycon.c). */
++/* Ring early console and ring plumbing (knc_earlycon.c). */
+ struct console;
+ extern struct console knc_earlycon;
+ int __init knc_earlycon_init(void);
+ bool __init knc_ring_params(u64 *base, u64 *size);
+ u64 knc_ring_host_epoch_ns(void);
++void knc_ring_con_write(const char *s, unsigned int n);
++int knc_ring_con_read(u8 *buf, int len);
++bool knc_ring_permanent(void);
+ 
+ /* Platform layer (knc.c). */
+ void knc_postcode(u32 code);
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 20784d975..92fdeb228 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_earlycon.c b/arch/x86/kernel/knc_earlycon.c
+index 799bae89e..e8119805d 100644
+--- a/arch/x86/kernel/knc_earlycon.c
++++ b/arch/x86/kernel/knc_earlycon.c
+@@ -1,13 +1,16 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ /*
+- * Early console into the host/card shared-memory ring for Knights Corner.
++ * Early console into the host/card shared-memory ring for Knights Corner,
++ * plus the ring plumbing shared with the tty driver (knc_tty.c).
+  *
+  * The card has no UART (SSDG 328207-002 section 4.2.2). The host loader
+  * formats a region of card memory according to the Intel Phi 3120A ring
+  * protocol v1 (docs/spec/ring-protocol.md in that project) and names it on
+  * the command line as phi.ring=<base>,<size>. This console appends bytes
+  * to the card-to-host ring of the console channel; the host tails it with
+- * "phictl console". Enable with earlyprintk=phiring[,keep].
++ * "phictl console" and forwards its stdin into the host-to-card ring.
++ * Enable with earlyprintk=phiring[,keep]; the tty driver's console is
++ * "ttyPHI0" and takes over once it registers.
+  *
+  * Region layout (little-endian, every structure 64-byte aligned):
+  *
+@@ -30,6 +33,7 @@
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+ #include <linux/sizes.h>
++#include <linux/spinlock.h>
+ #include <linux/string.h>
+ 
+ #include <asm/barrier.h>
+@@ -49,6 +53,8 @@
+ #define REGION_CARD_BOOT_FLAGS	24
+ #define REGION_DESC(i)		(64 + 64 * (i))
+ #define DESC_KIND		0
++#define DESC_H2C_OFFSET		8
++#define DESC_H2C_SIZE		12
+ #define DESC_C2H_OFFSET		16
+ #define DESC_C2H_SIZE		20
+ 
+@@ -62,15 +68,19 @@
+ 
+ static u64 knc_ring_base;
+ static u64 knc_ring_size;
+-static void __iomem *knc_region;	/* whole region */
++static void __iomem *knc_region;	/* header (early) or whole region */
+ static void __iomem *knc_con;		/* console card-to-host ring */
+ static u32 knc_con_size;
+ static u32 knc_con_head;
++static void __iomem *knc_in;		/* console host-to-card ring, permanent mapping only */
++static u32 knc_in_size;
++static u32 knc_in_tail;
+ static unsigned long knc_con_dropped;
+ static bool knc_region_is_early;	/* mapped with early_ioremap() */
+ static void __iomem *knc_early_hdr;	/* first page of the region */
+ static void __iomem *knc_early_ring;	/* the console card-to-host ring */
+ static u32 knc_early_ring_len;
++static DEFINE_RAW_SPINLOCK(knc_con_lock);
+ 
+ /**
+  * knc_ring_params() - Read phi.ring=<base>,<size> from the boot command line.
+@@ -93,50 +103,58 @@ bool __init knc_ring_params(u64 *base, u64 *size)
+ 	return *base && *size >= SZ_4K && *size <= SZ_64M;
+ }
+ 
+-/* Validate the region and locate the console ring; @map is the region. */
+-static bool knc_ring_attach(void __iomem *map)
++/* Find the console channel in a mapped header; returns false if malformed. */
++static bool knc_find_console(void __iomem *hdr, u32 *h2c_off, u32 *h2c_size,
++			     u32 *c2h_off, u32 *c2h_size)
+ {
+ 	u32 count, i;
+ 
+-	if (readl(map + REGION_MAGIC) != PHI_REGION_MAGIC ||
+-	    readl(map + REGION_VERSION) != PHI_REGION_VERSION)
++	if (readl(hdr + REGION_MAGIC) != PHI_REGION_MAGIC ||
++	    readl(hdr + REGION_VERSION) != PHI_REGION_VERSION)
+ 		return false;
+-	count = readl(map + REGION_CHANNEL_COUNT);
++	count = readl(hdr + REGION_CHANNEL_COUNT);
+ 	if (count > 16)
+ 		return false;
+ 	for (i = 0; i < count; i++) {
+-		void __iomem *desc = map + REGION_DESC(i);
+-		u32 off, size;
++		void __iomem *desc = hdr + REGION_DESC(i);
+ 
+ 		if (readl(desc + DESC_KIND) != PHI_CHANNEL_CONSOLE)
+ 			continue;
+-		off = readl(desc + DESC_C2H_OFFSET);
+-		size = readl(desc + DESC_C2H_SIZE);
+-		if (!size || (size & (size - 1)) || off + RING_DATA + size > knc_ring_size)
+-			return false;
+-		if (readl(map + off + RING_MAGIC) != PHI_RING_MAGIC ||
+-		    readl(map + off + RING_SIZE) != size)
+-			return false;
+-		knc_con = map + off;
+-		knc_con_size = size;
+-		knc_con_head = readl(knc_con + RING_HEAD);
+-		knc_region = map;
+-		return true;
++		*h2c_off = readl(desc + DESC_H2C_OFFSET);
++		*h2c_size = readl(desc + DESC_H2C_SIZE);
++		*c2h_off = readl(desc + DESC_C2H_OFFSET);
++		*c2h_size = readl(desc + DESC_C2H_SIZE);
++		return *c2h_size && !(*c2h_size & (*c2h_size - 1)) && *c2h_size <= SZ_128K &&
++		       (u64)*c2h_off + RING_DATA + *c2h_size <= knc_ring_size &&
++		       (!*h2c_size || (!(*h2c_size & (*h2c_size - 1)) &&
++					(u64)*h2c_off + RING_DATA + *h2c_size <= knc_ring_size));
+ 	}
+ 	return false;
+ }
+ 
+-static void knc_earlycon_write(struct console *con, const char *s, unsigned int n)
++static bool knc_ring_ok(void __iomem *ring, u32 size)
++{
++	return readl(ring + RING_MAGIC) == PHI_RING_MAGIC && readl(ring + RING_SIZE) == size;
++}
++
++/**
++ * knc_ring_con_write() - Append bytes to the card-to-host console ring.
++ *
++ * Shared by the early console and the tty; the lock serializes them. A
++ * full ring drops bytes rather than stalling the writer.
++ */
++void knc_ring_con_write(const char *s, unsigned int n)
+ {
+-	u32 head = knc_con_head;
+-	u32 tail;
++	unsigned long flags;
++	u32 head, tail;
+ 
+ 	if (!knc_con)
+ 		return;
++	raw_spin_lock_irqsave(&knc_con_lock, flags);
++	head = knc_con_head;
+ 	tail = readl(knc_con + RING_TAIL);
+ 	while (n--) {
+ 		if (head - tail >= knc_con_size) {
+-			/* Host has not drained the ring; drop rather than stall boot. */
+ 			knc_con_dropped += n + 1;
+ 			break;
+ 		}
+@@ -147,6 +165,45 @@ static void knc_earlycon_write(struct console *con, const char *s, unsigned int
+ 	wmb();
+ 	writel(head, knc_con + RING_HEAD);
+ 	knc_con_head = head;
++	raw_spin_unlock_irqrestore(&knc_con_lock, flags);
++}
++
++/**
++ * knc_ring_con_read() - Take bytes the host wrote into the host-to-card ring.
++ *
++ * Returns the number of bytes copied, 0 when nothing is pending or the
++ * permanent mapping is not up yet.
++ */
++int knc_ring_con_read(u8 *buf, int len)
++{
++	u32 head, tail;
++	int n = 0;
++
++	if (!knc_in)
++		return 0;
++	head = readl(knc_in + RING_HEAD);
++	tail = knc_in_tail;
++	while (n < len && head - tail > 0) {
++		buf[n++] = readb(knc_in + RING_DATA + (tail % knc_in_size));
++		tail++;
++	}
++	if (n) {
++		wmb();
++		writel(tail, knc_in + RING_TAIL);
++		knc_in_tail = tail;
++	}
++	return n;
++}
++
++/* True once the permanent (ioremap) mapping is in place; the tty needs it. */
++bool knc_ring_permanent(void)
++{
++	return knc_region && !knc_region_is_early;
++}
++
++static void knc_earlycon_write(struct console *con, const char *s, unsigned int n)
++{
++	knc_ring_con_write(s, n);
+ }
+ 
+ struct console knc_earlycon = {
+@@ -161,55 +218,37 @@ struct console knc_earlycon = {
+  *
+  * Called from setup_early_printk() while early_ioremap() is available
+  * (setup_arch() runs early_ioremap_init() before parse_early_param()).
++ * early_ioremap() maps at most 256 KiB at a time, less than the region:
++ * the header page and the console ring are mapped separately.
+  * Returns 0 when the console can be registered.
+  */
+ int __init knc_earlycon_init(void)
+ {
+ 	void __iomem *hdr, *ring;
+-	u32 count, i, off = 0, size = 0;
++	u32 h2c_off, h2c_size, c2h_off, c2h_size;
+ 
+ 	if (knc_con)
+ 		return 0;
+ 	if (!knc_ring_params(&knc_ring_base, &knc_ring_size))
+ 		return -ENODEV;
+-	/*
+-	 * early_ioremap() maps at most 256 KiB at a time, less than the
+-	 * region: map the header page and the console ring separately.
+-	 */
+ 	hdr = early_ioremap(knc_ring_base, PAGE_SIZE);
+ 	if (!hdr)
+ 		return -ENOMEM;
+-	if (readl(hdr + REGION_MAGIC) != PHI_REGION_MAGIC ||
+-	    readl(hdr + REGION_VERSION) != PHI_REGION_VERSION)
+-		goto bad;
+-	count = readl(hdr + REGION_CHANNEL_COUNT);
+-	if (count > 16)
++	if (!knc_find_console(hdr, &h2c_off, &h2c_size, &c2h_off, &c2h_size))
+ 		goto bad;
+-	for (i = 0; i < count; i++) {
+-		void __iomem *desc = hdr + REGION_DESC(i);
+-
+-		if (readl(desc + DESC_KIND) != PHI_CHANNEL_CONSOLE)
+-			continue;
+-		off = readl(desc + DESC_C2H_OFFSET);
+-		size = readl(desc + DESC_C2H_SIZE);
+-		break;
+-	}
+-	if (!size || (size & (size - 1)) || size > SZ_128K ||
+-	    (u64)off + RING_DATA + size > knc_ring_size)
+-		goto bad;
+-	ring = early_ioremap(knc_ring_base + off, RING_DATA + size);
++	ring = early_ioremap(knc_ring_base + c2h_off, RING_DATA + c2h_size);
+ 	if (!ring)
+ 		goto bad;
+-	if (readl(ring + RING_MAGIC) != PHI_RING_MAGIC || readl(ring + RING_SIZE) != size) {
+-		early_iounmap(ring, RING_DATA + size);
++	if (!knc_ring_ok(ring, c2h_size)) {
++		early_iounmap(ring, RING_DATA + c2h_size);
+ 		goto bad;
+ 	}
+ 	knc_early_hdr = hdr;
+ 	knc_early_ring = ring;
+-	knc_early_ring_len = RING_DATA + size;
++	knc_early_ring_len = RING_DATA + c2h_size;
+ 	knc_region = hdr;
+ 	knc_con = ring;
+-	knc_con_size = size;
++	knc_con_size = c2h_size;
+ 	knc_con_head = readl(ring + RING_HEAD);
+ 	knc_region_is_early = true;
+ 	/* Tell the host the kernel is alive before the first line arrives. */
+@@ -230,28 +269,47 @@ u64 knc_ring_host_epoch_ns(void)
+ }
+ 
+ /*
+- * Once the vmalloc area exists, replace the early fixmap mapping with a
+- * permanent one so that the console (with "keep") outlives setup_arch()
+- * and the early_ioremap slot is released.
++ * Once the vmalloc area exists, map the whole region permanently: the
++ * console keeps working after setup_arch(), the early_ioremap slots are
++ * released, and the host-to-card ring becomes available to the tty.
++ * Also the path taken when there was no earlyprintk=phiring at all.
+  */
+ static int __init knc_earlycon_remap(void)
+ {
+ 	void __iomem *map;
++	u32 h2c_off, h2c_size, c2h_off, c2h_size;
++	unsigned long flags;
+ 
+-	if (!knc_region || !knc_region_is_early)
++	if (!knc_ring_base && !knc_ring_params(&knc_ring_base, &knc_ring_size))
++		return 0;
++	if (knc_region && !knc_region_is_early)
+ 		return 0;
+ 	map = ioremap(knc_ring_base, knc_ring_size);
+ 	if (!map) {
+ 		pr_warn("ioremap failed; console stays on the early mapping\n");
+ 		return 0;
+ 	}
+-	if (!knc_ring_attach(map)) {
++	if (!knc_find_console(map, &h2c_off, &h2c_size, &c2h_off, &c2h_size) ||
++	    !knc_ring_ok(map + c2h_off, c2h_size)) {
+ 		iounmap(map);
+ 		return 0;
+ 	}
+-	knc_region_is_early = false;
+-	early_iounmap(knc_early_ring, knc_early_ring_len);
+-	early_iounmap(knc_early_hdr, PAGE_SIZE);
++	raw_spin_lock_irqsave(&knc_con_lock, flags);
++	knc_region = map;
++	knc_con = map + c2h_off;
++	knc_con_size = c2h_size;
++	knc_con_head = readl(knc_con + RING_HEAD);
++	if (h2c_size && knc_ring_ok(map + h2c_off, h2c_size)) {
++		knc_in = map + h2c_off;
++		knc_in_size = h2c_size;
++		knc_in_tail = readl(knc_in + RING_TAIL);
++	}
++	raw_spin_unlock_irqrestore(&knc_con_lock, flags);
++	if (knc_region_is_early) {
++		knc_region_is_early = false;
++		early_iounmap(knc_early_ring, knc_early_ring_len);
++		early_iounmap(knc_early_hdr, PAGE_SIZE);
++	}
+ 	if (knc_con_dropped)
+ 		pr_warn("%lu byte(s) dropped before the host drained the ring\n",
+ 			knc_con_dropped);
+diff --git a/arch/x86/kernel/knc_tty.c b/arch/x86/kernel/knc_tty.c
+new file mode 100644
+index 000000000..e1b73a6a9
+--- /dev/null
++++ b/arch/x86/kernel/knc_tty.c
+@@ -0,0 +1,126 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * knc_tty: a tty on the host/card ring, so that init gets /dev/console and
++ * lines typed into "phictl console" on the host reach the card.
++ *
++ * Output goes into the card-to-host console ring through the same path as
++ * the early console (knc_earlycon.c). Input is polled from the host-to-card
++ * ring every 10 ms by a delayed work: v1 of the ring protocol signals
++ * nothing, and a poll that short is invisible next to a human typing.
++ * The console is "ttyPHI0"; console=ttyPHI0 makes it the kernel console and
++ * the boot console (earlyprintk=phiring) is dropped when it registers.
++ */
++
++#define pr_fmt(fmt) "KNC: tty: " fmt
++
++#include <linux/console.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++#include <linux/workqueue.h>
++
++#include <asm/knc.h>
++
++#define KNC_TTY_POLL_MS	10
++
++static struct tty_driver *knc_tty_driver;
++static struct tty_port knc_tty_port;
++static struct delayed_work knc_rx_work;
++
++static void knc_rx_poll(struct work_struct *work)
++{
++	u8 buf[256];
++	int n;
++
++	while ((n = knc_ring_con_read(buf, sizeof(buf))) > 0) {
++		tty_insert_flip_string(&knc_tty_port, buf, n);
++		tty_flip_buffer_push(&knc_tty_port);
++	}
++	schedule_delayed_work(&knc_rx_work, msecs_to_jiffies(KNC_TTY_POLL_MS));
++}
++
++static int knc_tty_open(struct tty_struct *tty, struct file *filp)
++{
++	return tty_port_open(&knc_tty_port, tty, filp);
++}
++
++static void knc_tty_close(struct tty_struct *tty, struct file *filp)
++{
++	tty_port_close(&knc_tty_port, tty, filp);
++}
++
++static ssize_t knc_tty_write(struct tty_struct *tty, const u8 *buf, size_t count)
++{
++	knc_ring_con_write(buf, count);
++	return count;
++}
++
++static unsigned int knc_tty_write_room(struct tty_struct *tty)
++{
++	return 4096;
++}
++
++static const struct tty_operations knc_tty_ops = {
++	.open		= knc_tty_open,
++	.close		= knc_tty_close,
++	.write		= knc_tty_write,
++	.write_room	= knc_tty_write_room,
++};
++
++static const struct tty_port_operations knc_tty_port_ops = {
++};
++
++static void knc_console_write(struct console *co, const char *s, unsigned int n)
++{
++	knc_ring_con_write(s, n);
++}
++
++static struct tty_driver *knc_console_device(struct console *co, int *index)
++{
++	*index = 0;
++	return knc_tty_driver;
++}
++
++static struct console knc_console = {
++	.name	= "ttyPHI",
++	.write	= knc_console_write,
++	.device	= knc_console_device,
++	.flags	= CON_PRINTBUFFER,
++	.index	= -1,
++};
++
++static int __init knc_tty_init(void)
++{
++	struct tty_driver *drv;
++	int ret;
++
++	if (!knc_ring_permanent())
++		return -ENODEV;
++	drv = tty_alloc_driver(1, TTY_DRIVER_REAL_RAW);
++	if (IS_ERR(drv))
++		return PTR_ERR(drv);
++	drv->driver_name = "knc_tty";
++	drv->name = "ttyPHI";
++	drv->type = TTY_DRIVER_TYPE_SERIAL;
++	drv->subtype = SERIAL_TYPE_NORMAL;
++	drv->init_termios = tty_std_termios;
++	drv->init_termios.c_cflag = B115200 | CS8 | CREAD | HUPCL | CLOCAL;
++	tty_port_init(&knc_tty_port);
++	knc_tty_port.ops = &knc_tty_port_ops;
++	tty_port_link_device(&knc_tty_port, drv, 0);
++	tty_set_operations(drv, &knc_tty_ops);
++	ret = tty_register_driver(drv);
++	if (ret) {
++		tty_port_destroy(&knc_tty_port);
++		tty_driver_kref_put(drv);
++		return ret;
++	}
++	knc_tty_driver = drv;
++	INIT_DELAYED_WORK(&knc_rx_work, knc_rx_poll);
++	schedule_delayed_work(&knc_rx_work, msecs_to_jiffies(KNC_TTY_POLL_MS));
++	register_console(&knc_console);
++	pr_info("ttyPHI0 on the ring, polling input every %d ms\n", KNC_TTY_POLL_MS);
++	return 0;
++}
++device_initcall(knc_tty_init);
