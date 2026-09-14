@@ -203,7 +203,9 @@ fn main() -> Result<()> {
         } => {
             let card = open(cli.bdf.as_deref())?;
             card.wait_ready(std::time::Duration::from_secs(20))?;
-            let data = vec![0u8; len];
+            // An address-derived pattern, so the read-back check catches an
+            // aperture that returns zeros or stale data.
+            let data: Vec<u8> = (0..len).map(|i| ((addr as usize + i) as u8) ^ 0x5a).collect();
             let t0 = Instant::now();
             card.write_card_memory_paced(addr, &data, chunk, !no_readback)?;
             println!(
@@ -439,8 +441,15 @@ fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
         anyhow::bail!("ring region beyond card memory");
     }
     let mut mem = ApertureRegion::new(card.aperture(), ring_base as usize, ring_size as usize);
-    let region = Region::open(&mem).context("ring region not formatted at that address (boot first, or check --ring-base)")?;
-    let (producer, consumer) = region.host_endpoints(&mem, ChannelKind::Console)?;
+    // The ring header may not be there yet (or may never be, if the aperture
+    // round trip is broken): tail the POST code regardless and keep retrying.
+    let mut endpoints = Region::open(&mem)
+        .ok()
+        .and_then(|r| r.host_endpoints(&mem, ChannelKind::Console).ok());
+    if endpoints.is_none() {
+        eprintln!("[phictl] ring region at {ring_base:#x} has no valid header; tailing POST codes, retrying the ring every 500 ms");
+    }
+    let mut next_retry = Instant::now() + Duration::from_millis(500);
 
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
@@ -459,7 +468,19 @@ fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
     let start = Instant::now();
     eprintln!("[phictl] console: tailing c2h ring at {ring_base:#x}; Ctrl-C to stop");
     loop {
-        let n = consumer.pop(&mut mem, &mut buf);
+        if endpoints.is_none() && Instant::now() >= next_retry {
+            endpoints = Region::open(&mem)
+                .ok()
+                .and_then(|r| r.host_endpoints(&mem, ChannelKind::Console).ok());
+            if endpoints.is_some() {
+                eprintln!("[phictl] +{:>8.3}s ring region header valid", start.elapsed().as_secs_f64());
+            }
+            next_retry = Instant::now() + Duration::from_millis(500);
+        }
+        let n = match &endpoints {
+            Some((_, consumer)) => consumer.pop(&mut mem, &mut buf),
+            None => 0,
+        };
         if n > 0 {
             out.write_all(&buf[..n])?;
             out.flush()?;
@@ -480,6 +501,7 @@ fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
             last_flags = flags;
         }
         while let Ok(line) = rx.try_recv() {
+            let Some((producer, _)) = &endpoints else { continue };
             let mut bytes = line.as_bytes();
             while !bytes.is_empty() {
                 let w = producer.push(&mut mem, bytes);

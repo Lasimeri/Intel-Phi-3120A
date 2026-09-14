@@ -279,6 +279,13 @@ impl Card {
                 let start = stop.saturating_sub(8).max(addr as usize);
                 let mut probe = [0u8; 8];
                 self.aperture.read_bytes(start, &mut probe[..stop - start]);
+                let want = &data[start - addr as usize..stop - addr as usize];
+                if &probe[..stop - start] != want {
+                    return Err(Error::Range(format!(
+                        "aperture read-back mismatch at {start:#x}: wrote {want:02x?}, read {:02x?}",
+                        &probe[..stop - start]
+                    )));
+                }
             }
             off += n;
         }

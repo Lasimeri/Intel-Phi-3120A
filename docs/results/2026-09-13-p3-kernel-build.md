@@ -132,3 +132,15 @@ the P1 reset trace puts GDDR training at 0.2 to 7.6 s and `12` at 9.3 s
 after a reset. The loader trusted the stale `SPAD2` bit and wrote into
 GDDR during training. Fix: `wait_ready` requires POST `12`, 20-second
 timeout, in the loader and in `peek`, `poke`, `fill`.
+
+## Sixth attempt (03:24 to 03:27): the wait works, the stub is inconclusive
+
+With `wait_ready` keyed on POST `12`: `fill` 4 KiB and 1 MiB (38 ms) and
+`boot --load-only` with the whole 8.7 MB image all passed. The stub boot
+(T2) survived the boot interrupt, but `phictl console` then found the
+ring header at 256 MiB reading back as zeros, exited, and its close
+reset the card before anything could be observed. No aperture round
+trip had been verified until then. Changes: every paced chunk's
+read-back is compared with what was written (loader and `fill`, which
+now writes an address-derived pattern), and the console tails POST codes
+while retrying the ring instead of quitting.
