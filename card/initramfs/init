@@ -1,6 +1,10 @@
 #!/bin/sh
 # init: first process on the card. Mounts the pseudo filesystems, reports
-# what it runs on, and hands the console to a shell. See build.md.
+# what it runs on, and supervises an interactive shell on the console.
+# PID 1 stays this script: busybox's poweroff/halt/reboot signal PID 1
+# (SIGUSR2/SIGUSR1/SIGTERM), the trap turns that into the kernel's power
+# off (the KNC platform layer writes POST "KH" and halts), and a shell that
+# exits is replaced instead of taking init down with it. See build.md.
 /bin/busybox mkdir -p /proc /sys /dev /tmp
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
@@ -12,4 +16,9 @@ echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) 
 /bin/busybox free -m | /bin/busybox head -2
 echo "type 'poweroff' to halt the card"
 echo
-exec /bin/busybox setsid /bin/busybox cttyhack /bin/sh
+trap '/bin/busybox poweroff -f' USR1 USR2 TERM
+while :; do
+	/bin/busybox setsid /bin/busybox cttyhack /bin/sh &
+	wait $!
+	echo "shell exited; starting another ('poweroff' halts the card)"
+done
