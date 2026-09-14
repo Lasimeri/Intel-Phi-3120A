@@ -18,3 +18,4 @@
 0017-x86-knc-expanded-APIC-ID-and-ICR-destination-fields-.patch
 0018-x86-fpu-Knights-Corner-needs-MXCSR.DUE-bit-21-in-eve.patch
 0019-x86-knc-SMP-bring-up-trace-marks-and-a-reliable-TSC.patch
+0020-x86-knc-serial-AP-bring-up-on-Knights-Corner.patch

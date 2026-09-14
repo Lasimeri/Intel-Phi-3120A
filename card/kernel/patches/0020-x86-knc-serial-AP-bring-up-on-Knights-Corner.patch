@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 18:20:28 -0500
+Subject: [PATCH] x86/knc: serial AP bring-up on Knights Corner
+
+With parallel bring-up the first SMP boot never completed: the boot CPU
+kicks all 227 APs within about 2.5 s and they all contend for the
+real-mode trampoline lock with locked read-modify-writes from in-order
+cores that have no PAUSE, starving whichever AP holds it (the card was
+silent for minutes; test 5, 2026-09-14). With cpuhp.parallel=0 all 228
+CPUs come up in about a second (test 8, same day), so parallel mode has
+nothing to offer here: the platform layer clears
+x86_cpuinit.parallel_bringup, the flag arch_cpuhp_init_parallel_bringup
+honours.
+---
+ arch/x86/kernel/knc.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
+index 6d277aba4..b230ba38f 100644
+--- a/arch/x86/kernel/knc.c
++++ b/arch/x86/kernel/knc.c
+@@ -267,6 +267,14 @@ static void __init knc_init_platform(void)
+ 	 */
+ 	setup_force_cpu_cap(X86_FEATURE_TSC_RELIABLE);
+ 
++	/*
++	 * Bring the 227 APs up one at a time: kicked all at once they contend
++	 * for the real-mode trampoline lock with locked read-modify-writes
++	 * from in-order cores without PAUSE, and the first parallel boot never
++	 * completed (test 5, 2026-09-14). Serial bring-up takes about a second.
++	 */
++	x86_cpuinit.parallel_bringup = false;
++
+ 	machine_ops.emergency_restart		= knc_emergency_restart;
+ 	pm_power_off				= knc_power_off;
+ 	atomic_notifier_chain_register(&panic_notifier_list, &knc_panic_nb);
