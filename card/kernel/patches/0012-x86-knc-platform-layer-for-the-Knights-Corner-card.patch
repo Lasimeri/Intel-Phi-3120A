@@ -33,11 +33,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/boot/compressed/misc.c   |  25 +++
  arch/x86/include/asm/hypervisor.h |   1 +
- arch/x86/include/asm/knc.h        |   2 +
+ arch/x86/include/asm/knc.h        |  35 ++++
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
+ arch/x86/kernel/head64.c          |   2 +
+ arch/x86/kernel/head_64.S         |  10 +
  arch/x86/kernel/knc.c             | 318 ++++++++++++++++++++++++++++++
- 6 files changed, 350 insertions(+), 1 deletion(-)
+ arch/x86/kernel/setup.c           |   5 +
+ 9 files changed, 400 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -102,7 +105,7 @@ index 9ad86a7d1..63fa52327 100644
  extern const struct hypervisor_x86 x86_hyper_bhyve;
  extern struct hypervisor_x86 x86_hyper_xen_hvm;
 diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
-index 058061414..2523f9971 100644
+index 058061414..ad11ce48d 100644
 --- a/arch/x86/include/asm/knc.h
 +++ b/arch/x86/include/asm/knc.h
 @@ -17,6 +17,8 @@
@@ -114,6 +117,51 @@ index 058061414..2523f9971 100644
  
  /* DBOX: the POST code register the host reads at BAR4 + 0x242c. */
  #define KNC_DBOX_POSTCODE	0x242c
+@@ -43,6 +45,13 @@
+ #define KNC_POST_HALT		KNC_POST('K', 'H')
+ #define KNC_POST_PANIC		KNC_POST('K', 'P')
+ #define KNC_POST_ERROR		KNC_POST('K', 'E')
++/* Early milestones, before the platform layer (K2). */
++#define KNC_POST_ASM_ENTRY	KNC_POST('K', '8')	/* startup_64 entered (head_64.S) */
++#define KNC_POST_EARLY_C	KNC_POST('K', '9')	/* x86_64_start_kernel, early exceptions set up */
++#define KNC_POST_SETUP_ARCH	KNC_POST('K', 'A')	/* setup_arch entered */
++#define KNC_POST_CPU_INIT	KNC_POST('K', 'B')	/* early_cpu_init done */
++#define KNC_POST_E820		KNC_POST('K', 'C')	/* memory map set up */
++#define KNC_POST_EARLY_PARAM	KNC_POST('K', 'D')	/* early parameters parsed */
+ 
+ #define KNC_MAX_CPUS		256
+ #define KNC_MAX_IOAPICS		4
+@@ -74,4 +83,30 @@ u64 knc_ring_host_epoch_ns(void);
+ /* Platform layer (knc.c). */
+ void knc_postcode(u32 code);
+ 
++#ifndef __ASSEMBLER__
++#include <asm/page.h>
++
++static inline bool knc_is_this_cpu(void)
++{
++	unsigned int eax, ebx, ecx, edx;
++
++	asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
++	return ((eax >> 8) & 0xf) == 0x0b;
++}
++
++/*
++ * Progress code from code that runs before early_ioremap() works. The DBOX
++ * page is reached through its direct-map address; the early page-fault
++ * handler maps such addresses on demand (head64.c), and the bootstrap's
++ * MTRRs keep the block uncached (the decompressor writes the same register
++ * through a cacheable identity map and the host sees it). Usable from
++ * x86_64_start_kernel() after idt_setup_early_handler().
++ */
++static inline void knc_early_post(u32 code)
++{
++	if (IS_ENABLED(CONFIG_X86_KNC) && knc_is_this_cpu())
++		*(volatile u32 *)__va(KNC_DBOX_PHYS + KNC_DBOX_POSTCODE) = code;
++}
++#endif /* !__ASSEMBLER__ */
++
+ #endif /* _ASM_X86_KNC_H */
 diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
 index d33d62fe9..20784d975 100644
 --- a/arch/x86/kernel/Makefile
@@ -141,6 +189,47 @@ index f3e921984..d8b443498 100644
  #ifdef CONFIG_ACRN_GUEST
  	&x86_hyper_acrn,
  #endif
+diff --git a/arch/x86/kernel/head64.c b/arch/x86/kernel/head64.c
+index fd28b53db..2665b6b12 100644
+--- a/arch/x86/kernel/head64.c
++++ b/arch/x86/kernel/head64.c
+@@ -42,6 +42,7 @@
+ #include <asm/sev.h>
+ #include <asm/tdx.h>
+ #include <asm/init.h>
++#include <asm/knc.h>
+ 
+ /*
+  * Manage page tables very early on.
+@@ -274,6 +275,7 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
+ 	__native_tlb_flush_global(this_cpu_read(cpu_tlbstate.cr4));
+ 
+ 	idt_setup_early_handler();
++	knc_early_post(KNC_POST_EARLY_C);
+ 
+ 	/* Needed before cc_platform_has() can be used for TDX */
+ 	tdx_early_init();
+diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
+index f882849c3..59086f8ad 100644
+--- a/arch/x86/kernel/head_64.S
++++ b/arch/x86/kernel/head_64.S
+@@ -61,6 +61,16 @@ SYM_CODE_START_NOALIGN(startup_64)
+ 	/* Set up the stack for verify_cpu() */
+ 	leaq	__top_init_kernel_stack(%rip), %rsp
+ 
++#ifdef CONFIG_X86_KNC
++	/*
++	 * Knights Corner: progress code "K8" into the DBOX POST register. The
++	 * decompressor's identity map, which already touched that page, is
++	 * still the live page table here.
++	 */
++	movabsq	$0x8007C242C, %rdi
++	movl	$0x384B, (%rdi)
++#endif
++
+ 	/*
+ 	 * Set up GSBASE.
+ 	 * Note that on SMP the boot CPU uses the init data section until
 diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
 new file mode 100644
 index 000000000..c4fe04590
@@ -465,3 +554,47 @@ index 000000000..c4fe04590
 +	.init.init_platform	= knc_init_platform,
 +	.ignore_nopv		= true,
 +};
+diff --git a/arch/x86/kernel/setup.c b/arch/x86/kernel/setup.c
+index 46882ce79..7f9977bbb 100644
+--- a/arch/x86/kernel/setup.c
++++ b/arch/x86/kernel/setup.c
+@@ -56,6 +56,7 @@
+ #include <asm/realmode.h>
+ #include <asm/thermal.h>
+ #include <asm/unwind.h>
++#include <asm/knc.h>
+ #include <asm/vsyscall.h>
+ 
+ /*
+@@ -907,6 +908,7 @@ void __init setup_arch(char **cmdline_p)
+ 	__flush_tlb_all();
+ #else
+ 	printk(KERN_INFO "Command line: %s\n", boot_command_line);
++	knc_early_post(KNC_POST_SETUP_ARCH);
+ 	boot_cpu_data.x86_phys_bits = MAX_PHYSMEM_BITS;
+ #endif
+ 
+@@ -935,6 +937,7 @@ void __init setup_arch(char **cmdline_p)
+ 
+ 	idt_setup_early_traps();
+ 	early_cpu_init();
++	knc_early_post(KNC_POST_CPU_INIT);
+ 	jump_label_init();
+ 	static_call_init();
+ 	early_ioremap_init();
+@@ -961,6 +964,7 @@ void __init setup_arch(char **cmdline_p)
+ 
+ 	iomem_resource.end = (1ULL << boot_cpu_data.x86_phys_bits) - 1;
+ 	e820__memory_setup();
++	knc_early_post(KNC_POST_E820);
+ 	parse_setup_data();
+ 
+ 	copy_edd();
+@@ -975,6 +979,7 @@ void __init setup_arch(char **cmdline_p)
+ 	x86_configure_nx();
+ 
+ 	parse_early_param();
++	knc_early_post(KNC_POST_EARLY_PARAM);
+ 
+ 	if (efi_enabled(EFI_BOOT))
+ 		efi_memblock_x86_reserve_range();

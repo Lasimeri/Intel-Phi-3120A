@@ -20,12 +20,15 @@ be kept. The region header's card_boot_flags bit 0 is set on attach,
 which gives the host a "kernel alive" signal before the first line, and
 host_epoch_ns from the same header is exported for the wall clock.
 
+early_ioremap() maps at most 256 KiB at a time, so the header page and
+the console ring are mapped separately until ioremap() takes over.
+
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/kernel/Makefile       |   2 +-
  arch/x86/kernel/early_printk.c |  11 ++
- arch/x86/kernel/knc_earlycon.c | 220 +++++++++++++++++++++++++++++++++
- 3 files changed, 232 insertions(+), 1 deletion(-)
+ arch/x86/kernel/knc_earlycon.c | 260 +++++++++++++++++++++++++++++++++
+ 3 files changed, 272 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc_earlycon.c
 
 diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
@@ -72,10 +75,10 @@ index cba75306e..cc17550f0 100644
  	}
 diff --git a/arch/x86/kernel/knc_earlycon.c b/arch/x86/kernel/knc_earlycon.c
 new file mode 100644
-index 000000000..cc1cefd48
+index 000000000..799bae89e
 --- /dev/null
 +++ b/arch/x86/kernel/knc_earlycon.c
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,260 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Early console into the host/card shared-memory ring for Knights Corner.
@@ -107,6 +110,7 @@ index 000000000..cc1cefd48
 +#include <linux/init.h>
 +#include <linux/io.h>
 +#include <linux/kernel.h>
++#include <linux/sizes.h>
 +#include <linux/string.h>
 +
 +#include <asm/barrier.h>
@@ -145,6 +149,9 @@ index 000000000..cc1cefd48
 +static u32 knc_con_head;
 +static unsigned long knc_con_dropped;
 +static bool knc_region_is_early;	/* mapped with early_ioremap() */
++static void __iomem *knc_early_hdr;	/* first page of the region */
++static void __iomem *knc_early_ring;	/* the console card-to-host ring */
++static u32 knc_early_ring_len;
 +
 +/**
 + * knc_ring_params() - Read phi.ring=<base>,<size> from the boot command line.
@@ -239,24 +246,60 @@ index 000000000..cc1cefd48
 + */
 +int __init knc_earlycon_init(void)
 +{
-+	void __iomem *map;
++	void __iomem *hdr, *ring;
++	u32 count, i, off = 0, size = 0;
 +
 +	if (knc_con)
 +		return 0;
 +	if (!knc_ring_params(&knc_ring_base, &knc_ring_size))
 +		return -ENODEV;
-+	map = early_ioremap(knc_ring_base, knc_ring_size);
-+	if (!map)
++	/*
++	 * early_ioremap() maps at most 256 KiB at a time, less than the
++	 * region: map the header page and the console ring separately.
++	 */
++	hdr = early_ioremap(knc_ring_base, PAGE_SIZE);
++	if (!hdr)
 +		return -ENOMEM;
-+	if (!knc_ring_attach(map)) {
-+		early_iounmap(map, knc_ring_size);
-+		return -ENODEV;
++	if (readl(hdr + REGION_MAGIC) != PHI_REGION_MAGIC ||
++	    readl(hdr + REGION_VERSION) != PHI_REGION_VERSION)
++		goto bad;
++	count = readl(hdr + REGION_CHANNEL_COUNT);
++	if (count > 16)
++		goto bad;
++	for (i = 0; i < count; i++) {
++		void __iomem *desc = hdr + REGION_DESC(i);
++
++		if (readl(desc + DESC_KIND) != PHI_CHANNEL_CONSOLE)
++			continue;
++		off = readl(desc + DESC_C2H_OFFSET);
++		size = readl(desc + DESC_C2H_SIZE);
++		break;
 +	}
++	if (!size || (size & (size - 1)) || size > SZ_128K ||
++	    (u64)off + RING_DATA + size > knc_ring_size)
++		goto bad;
++	ring = early_ioremap(knc_ring_base + off, RING_DATA + size);
++	if (!ring)
++		goto bad;
++	if (readl(ring + RING_MAGIC) != PHI_RING_MAGIC || readl(ring + RING_SIZE) != size) {
++		early_iounmap(ring, RING_DATA + size);
++		goto bad;
++	}
++	knc_early_hdr = hdr;
++	knc_early_ring = ring;
++	knc_early_ring_len = RING_DATA + size;
++	knc_region = hdr;
++	knc_con = ring;
++	knc_con_size = size;
++	knc_con_head = readl(ring + RING_HEAD);
 +	knc_region_is_early = true;
 +	/* Tell the host the kernel is alive before the first line arrives. */
-+	writeq(readq(map + REGION_CARD_BOOT_FLAGS) | CARD_BOOT_FLAG_KERNEL,
-+	       map + REGION_CARD_BOOT_FLAGS);
++	writeq(readq(hdr + REGION_CARD_BOOT_FLAGS) | CARD_BOOT_FLAG_KERNEL,
++	       hdr + REGION_CARD_BOOT_FLAGS);
 +	return 0;
++bad:
++	early_iounmap(hdr, PAGE_SIZE);
++	return -ENODEV;
 +}
 +
 +/* Host wall clock at boot, written by the loader into the region header. */
@@ -274,7 +317,7 @@ index 000000000..cc1cefd48
 + */
 +static int __init knc_earlycon_remap(void)
 +{
-+	void __iomem *map, *old;
++	void __iomem *map;
 +
 +	if (!knc_region || !knc_region_is_early)
 +		return 0;
@@ -283,13 +326,13 @@ index 000000000..cc1cefd48
 +		pr_warn("ioremap failed; console stays on the early mapping\n");
 +		return 0;
 +	}
-+	old = knc_region;
 +	if (!knc_ring_attach(map)) {
 +		iounmap(map);
 +		return 0;
 +	}
 +	knc_region_is_early = false;
-+	early_iounmap(old, knc_ring_size);
++	early_iounmap(knc_early_ring, knc_early_ring_len);
++	early_iounmap(knc_early_hdr, PAGE_SIZE);
 +	if (knc_con_dropped)
 +		pr_warn("%lu byte(s) dropped before the host drained the ring\n",
 +			knc_con_dropped);
