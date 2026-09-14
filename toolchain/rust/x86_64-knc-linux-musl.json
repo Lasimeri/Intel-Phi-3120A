@@ -1,7 +1,7 @@
 {
   "arch": "x86_64",
   "cpu": "x86-64",
-  "crt-objects-fallback": "musl",
+  "crt-objects-fallback": "false",
   "crt-static-default": true,
   "crt-static-respected": true,
   "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
@@ -22,33 +22,7 @@
   },
   "os": "linux",
   "plt-by-default": false,
-  "position-independent-executables": true,
-  "post-link-objects-fallback": {
-    "dynamic-dylib": [
-      "crtendS.o",
-      "crtn.o"
-    ],
-    "dynamic-nopic-exe": [
-      "crtend.o",
-      "crtn.o"
-    ],
-    "dynamic-pic-exe": [
-      "crtendS.o",
-      "crtn.o"
-    ],
-    "static-dylib": [
-      "crtendS.o",
-      "crtn.o"
-    ],
-    "static-nopic-exe": [
-      "crtend.o",
-      "crtn.o"
-    ],
-    "static-pic-exe": [
-      "crtendS.o",
-      "crtn.o"
-    ]
-  },
+  "position-independent-executables": false,
   "pre-link-args": {
     "gnu-cc": [
       "-m64"
@@ -57,41 +31,11 @@
       "-m64"
     ]
   },
-  "pre-link-objects-fallback": {
-    "dynamic-dylib": [
-      "crti.o",
-      "crtbeginS.o"
-    ],
-    "dynamic-nopic-exe": [
-      "crt1.o",
-      "crti.o",
-      "crtbegin.o"
-    ],
-    "dynamic-pic-exe": [
-      "Scrt1.o",
-      "crti.o",
-      "crtbeginS.o"
-    ],
-    "static-dylib": [
-      "crti.o",
-      "crtbeginS.o"
-    ],
-    "static-nopic-exe": [
-      "crt1.o",
-      "crti.o",
-      "crtbegin.o"
-    ],
-    "static-pic-exe": [
-      "rcrt1.o",
-      "crti.o",
-      "crtbeginS.o"
-    ]
-  },
   "relro-level": "full",
   "stack-probes": {
     "kind": "inline"
   },
-  "static-position-independent-executables": true,
+  "static-position-independent-executables": false,
   "supported-sanitizers": [
     "address",
     "leak",
@@ -112,5 +56,6 @@
   "target-pointer-width": 64,
   "vendor": "knc",
   "features": "-sse,-mmx,-cmov,-nopl,-movbe,-popcnt,-lzcnt,-bmi1,-bmi2,-xsave,-cmpxchg16b,-prfchw,-clflushopt,-rdrand,-rdseed,-adx,-fsgsbase,-pclmulqdq,-aes,-sha,+x87",
-  "panic-strategy": "abort"
+  "panic-strategy": "abort",
+  "relocation-model": "static"
 }

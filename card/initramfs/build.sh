@@ -48,6 +48,17 @@ fi
 # generated on the host by card/userland/components/dropbear.sh (stable
 # fingerprint across card boots), and the user's public keys for root.
 # Password logins are off (dropbear -s), so without a key nothing can log in.
+# phi-agent: the card end of phictl exec/put/get/status over /dev/phirpc
+# (card/agent/build.sh; kernel patch 0022).
+agent="$phi_build/userland/agent/phi-agent"
+if [ -x "$agent" ]; then
+	cp "$agent" "$root/bin/phi-agent"
+	chmod 755 "$root/bin/phi-agent"
+	echo "phi-agent: installed"
+else
+	echo "phi-agent: not built (card/agent/build.sh); phictl exec will not work with this image"
+fi
+
 dropbear="$phi_build/userland/dropbear"
 if [ -x "$dropbear/dropbearmulti" ]; then
 	cp "$dropbear/dropbearmulti" "$root/bin/dropbearmulti"

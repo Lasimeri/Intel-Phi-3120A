@@ -1,0 +1,19 @@
+[package]
+name = "phi-agent"
+description = "Card-side agent: runs commands and moves files for phictl over /dev/phirpc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+phi-rpc = { path = "../../host/crates/phi-rpc" }
+libc = "0.2"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+strip = true
+
+[profile.dev]
+panic = "abort"

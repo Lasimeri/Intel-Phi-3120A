@@ -1,0 +1,11 @@
+# Cargo settings for the card agent: the card target spec, std built from
+# source (no prebuilt std exists for a custom target), and knc-cc as the
+# linker. build.sh sets RUSTC_BOOTSTRAP=1 and the patched LLVM dylib.
+[build]
+target = "../../toolchain/rust/x86_64-knc-linux-musl.json"
+
+[unstable]
+build-std = ["core", "alloc", "std", "panic_abort"]
+
+[target.x86_64-knc-linux-musl]
+linker = "../../toolchain/clang/knc-cc"

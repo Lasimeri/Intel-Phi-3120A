@@ -1,0 +1,9 @@
+[package]
+name = "phi-rpc"
+description = "Message framing for the host/card rpc channel (commands, files)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

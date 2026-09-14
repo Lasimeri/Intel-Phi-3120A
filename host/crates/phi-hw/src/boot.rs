@@ -52,7 +52,7 @@ pub struct BootReport {
 }
 
 /// Default ring plan used by `phictl boot`.
-pub const DEFAULT_CHANNELS: [ChannelPlan; 2] = [
+pub const DEFAULT_CHANNELS: [ChannelPlan; 3] = [
     ChannelPlan {
         kind: ChannelKind::Console,
         h2c_size: 4096,
@@ -60,6 +60,11 @@ pub const DEFAULT_CHANNELS: [ChannelPlan; 2] = [
     },
     ChannelPlan {
         kind: ChannelKind::Network,
+        h2c_size: 262_144,
+        c2h_size: 262_144,
+    },
+    ChannelPlan {
+        kind: ChannelKind::Rpc,
         h2c_size: 262_144,
         c2h_size: 262_144,
     },

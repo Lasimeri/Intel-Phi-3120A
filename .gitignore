@@ -26,6 +26,8 @@
 
 # Card-target build products of the P2 check crate
 toolchain/check/hello_rs/target
+# Card-target build products of the agent (std built from source, 200 MB)
+card/agent/target
 
 # initramfs extra files are build products (see card/initramfs/extra/README.md)
 card/initramfs/extra/*

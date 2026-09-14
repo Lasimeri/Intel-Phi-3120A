@@ -303,6 +303,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "phi-rpc"
+version = "0.1.0"
+
+[[package]]
 name = "phi-vfio"
 version = "0.1.0"
 dependencies = [
@@ -324,6 +328,7 @@ dependencies = [
  "phi-hw",
  "phi-regs",
  "phi-ring",
+ "phi-rpc",
  "phi-vfio",
 ]
 

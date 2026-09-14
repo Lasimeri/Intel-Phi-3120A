@@ -7,6 +7,7 @@ members = [
     "crates/phi-vfio",
     "crates/phi-hw",
     "crates/phi-ring",
+    "crates/phi-rpc",
     "crates/phictl",
     "crates/phi-isa-audit",
 ]

@@ -16,3 +16,14 @@ Produces `x86_64-knc-linux-musl.json` from the installed compiler:
 Re-run after every rustc upgrade; `build-std.sh` fails with "error
 loading target specification" when the file is stale. `jq` is in the
 `setup-arch.sh` package list.
+
+2026-09-14: executables. The built-in musl spec lets rustc supply its own
+start files (`crt-objects-fallback = "musl"`, `pre/post-link-objects-fallback`)
+and link static-PIE, which only works with rustc's bundled targets. For the
+card, `knc-cc` and the musl sysroot provide `crt1.o`, `crti.o`, `crtn.o` and
+`libc.a`, so the generator now sets `crt-objects-fallback = "false"`, drops
+the fallback object lists, and links plain static, non-PIE
+(`position-independent-executables = false`,
+`static-position-independent-executables = false`,
+`relocation-model = "static"`). Static libraries (the P2 check) were never
+affected; `card/agent` is the first executable.

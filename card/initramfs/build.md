@@ -19,6 +19,9 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
   `dbclient`, `scp`, `ssh`), host keys under `/etc/dropbear`, and the
   user's public keys as `/root/.ssh/authorized_keys` (`PHI_SSH_PUBKEYS`
   overrides the default `~/.ssh/id_*.pub` list).
+- `phi-agent` (`card/agent/build.sh`), started by `init` on `/dev/phirpc`:
+  the card end of `phictl exec`, `put`, `get` and `status`
+  (`docs/decisions/0008-direct-access-tool.md`).
 - Files under `card/initramfs/extra/` are copied in at the same paths
   (`extra/opt/hello` becomes `/opt/hello`), each ELF audited first; the
   directory is git-ignored except for its README. This is how programs

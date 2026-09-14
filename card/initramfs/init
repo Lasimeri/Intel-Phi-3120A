@@ -32,11 +32,18 @@ if [ -x /bin/dropbear ]; then
 else
 	sshd="no SSH server in this image"
 fi
+if [ -x /bin/phi-agent ] && [ -c /dev/phirpc ]; then
+	# The card end of phictl exec/put/get/status (kernel patch 0022).
+	/bin/phi-agent 2>/dev/console &
+	agent="phi-agent on /dev/phirpc"
+else
+	agent="no phi-agent"
+fi
 echo
 echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) online"
 /bin/busybox grep -m1 "model name" /proc/cpuinfo
 /bin/busybox free -m | /bin/busybox head -2
-echo "network: $net; $sshd"
+echo "network: $net; $sshd; $agent"
 echo "type 'poweroff' to halt the card"
 echo
 trap '/bin/busybox poweroff -f' USR1 USR2 TERM

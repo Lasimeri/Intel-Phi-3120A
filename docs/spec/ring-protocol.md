@@ -89,3 +89,28 @@ The kernel's early console (`card/kernel/platform/knc_earlycon.c`) writes
 into the console `c2h` ring directly, before `phinet` loads, using the same
 layout. The host's `phictl console` command tails it. This is how the first
 kernel message reaches the host.
+
+## Rpc channel (kind 3)
+
+Added 2026-09-14 for the host tool that drives the card without SSH
+(`docs/decisions/0008-direct-access-tool.md`). Two byte rings like the
+others; the payload is a stream of frames defined by `host/crates/phi-rpc`:
+
+```
+frame  := u32 length (little-endian, of tag plus body) | u8 tag | body
+string := u16 length | UTF-8 bytes
+```
+
+Tags: 1 Exec (u16 argc, strings; u16 envc, key/value strings; cwd string,
+empty for none), 2 Stdin (bytes), 3 StdinEof, 4 Stdout (bytes), 5 Stderr
+(bytes), 6 Exit (u32 status), 7 PutOpen (path string, u32 mode), 8 PutData
+(bytes), 9 PutClose, 10 Get (path string), 11 GetData (bytes), 12 GetEnd
+(u64 size), 13 Error (string), 14 Ping, 15 Pong (version string). Frames are
+at most 1 MiB. One session at a time: the host sends a request (Exec,
+PutOpen, Get or Ping) and the card answers with frames ending in Exit,
+GetEnd, Pong or Error.
+
+On the card the channel is `/dev/phirpc` (kernel patch 0022); on the host
+`phictl boot --serve` reads and writes the rings through `phi-ring`. The
+default plan gives the channel 256 KiB per direction, which is why the
+region grew from 1 MiB to 2 MiB (`phictl --ring-size` default `0x200000`).

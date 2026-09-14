@@ -73,6 +73,8 @@ pub enum ChannelKind {
     Console = 1,
     /// Length-prefixed Ethernet frames.
     Network = 2,
+    /// Framed rpc messages for the host tool (phi-rpc): commands and files.
+    Rpc = 3,
 }
 
 impl ChannelKind {
@@ -81,6 +83,7 @@ impl ChannelKind {
         match v {
             1 => Some(Self::Console),
             2 => Some(Self::Network),
+            3 => Some(Self::Rpc),
             _ => None,
         }
     }

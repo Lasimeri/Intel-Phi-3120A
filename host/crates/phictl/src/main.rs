@@ -19,7 +19,9 @@ use phi_regs::memory;
 use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
 
+mod client;
 mod net;
+mod serve;
 
 /// Control the Intel Xeon Phi 3120A.
 #[derive(Parser, Debug)]
@@ -73,7 +75,7 @@ enum Cmd {
         #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
         ring_base: u64,
         /// Size of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x100000")]
+        #[arg(long, value_parser = parse_u64, default_value = "0x200000")]
         ring_size: u64,
         /// Use the command line exactly as given (no memmap/phi.ring parameters).
         #[arg(long)]
@@ -96,6 +98,14 @@ enum Cmd {
         /// IPv4 address with prefix length assigned to the TAP device.
         #[arg(long, default_value = "10.9.0.1/24")]
         net_addr: String,
+        /// Also serve the local control socket at this path (default
+        /// /run/phictl/control.sock) so that exec, put, get and status can
+        /// drive the card from an unprivileged shell of the owner.
+        #[arg(long, num_args = 0..=1, default_missing_value = serve::DEFAULT_SOCKET)]
+        serve: Option<PathBuf>,
+        /// Uid allowed to use the control socket (default: SUDO_UID, else root).
+        #[arg(long)]
+        owner: Option<u32>,
     },
     /// Read a few bytes of card memory through the BAR0 aperture and print
     /// them. A single non-posted read, for testing the aperture in isolation.
@@ -139,7 +149,7 @@ enum Cmd {
         #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
         ring_base: u64,
         /// Size of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x100000")]
+        #[arg(long, value_parser = parse_u64, default_value = "0x200000")]
         ring_size: u64,
         /// Also watch a 32-bit word in card memory and print changes.
         #[arg(long, value_parser = parse_u64)]
@@ -151,6 +161,49 @@ enum Cmd {
         #[arg(long, default_value = "10.9.0.1/24")]
         net_addr: String,
     },
+    /// Run a command on the card through the control socket; stdin, stdout,
+    /// stderr and the exit status are relayed.
+    Exec {
+        /// Control socket of a running `phictl boot --serve`.
+        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        /// Working directory on the card.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Program and arguments, as on the card.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Copy a local file to the card.
+    Put {
+        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        /// Local file.
+        src: PathBuf,
+        /// Destination path on the card.
+        dst: String,
+        /// File mode on the card (octal); default: the local file's mode.
+        #[arg(long, value_parser = parse_mode)]
+        mode: Option<u32>,
+    },
+    /// Copy a file from the card.
+    Get {
+        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        /// Path on the card.
+        src: String,
+        /// Local destination file.
+        dst: PathBuf,
+    },
+    /// Check that the card agent answers on the control socket.
+    Status {
+        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
+        socket: PathBuf,
+    },
+}
+
+fn parse_mode(s: &str) -> std::result::Result<u32, String> {
+    u32::from_str_radix(s, 8).map_err(|e| format!("octal mode expected: {e}"))
 }
 
 fn parse_u64(s: &str) -> std::result::Result<u64, String> {
@@ -193,6 +246,8 @@ fn main() -> Result<()> {
             watch,
             net,
             net_addr,
+            serve,
+            owner,
         } => cmd_boot(
             cli.bdf.as_deref(),
             kernel,
@@ -205,6 +260,7 @@ fn main() -> Result<()> {
             load_only,
             watch,
             net.map(|n| (n, net_addr)),
+            serve.map(|p| (p, owner.unwrap_or_else(serve::default_owner))),
         ),
         Cmd::Peek { addr, len } => {
             let card = open(cli.bdf.as_deref())?;
@@ -252,6 +308,13 @@ fn main() -> Result<()> {
             let card = open(cli.bdf.as_deref())?;
             console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)))
         }
+        Cmd::Exec { socket, cwd, argv } => {
+            let code = client::exec(&socket, cwd, argv)?;
+            std::process::exit(code);
+        }
+        Cmd::Put { socket, src, dst, mode } => client::put(&socket, &src, dst, mode),
+        Cmd::Get { socket, src, dst } => client::get(&socket, src, &dst),
+        Cmd::Status { socket } => client::status(&socket),
     }
 }
 
@@ -427,6 +490,7 @@ fn cmd_boot(
     load_only: bool,
     watch: Option<u64>,
     net: Option<(String, String)>,
+    serve: Option<(PathBuf, u32)>,
 ) -> Result<()> {
     let card = open(bdf)?;
     let kernel_bytes = std::fs::read(&kernel).with_context(|| format!("reading {}", kernel.display()))?;
@@ -464,7 +528,18 @@ fn cmd_boot(
     }
     println!("  ring      {ring_size:#x} bytes at {ring_base:#x}");
     if follow {
-        console(&card, ring_base, ring_size, watch, net)
+        thread::scope(|s| {
+            if let Some((socket, owner)) = &serve {
+                let listener = serve::bind(socket, *owner)?;
+                let card = &card;
+                s.spawn(move || {
+                    if let Err(e) = serve::run(card, ring_base, ring_size, listener, *owner) {
+                        eprintln!("[phictl] serve: {e:#}");
+                    }
+                });
+            }
+            console(&card, ring_base, ring_size, watch, net)
+        })
     } else {
         Ok(())
     }

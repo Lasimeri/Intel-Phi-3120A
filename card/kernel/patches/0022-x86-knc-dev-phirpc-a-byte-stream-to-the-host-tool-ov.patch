@@ -1,0 +1,435 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 18:52:29 -0500
+Subject: [PATCH] x86/knc: /dev/phirpc, a byte stream to the host tool over
+ ring channel 3
+
+The host's phictl daemon and the card's agent exchange framed messages
+(commands with their input and output, files) through the ring
+region's kind-3 channel. This misc device exposes its two rings as a
+file: read() returns bytes the host published, write() appends bytes
+for the host, poll() waits for either, one opener at a time, polling
+every jiffy while open. The ring copy helpers and the channel lookup
+move from the network device into asm/knc_ring.h for both to share.
+---
+ arch/x86/include/asm/knc_ring.h |  65 +++++++++
+ arch/x86/kernel/Makefile        |   2 +-
+ arch/x86/kernel/knc_net.c       |  53 +-------
+ arch/x86/kernel/knc_rpc.c       | 229 ++++++++++++++++++++++++++++++++
+ 4 files changed, 297 insertions(+), 52 deletions(-)
+ create mode 100644 arch/x86/kernel/knc_rpc.c
+
+diff --git a/arch/x86/include/asm/knc_ring.h b/arch/x86/include/asm/knc_ring.h
+index faf3d416c..f9be57011 100644
+--- a/arch/x86/include/asm/knc_ring.h
++++ b/arch/x86/include/asm/knc_ring.h
+@@ -16,6 +16,7 @@
+ #define PHI_REGION_VERSION	1
+ #define PHI_CHANNEL_CONSOLE	1
+ #define PHI_CHANNEL_NETWORK	2
++#define PHI_CHANNEL_RPC		3	/* command and file transport for the host tool */
+ 
+ /* Region header at offset 0. */
+ #define REGION_MAGIC		0
+@@ -49,4 +50,68 @@
+ #define PHI_NET_HDR		2
+ #define PHI_NET_ALIGN		4
+ 
++#ifndef __ASSEMBLER__
++#include <linux/io.h>
++#include <linux/minmax.h>
++
++/* Copy len bytes out of a ring starting at free-running index pos. */
++static inline void knc_ring_read(void __iomem *ring, u32 size, u32 pos, void *buf, u32 len)
++{
++	u32 off = pos & (size - 1);
++	u32 first = min(len, size - off);
++
++	memcpy_fromio(buf, ring + RING_DATA + off, first);
++	if (len > first)
++		memcpy_fromio(buf + first, ring + RING_DATA, len - first);
++}
++
++/* Copy len bytes into a ring starting at free-running index pos. */
++static inline void knc_ring_write(void __iomem *ring, u32 size, u32 pos, const void *buf, u32 len)
++{
++	u32 off = pos & (size - 1);
++	u32 first = min(len, size - off);
++
++	memcpy_toio(ring + RING_DATA + off, buf, first);
++	if (len > first)
++		memcpy_toio(ring + RING_DATA, buf + first, len - first);
++}
++
++/* A ring is usable when its header agrees with the descriptor. */
++static inline bool knc_ring_valid(void __iomem *ring, u32 size)
++{
++	return size && !(size & (size - 1)) && readl(ring + RING_MAGIC) == PHI_RING_MAGIC &&
++	       readl(ring + RING_SIZE) == size;
++}
++
++/*
++ * knc_ring_find() - Locate a channel of the given kind in a mapped region.
++ * Returns true and the ring offsets and sizes when both rings validate.
++ */
++static inline bool knc_ring_find(void __iomem *region, u64 region_size, u32 kind,
++				 u32 *h2c_off, u32 *h2c_size, u32 *c2h_off, u32 *c2h_size)
++{
++	u32 count, i;
++
++	if (readl(region + REGION_MAGIC) != PHI_REGION_MAGIC)
++		return false;
++	count = min_t(u32, readl(region + REGION_CHANNEL_COUNT), 8);
++	for (i = 0; i < count; i++) {
++		void __iomem *desc = region + REGION_DESC(i);
++
++		if (readl(desc + DESC_KIND) != kind)
++			continue;
++		*h2c_off = readl(desc + DESC_H2C_OFFSET);
++		*h2c_size = readl(desc + DESC_H2C_SIZE);
++		*c2h_off = readl(desc + DESC_C2H_OFFSET);
++		*c2h_size = readl(desc + DESC_C2H_SIZE);
++		return *h2c_size && *c2h_size &&
++		       (u64)*h2c_off + RING_DATA + *h2c_size <= region_size &&
++		       (u64)*c2h_off + RING_DATA + *c2h_size <= region_size &&
++		       knc_ring_valid(region + *h2c_off, *h2c_size) &&
++		       knc_ring_valid(region + *c2h_off, *c2h_size);
++	}
++	return false;
++}
++#endif /* !__ASSEMBLER__ */
++
+ #endif /* _ASM_X86_KNC_RING_H */
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 1381dbaf6..7be738c6e 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_net.c b/arch/x86/kernel/knc_net.c
+index 5fdedfd09..394b1ad91 100644
+--- a/arch/x86/kernel/knc_net.c
++++ b/arch/x86/kernel/knc_net.c
+@@ -44,28 +44,6 @@ struct knc_net {
+ 	struct delayed_work poll;
+ };
+ 
+-/* Copy len bytes out of a ring starting at free-running index pos. */
+-static void knc_ring_read(void __iomem *ring, u32 size, u32 pos, void *buf, u32 len)
+-{
+-	u32 off = pos & (size - 1);
+-	u32 first = min(len, size - off);
+-
+-	memcpy_fromio(buf, ring + RING_DATA + off, first);
+-	if (len > first)
+-		memcpy_fromio(buf + first, ring + RING_DATA, len - first);
+-}
+-
+-/* Copy len bytes into a ring starting at free-running index pos. */
+-static void knc_ring_write(void __iomem *ring, u32 size, u32 pos, const void *buf, u32 len)
+-{
+-	u32 off = pos & (size - 1);
+-	u32 first = min(len, size - off);
+-
+-	memcpy_toio(ring + RING_DATA + off, buf, first);
+-	if (len > first)
+-		memcpy_toio(ring + RING_DATA, buf + first, len - first);
+-}
+-
+ static void knc_net_poll(struct work_struct *work)
+ {
+ 	struct knc_net *p = container_of(work, struct knc_net, poll.work);
+@@ -177,13 +155,6 @@ static const struct net_device_ops knc_net_ops = {
+ 	.ndo_validate_addr = eth_validate_addr,
+ };
+ 
+-/* A ring is usable when its header agrees with the descriptor. */
+-static bool knc_ring_valid(void __iomem *ring, u32 size)
+-{
+-	return size && !(size & (size - 1)) && readl(ring + RING_MAGIC) == PHI_RING_MAGIC &&
+-	       readl(ring + RING_SIZE) == size;
+-}
+-
+ static int __init knc_net_init(void)
+ {
+ 	static const u8 mac[ETH_ALEN] = { 0x02, 0x50, 0x48, 0x49, 0x00, 0x02 };
+@@ -191,7 +162,7 @@ static int __init knc_net_init(void)
+ 	struct net_device *dev;
+ 	struct knc_net *p;
+ 	u64 base, size;
+-	u32 count, i, h2c_off = 0, h2c_size = 0, c2h_off = 0, c2h_size = 0;
++	u32 h2c_off, h2c_size, c2h_off, c2h_size;
+ 	int err;
+ 
+ 	if (!knc_ring_params(&base, &size))
+@@ -199,27 +170,7 @@ static int __init knc_net_init(void)
+ 	region = ioremap(base, size);
+ 	if (!region)
+ 		return -ENOMEM;
+-	if (readl(region + REGION_MAGIC) != PHI_REGION_MAGIC) {
+-		err = -ENODEV;
+-		goto out_unmap;
+-	}
+-	count = min_t(u32, readl(region + REGION_CHANNEL_COUNT), 8);
+-	for (i = 0; i < count; i++) {
+-		void __iomem *desc = region + REGION_DESC(i);
+-
+-		if (readl(desc + DESC_KIND) != PHI_CHANNEL_NETWORK)
+-			continue;
+-		h2c_off = readl(desc + DESC_H2C_OFFSET);
+-		h2c_size = readl(desc + DESC_H2C_SIZE);
+-		c2h_off = readl(desc + DESC_C2H_OFFSET);
+-		c2h_size = readl(desc + DESC_C2H_SIZE);
+-		break;
+-	}
+-	if (!h2c_size || !c2h_size ||
+-	    (u64)h2c_off + RING_DATA + h2c_size > size ||
+-	    (u64)c2h_off + RING_DATA + c2h_size > size ||
+-	    !knc_ring_valid(region + h2c_off, h2c_size) ||
+-	    !knc_ring_valid(region + c2h_off, c2h_size)) {
++	if (!knc_ring_find(region, size, PHI_CHANNEL_NETWORK, &h2c_off, &h2c_size, &c2h_off, &c2h_size)) {
+ 		pr_info("KNC: net: no usable network channel in the ring region\n");
+ 		err = -ENODEV;
+ 		goto out_unmap;
+diff --git a/arch/x86/kernel/knc_rpc.c b/arch/x86/kernel/knc_rpc.c
+new file mode 100644
+index 000000000..6f7d0157a
+--- /dev/null
++++ b/arch/x86/kernel/knc_rpc.c
+@@ -0,0 +1,229 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * knc_rpc.c - /dev/phirpc: a byte stream between the card and the host
++ * tool over the ring region's kind-3 channel.
++ *
++ * The host's phictl daemon and the card's agent exchange framed messages
++ * (commands to run, their input and output, files) through one ring per
++ * direction, see asm/knc_ring.h and docs/spec/ring-protocol.md. This
++ * device exposes the two rings as an ordinary file: read() returns bytes
++ * the host published, write() appends bytes for the host, poll() waits for
++ * either. One process may hold it open. Like the network device it polls
++ * every jiffy while open; the rings are mapped uncached for the same
++ * reason (host writes bypass the card's caches, the core has no CLFLUSH).
++ */
++#include <linux/fs.h>
++#include <linux/io.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/poll.h>
++#include <linux/sched/signal.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++#include <linux/workqueue.h>
++
++#include <asm/knc.h>
++#include <asm/knc_ring.h>
++
++#define KNC_RPC_POLL		1	/* jiffies between ring checks while open */
++#define KNC_RPC_BOUNCE		SZ_64K	/* per-call copy limit */
++
++struct knc_rpc {
++	void __iomem *region;
++	void __iomem *rx;	/* host-to-card ring */
++	void __iomem *tx;	/* card-to-host ring */
++	u32 rx_size;
++	u32 tx_size;
++	u32 rx_tail;
++	u32 tx_head;
++	struct mutex lock;	/* serialises read/write against each other */
++	wait_queue_head_t wq;
++	struct delayed_work poll;
++	atomic_t opened;
++	u8 *bounce;
++	struct miscdevice misc;
++};
++
++static struct knc_rpc *knc_rpc;
++
++static u32 knc_rpc_readable(struct knc_rpc *r)
++{
++	return readl(r->rx + RING_HEAD) - r->rx_tail;
++}
++
++static u32 knc_rpc_writable(struct knc_rpc *r)
++{
++	return r->tx_size - (r->tx_head - readl(r->tx + RING_TAIL));
++}
++
++static void knc_rpc_poll_work(struct work_struct *work)
++{
++	struct knc_rpc *r = container_of(work, struct knc_rpc, poll.work);
++
++	if (knc_rpc_readable(r) || knc_rpc_writable(r))
++		wake_up_interruptible(&r->wq);
++	if (atomic_read(&r->opened))
++		schedule_delayed_work(&r->poll, KNC_RPC_POLL);
++}
++
++static int knc_rpc_open(struct inode *inode, struct file *file)
++{
++	struct knc_rpc *r = knc_rpc;
++
++	if (atomic_cmpxchg(&r->opened, 0, 1))
++		return -EBUSY;
++	file->private_data = r;
++	schedule_delayed_work(&r->poll, KNC_RPC_POLL);
++	return stream_open(inode, file);
++}
++
++static int knc_rpc_release(struct inode *inode, struct file *file)
++{
++	struct knc_rpc *r = file->private_data;
++
++	atomic_set(&r->opened, 0);
++	cancel_delayed_work_sync(&r->poll);
++	return 0;
++}
++
++static ssize_t knc_rpc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
++{
++	struct knc_rpc *r = file->private_data;
++	u32 n;
++	int err;
++
++	if (!count)
++		return 0;
++	if (!knc_rpc_readable(r)) {
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		err = wait_event_interruptible(r->wq, knc_rpc_readable(r));
++		if (err)
++			return err;
++	}
++	if (mutex_lock_interruptible(&r->lock))
++		return -ERESTARTSYS;
++	n = min3((u32)count, knc_rpc_readable(r), (u32)KNC_RPC_BOUNCE);
++	knc_ring_read(r->rx, r->rx_size, r->rx_tail, r->bounce, n);
++	if (copy_to_user(buf, r->bounce, n)) {
++		mutex_unlock(&r->lock);
++		return -EFAULT;
++	}
++	r->rx_tail += n;
++	wmb();	/* bytes consumed before the host may overwrite them */
++	writel(r->rx_tail, r->rx + RING_TAIL);
++	mutex_unlock(&r->lock);
++	return n;
++}
++
++static ssize_t knc_rpc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
++{
++	struct knc_rpc *r = file->private_data;
++	u32 n;
++	int err;
++
++	if (!count)
++		return 0;
++	if (!knc_rpc_writable(r)) {
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		err = wait_event_interruptible(r->wq, knc_rpc_writable(r));
++		if (err)
++			return err;
++	}
++	if (mutex_lock_interruptible(&r->lock))
++		return -ERESTARTSYS;
++	n = min3((u32)count, knc_rpc_writable(r), (u32)KNC_RPC_BOUNCE);
++	if (copy_from_user(r->bounce, buf, n)) {
++		mutex_unlock(&r->lock);
++		return -EFAULT;
++	}
++	knc_ring_write(r->tx, r->tx_size, r->tx_head, r->bounce, n);
++	r->tx_head += n;
++	wmb();	/* data before the head that publishes it */
++	writel(r->tx_head, r->tx + RING_HEAD);
++	mutex_unlock(&r->lock);
++	return n;
++}
++
++static __poll_t knc_rpc_poll(struct file *file, poll_table *wait)
++{
++	struct knc_rpc *r = file->private_data;
++	__poll_t mask = 0;
++
++	poll_wait(file, &r->wq, wait);
++	if (knc_rpc_readable(r))
++		mask |= EPOLLIN | EPOLLRDNORM;
++	if (knc_rpc_writable(r))
++		mask |= EPOLLOUT | EPOLLWRNORM;
++	return mask;
++}
++
++static const struct file_operations knc_rpc_fops = {
++	.owner		= THIS_MODULE,
++	.open		= knc_rpc_open,
++	.release	= knc_rpc_release,
++	.read		= knc_rpc_read,
++	.write		= knc_rpc_write,
++	.poll		= knc_rpc_poll,
++};
++
++static int __init knc_rpc_init(void)
++{
++	struct knc_rpc *r;
++	void __iomem *region;
++	u64 base, size;
++	u32 h2c_off, h2c_size, c2h_off, c2h_size;
++	int err;
++
++	if (!knc_ring_params(&base, &size))
++		return -ENODEV;
++	region = ioremap(base, size);
++	if (!region)
++		return -ENOMEM;
++	if (!knc_ring_find(region, size, PHI_CHANNEL_RPC, &h2c_off, &h2c_size, &c2h_off, &c2h_size)) {
++		pr_info("KNC: rpc: no usable rpc channel in the ring region\n");
++		iounmap(region);
++		return -ENODEV;
++	}
++	r = kzalloc(sizeof(*r), GFP_KERNEL);
++	if (!r) {
++		iounmap(region);
++		return -ENOMEM;
++	}
++	r->bounce = kmalloc(KNC_RPC_BOUNCE, GFP_KERNEL);
++	if (!r->bounce) {
++		err = -ENOMEM;
++		goto out_free;
++	}
++	r->region = region;
++	r->rx = region + h2c_off;
++	r->rx_size = h2c_size;
++	r->tx = region + c2h_off;
++	r->tx_size = c2h_size;
++	r->rx_tail = readl(r->rx + RING_TAIL);
++	r->tx_head = readl(r->tx + RING_HEAD);
++	mutex_init(&r->lock);
++	init_waitqueue_head(&r->wq);
++	INIT_DELAYED_WORK(&r->poll, knc_rpc_poll_work);
++	r->misc.minor = MISC_DYNAMIC_MINOR;
++	r->misc.name = "phirpc";
++	r->misc.fops = &knc_rpc_fops;
++	r->misc.mode = 0600;
++	knc_rpc = r;
++	err = misc_register(&r->misc);
++	if (err)
++		goto out_free;
++	pr_info("KNC: rpc: /dev/phirpc on the ring, rx %u bytes, tx %u bytes\n", h2c_size, c2h_size);
++	return 0;
++
++out_free:
++	kfree(r->bounce);
++	kfree(r);
++	knc_rpc = NULL;
++	iounmap(region);
++	return err;
++}
++device_initcall(knc_rpc_init);

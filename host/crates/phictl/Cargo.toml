@@ -11,6 +11,7 @@ phi-regs = { path = "../phi-regs" }
 phi-vfio = { path = "../phi-vfio" }
 phi-hw = { path = "../phi-hw" }
 phi-ring = { path = "../phi-ring" }
+phi-rpc = { path = "../phi-rpc" }
 clap.workspace = true
 anyhow.workspace = true
 log.workspace = true

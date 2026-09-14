@@ -19,7 +19,7 @@ out="$here/x86_64-knc-linux-musl.json"
 # notice (rust-lang/rust#116344). See x86_64-knc-linux-musl.md and ADR 0007.
 features="-sse,-mmx,-cmov,-nopl,-movbe,-popcnt,-lzcnt,-bmi1,-bmi2,-xsave,-cmpxchg16b,-prfchw,-clflushopt,-rdrand,-rdseed,-adx,-fsgsbase,-pclmulqdq,-aes,-sha,+x87"
 RUSTC_BOOTSTRAP=1 rustc -Zunstable-options --print target-spec-json --target x86_64-unknown-linux-musl \
-    | jq --arg f "$features" '.vendor = "knc" | .features = $f | .cpu = "x86-64" | ."max-atomic-width" = 64 | ."crt-static-default" = true | ."panic-strategy" = "abort"' \
+    | jq --arg f "$features" '.vendor = "knc" | .features = $f | .cpu = "x86-64" | ."max-atomic-width" = 64 | ."crt-static-default" = true | ."panic-strategy" = "abort" | ."crt-objects-fallback" = "false" | del(."pre-link-objects-fallback") | del(."post-link-objects-fallback") | ."position-independent-executables" = false | ."static-position-independent-executables" = false | ."relocation-model" = "static"' \
     > "$out.tmp"
 mv "$out.tmp" "$out"
 echo "wrote $out from $(rustc --version)"
