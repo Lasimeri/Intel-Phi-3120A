@@ -50,3 +50,10 @@ ABI-relevant options can be substituted with `LD_LIBRARY_PATH` and rustc
 then emits knc64-x87 code without a rustc rebuild. `toolchain/rust/build-std.sh`
 uses it. RTTI must match because rustc's C++ wrapper derives from LLVM
 classes and would otherwise reference typeinfo symbols the dylib lacks.
+
+`LLVM_STATIC_LINK_CXX_STDLIB=ON` for the dylib variant: Arch's
+`libLLVM.so` carries libstdc++ statically and therefore exports its
+symbols under the `LLVM_22.1` version node; rustc's driver binds
+`std::string::_M_replace@LLVM_22.1` and refuses a dylib that links
+libstdc++ dynamically (`symbol lookup error ... version LLVM_22.1`,
+measured 2026-09-13).

@@ -15,13 +15,9 @@ with these changes:
 
 ## Regenerating
 
-Field names change between Rust releases. When they do, regenerate the
-base with a nightly toolchain and re-apply the table above:
-
-```
-rustc +nightly -Zunstable-options --print target-spec-json \
-    --target x86_64-unknown-linux-musl > base.json
-```
+The file is generated, not hand-edited: `gen-target.sh` (see
+`gen-target.md`). Field names and types change between Rust releases, so
+re-run it after every rustc upgrade.
 
 ## Building
 

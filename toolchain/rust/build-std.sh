@@ -20,7 +20,8 @@ cd "$root/toolchain/check/hello_rs"
 export LD_LIBRARY_PATH="$DYLIB/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export RUSTC_BOOTSTRAP=1
 echo "== rustc will load: $(ldd "$(rustc --print sysroot)"/lib/librustc_driver-*.so | grep libLLVM)"
-cargo build --release
+# rustc 1.98 gates JSON target specs; RUSTC_BOOTSTRAP=1 (above) makes the stable compiler accept -Z flags.
+cargo -Zjson-target-spec build --release
 lib="target/x86_64-knc-linux-musl/release/libhello_rs.a"
 ls -l "$lib"
 echo "== audit"

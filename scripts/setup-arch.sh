@@ -19,6 +19,7 @@ packages=(
     tcc
     cpio bc flex bison libelf openssl perl
     cmake ninja        # LLVM and kernel-adjacent builds (toolchain/)
+    jq                 # target-spec generation (toolchain/rust/gen-target.sh)
 )
 # Optional: only needed for the card toolchain (phase P2) and for reading
 # the Intel PDFs. Installed one by one so a missing mirror file (seen on

@@ -13,16 +13,19 @@
 #   toolchain/build/llvm-dylib.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+. "$here/../env.sh"
+# Real, space-free paths (see env.md): cmake and ninja record absolute paths
+# and the LLVM shared-library link passes a version-script path unquoted.
+root="$phi_build/.."
 TAG="${PHI_LLVM_TAG:-llvmorg-22.1.8}"
-SRC="${PHI_LLVM_SRC:-$root/toolchain/build/llvm-project}"
+SRC="${PHI_LLVM_SRC:-$phi_build/toolchain/llvm-project}"
 VARIANT="${PHI_LLVM_VARIANT:-clang}"
 if [ "$VARIANT" = dylib ]; then
-    BUILD="${PHI_LLVM_BUILD:-$root/toolchain/build/llvm-build-dylib}"
-    PREFIX="${PHI_LLVM:-$root/toolchain/build/llvm-dylib}"
+    BUILD="${PHI_LLVM_BUILD:-$phi_build/toolchain/llvm-build-dylib}"
+    PREFIX="${PHI_LLVM_DYLIB:-$phi_build/toolchain/llvm-dylib}"
 else
-    BUILD="${PHI_LLVM_BUILD:-$root/toolchain/build/llvm-build}"
-    PREFIX="${PHI_LLVM:-$root/toolchain/build/llvm}"
+    BUILD="${PHI_LLVM_BUILD:-$phi_build/toolchain/llvm-build}"
+    PREFIX="$PHI_LLVM"
 fi
 JOBS="${PHI_JOBS:-$(nproc)}"
 step="${1:-all}"
@@ -79,6 +82,7 @@ configure() {
             -DLLVM_LINK_LLVM_DYLIB=ON \
             -DLLVM_ENABLE_RTTI=ON \
             -DLLVM_ENABLE_FFI=ON \
+            -DLLVM_STATIC_LINK_CXX_STDLIB=ON \
             -DLLVM_PARALLEL_LINK_JOBS=2
     else
         cmake -S "$SRC/llvm" -B "$BUILD" -G "$gen" "${opts[@]}" \
@@ -125,10 +129,10 @@ check() {
     local tmp; tmp=$(mktemp -d)
     printf 'int f(int a,int b,int c){return c?a:b;}\nlong g(long a,long b,int c){return c?a:b;}\n' > "$tmp/t.c"
     printf 'double m(double a,double b){return a*b+1.5;}\nfloat h(float a){return a/3.0f;}\n' > "$tmp/d.c"
-    PHI_LLVM="$PREFIX" "$root/toolchain/clang/knc-cc" -O2 -c "$tmp/t.c" -o "$tmp/t.o" -nostdinc -nostdlib
-    PHI_LLVM="$PREFIX" "$root/toolchain/clang/knc-cc" -O2 -c "$tmp/d.c" -o "$tmp/d.o" -nostdinc -nostdlib
-    "$root/host/target/debug/phi-isa-audit" "$tmp/t.o"
-    "$root/host/target/debug/phi-isa-audit" "$tmp/d.o"
+    PHI_LLVM="$PREFIX" "$phi_root/toolchain/clang/knc-cc" -O2 -c "$tmp/t.c" -o "$tmp/t.o" -nostdinc -nostdlib
+    PHI_LLVM="$PREFIX" "$phi_root/toolchain/clang/knc-cc" -O2 -c "$tmp/d.c" -o "$tmp/d.o" -nostdinc -nostdlib
+    "$phi_root/host/target/debug/phi-isa-audit" "$tmp/t.o"
+    "$phi_root/host/target/debug/phi-isa-audit" "$tmp/d.o"
     "$PREFIX/bin/llvm-objdump" -d --no-show-raw-insn "$tmp/d.o" | grep -E "fld|fmul|fadd|fstp|ret" | head -8
     rm -rf "$tmp"
 }

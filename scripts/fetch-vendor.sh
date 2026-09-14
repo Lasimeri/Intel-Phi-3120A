@@ -70,4 +70,19 @@ else
     echo "have   solros phi-kernel"
 fi
 
-echo "fetch-vendor.sh: done. Extract MPSS tarballs by hand as needed; see vendor/README.md"
+
+
+# mpss-modules source: the host driver headers (micsboxdefine.h and friends)
+# live inside a source RPM in the host tarball. bsdtar reads RPMs directly.
+if [ ! -d "$V/mpss-3.8.6/mpss-modules-3.8.6" ] && [ -s "$V/mpss-3.8.6/mpss-3.8.6-linux.tar" ]; then
+    echo "extract mpss-modules source"
+    tmp=$(mktemp -d)
+    m=$(tar -tf "$V/mpss-3.8.6/mpss-3.8.6-linux.tar" | grep -E "mpss-modules-.*\.src\.rpm$" | head -1)
+    tar -xf "$V/mpss-3.8.6/mpss-3.8.6-linux.tar" -C "$tmp" "$m"
+    (cd "$tmp" && bsdtar -xf "$m")
+    tb=$(find "$tmp" -name 'mpss-modules-*.tar*' | head -1)
+    mkdir -p "$V/mpss-3.8.6/mpss-modules-3.8.6"
+    tar -xf "$tb" -C "$V/mpss-3.8.6/mpss-modules-3.8.6"
+    rm -rf "$tmp"
+fi
+echo "fetch-vendor.sh: complete"

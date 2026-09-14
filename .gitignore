@@ -7,10 +7,10 @@
 **/*.rs.bk
 
 # Build outputs
-/card/kernel/build/
-/card/initramfs/build/
-/card/userland/build/
-/toolchain/build/
+/card/kernel/build
+/card/initramfs/build
+/card/userland/build
+/toolchain/build
 /tools/*.out
 *.o
 *.ko

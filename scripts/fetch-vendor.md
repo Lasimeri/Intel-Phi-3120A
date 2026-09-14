@@ -29,3 +29,5 @@ without naming which tarball, so it is not used here.
 
 Idempotent: existing files are kept and re-verified. Delete a file to
 re-download it.
+
+| `mpss-3.8.6/mpss-modules-3.8.6/` | extracted from the source RPM inside the host tarball with `bsdtar` | small |
