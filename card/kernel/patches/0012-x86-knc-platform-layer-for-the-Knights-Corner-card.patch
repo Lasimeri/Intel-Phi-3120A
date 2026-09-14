@@ -37,10 +37,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
  arch/x86/kernel/head64.c          |   5 +
- arch/x86/kernel/head_64.S         |  32 +++
+ arch/x86/kernel/head_64.S         |  30 +++
  arch/x86/kernel/knc.c             | 320 ++++++++++++++++++++++++++++++
  arch/x86/kernel/setup.c           |   5 +
- 9 files changed, 439 insertions(+), 1 deletion(-)
+ 9 files changed, 437 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -240,7 +240,7 @@ index fd28b53db..72241d916 100644
  	/* Needed before cc_platform_has() can be used for TDX */
  	tdx_early_init();
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
-index f882849c3..3dd9d9cf0 100644
+index f882849c3..6af9b4131 100644
 --- a/arch/x86/kernel/head_64.S
 +++ b/arch/x86/kernel/head_64.S
 @@ -61,6 +61,16 @@ SYM_CODE_START_NOALIGN(startup_64)
@@ -296,7 +296,7 @@ index f882849c3..3dd9d9cf0 100644
  
  	/*
  	 * Create a mask of CR4 bits to preserve. Omit PGE in order to flush
-@@ -376,7 +400,15 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+@@ -376,7 +400,13 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
  	wrmsr
  
  	/* Setup and Load IDT */
@@ -307,8 +307,6 @@ index f882849c3..3dd9d9cf0 100644
 +#ifdef CONFIG_X86_KNC
 +	movl	$0x4E4B, knc_boot_mark(%rip)	/* "KN": early IDT loaded */
 +#endif
-+#ifdef CONFIG_X86_KNC
-+	/*
  
  	/* Check if nx is implemented */
  	movl	$0x80000001, %eax
