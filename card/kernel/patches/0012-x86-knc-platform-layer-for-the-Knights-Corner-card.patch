@@ -37,10 +37,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
  arch/x86/kernel/head64.c          |   2 +
- arch/x86/kernel/head_64.S         |  18 ++
+ arch/x86/kernel/head_64.S         |  26 +++
  arch/x86/kernel/knc.c             | 318 ++++++++++++++++++++++++++++++
  arch/x86/kernel/setup.c           |   5 +
- 9 files changed, 410 insertions(+), 1 deletion(-)
+ 9 files changed, 418 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -212,7 +212,7 @@ index fd28b53db..2665b6b12 100644
  	/* Needed before cc_platform_has() can be used for TDX */
  	tdx_early_init();
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
-index f882849c3..a49b5c42b 100644
+index f882849c3..fcc039f30 100644
 --- a/arch/x86/kernel/head_64.S
 +++ b/arch/x86/kernel/head_64.S
 @@ -61,6 +61,16 @@ SYM_CODE_START_NOALIGN(startup_64)
@@ -232,7 +232,29 @@ index f882849c3..a49b5c42b 100644
  	/*
  	 * Set up GSBASE.
  	 * Note that on SMP the boot CPU uses the init data section until
-@@ -377,6 +387,14 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+@@ -96,6 +106,10 @@ SYM_CODE_START_NOALIGN(startup_64)
+ 
+ 	/* Sanitize CPU configuration */
+ 	call verify_cpu
++#ifdef CONFIG_X86_KNC
++	movabsq	$0x8007C242C, %rdi		/* "KF": verify_cpu passed */
++	movl	$0x464B, (%rdi)
++#endif
+ 
+ 	/*
+ 	 * Derive the kernel's physical-to-virtual offset from the physical and
+@@ -133,6 +147,10 @@ SYM_CODE_START_NOALIGN(startup_64)
+ 	 * Switch to early_top_pgt which still has the identity mappings
+ 	 * present.
+ 	 */
++#ifdef CONFIG_X86_KNC
++	movabsq	$0x8007C242C, %rdi		/* "KG": page tables built, switching */
++	movl	$0x474B, (%rdi)
++#endif
+ 	movq	%rax, %cr3
+ 
+ 	/* Branch to the common startup code at its kernel virtual address */
+@@ -377,6 +395,14 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
  
  	/* Setup and Load IDT */
  	call	early_setup_idt
