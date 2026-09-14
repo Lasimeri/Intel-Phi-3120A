@@ -36,11 +36,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
  arch/x86/include/asm/knc.h        |  47 +++++
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
- arch/x86/kernel/head64.c          |   2 +
+ arch/x86/kernel/head64.c          |   5 +
  arch/x86/kernel/head_64.S         |  38 ++++
  arch/x86/kernel/knc.c             | 320 ++++++++++++++++++++++++++++++
  arch/x86/kernel/setup.c           |   5 +
- 9 files changed, 442 insertions(+), 1 deletion(-)
+ 9 files changed, 445 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -203,7 +203,7 @@ index f3e921984..d8b443498 100644
  	&x86_hyper_acrn,
  #endif
 diff --git a/arch/x86/kernel/head64.c b/arch/x86/kernel/head64.c
-index fd28b53db..2665b6b12 100644
+index fd28b53db..72241d916 100644
 --- a/arch/x86/kernel/head64.c
 +++ b/arch/x86/kernel/head64.c
 @@ -42,6 +42,7 @@
@@ -214,11 +214,28 @@ index fd28b53db..2665b6b12 100644
  
  /*
   * Manage page tables very early on.
-@@ -274,6 +275,7 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
+@@ -221,6 +222,7 @@ static void __init copy_bootdata(char *real_mode_data)
+ 
+ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode_data)
+ {
++	knc_boot_mark = KNC_POST('K', 'O'); /* first C code entered */
+ 	/*
+ 	 * Build-time sanity checks on the kernel image and module
+ 	 * area mappings. (these are purely build-time and produce no code)
+@@ -247,6 +249,7 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
+ 	}
+ 
+ 	clear_bss();
++	knc_boot_mark = KNC_POST('K', 'Q'); /* bss cleared */
+ 
+ 	/*
+ 	 * This needs to happen *before* kasan_early_init() because latter maps stuff
+@@ -274,6 +277,8 @@ asmlinkage __visible void __init __noreturn x86_64_start_kernel(char * real_mode
  	__native_tlb_flush_global(this_cpu_read(cpu_tlbstate.cr4));
  
  	idt_setup_early_handler();
-+	knc_early_post(KNC_POST_EARLY_C);
++	knc_boot_mark = KNC_POST('K', 'R'); /* early exception handlers installed */
++	knc_early_post(KNC_POST_EARLY_C);   /* first repaired page fault */
  
  	/* Needed before cc_platform_has() can be used for TDX */
  	tdx_early_init();
