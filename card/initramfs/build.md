@@ -6,8 +6,11 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
 - `bin/busybox` plus one symlink per applet, laid out by the card binary
   itself (it runs on the host; same instruction subset).
 - `init` mounts proc, sysfs, devtmpfs and tmpfs, prints the kernel, CPU
-  count, model name and memory, and execs a shell on the console through
-  `setsid` and `cttyhack`, so job control and Ctrl-C work over the ring
+  count, model name and memory, and supervises a shell on the console (started through `setsid` and
+  `cttyhack`, so job control and Ctrl-C work over the ring); PID 1 stays the
+  script, traps busybox's poweroff, halt and reboot signals (USR2, USR1,
+  TERM) into `poweroff -f`, which the kernel answers with POST `KH` and a
+  halt, and respawns the shell when one exits
   tty.
 - `etc/passwd` and `etc/group` for root only.
 - Packed with `bsdtar --format newc` (libarchive, part of Arch base) and
