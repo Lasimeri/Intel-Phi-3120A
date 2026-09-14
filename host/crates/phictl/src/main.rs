@@ -181,6 +181,7 @@ fn main() -> Result<()> {
         ),
         Cmd::Peek { addr, len } => {
             let card = open(cli.bdf.as_deref())?;
+            card.wait_ready(std::time::Duration::from_secs(20))?;
             let mut buf = vec![0u8; len.min(256)];
             card.read_card_memory(addr, &mut buf)?;
             let hex: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
@@ -189,6 +190,7 @@ fn main() -> Result<()> {
         }
         Cmd::Poke { addr, value } => {
             let card = open(cli.bdf.as_deref())?;
+            card.wait_ready(std::time::Duration::from_secs(20))?;
             card.write_card_memory(addr, &value.to_le_bytes())?;
             println!("{addr:#x} <- {value:#x}");
             Ok(())

@@ -185,9 +185,20 @@ impl Card {
     /// Poll until the bootstrap reports ready (`SPAD2` bit 0) or `timeout`.
     pub fn wait_ready(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
+        let mut last = self.postcode();
+        log::info!("bootstrap at POST \"{}\"; waiting for \"12\"", last.text());
         loop {
+            let post = self.postcode();
+            if post != last {
+                log::info!("POST \"{}\" {}", post.text(), post.describe().unwrap_or(""));
+                last = post;
+            }
             let d = self.download_info();
-            if d.ready() {
+            // SPAD2's ready bit survives the function reset that VFIO issues at
+            // open and is stale until the bootstrap reaches "12" again; the
+            // POST code is the authority. Measured 2026-09-14: aperture writes
+            // issued on the stale bit, during GDDR training, reset the host.
+            if post.is_ready() && d.ready() {
                 log::info!(
                     "bootstrap ready: download addr {:#x}, BSP APIC id {}",
                     d.download_addr(),

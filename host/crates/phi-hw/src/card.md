@@ -48,3 +48,14 @@ posted write, so at most one chunk is ever in flight. Measured: single
 burst of 8-byte writes reset the host with nothing logged (three times).
 `write_card_memory_paced` exposes the chunk size and the read-back for
 `phictl fill`.
+
+## `wait_ready` keys on the POST code (2026-09-14)
+
+Opening the device through VFIO issues a function reset; the bootstrap
+then retrains GDDR for about seven seconds and reaches `12` after about
+nine. `SPAD2`'s ready bit survives that reset, so a loader that trusts it
+writes into memory that is being trained. Every host reset of 2026-09-13
+and 2026-09-14 followed exactly that: a burst of aperture writes issued
+milliseconds after open, with POST at `0c`. `wait_ready` now requires
+POST `12` as well as the `SPAD2` bit, logs the codes it sees, and the
+callers give it 20 seconds. `peek`, `poke` and `fill` wait the same way.

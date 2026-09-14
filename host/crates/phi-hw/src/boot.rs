@@ -94,8 +94,9 @@ pub fn ring_cmdline_params(base: u64, size: u64) -> String {
 /// and send the boot interrupt. Returns after the interrupt is sent; the
 /// caller watches the POST code and the console ring for progress.
 pub fn boot(card: &Card, img: &BootImage) -> Result<BootReport> {
-    // 1. Bootstrap must be waiting.
-    card.wait_ready(Duration::from_secs(2))?;
+    // 1. Bootstrap must be waiting at POST "12". Opening the device reset the
+    //    card; its bootstrap needs about ten seconds to retrain GDDR.
+    card.wait_ready(Duration::from_secs(20))?;
     let dl = card.download_info();
     let bootaddr = dl.download_addr() as u64;
     if bootaddr == 0 || bootaddr > (1 << 31) {

@@ -120,3 +120,15 @@ writes through the aperture are fine at both addresses, an unpaced run
 of 131072 posted 8-byte writes is not. The loader now writes in 4 KiB
 chunks with an 8-byte read-back after each (bounding the posted writes
 in flight); `phictl fill` exposes the same path for a volume ladder.
+
+## Fifth attempt (03:19) and the actual mechanism
+
+`fill 0x10000000 4096 --chunk 8` (one write, one read-back, 512 times)
+reset the host too, so queue depth is not the lever. What every fatal
+command shared: aperture writes issued milliseconds after `open`.
+VFIO resets the card at open; `phictl info` right after an open reads
+POST `0c` with `SPAD2` still saying "ready" from before the reset, and
+the P1 reset trace puts GDDR training at 0.2 to 7.6 s and `12` at 9.3 s
+after a reset. The loader trusted the stale `SPAD2` bit and wrote into
+GDDR during training. Fix: `wait_ready` requires POST `12`, 20-second
+timeout, in the loader and in `peek`, `poke`, `fill`.
