@@ -33,14 +33,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/boot/compressed/misc.c   |  25 +++
  arch/x86/include/asm/hypervisor.h |   1 +
- arch/x86/include/asm/knc.h        |  35 ++++
+ arch/x86/include/asm/knc.h        |  37 ++++
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
  arch/x86/kernel/head64.c          |   2 +
- arch/x86/kernel/head_64.S         |  10 +
+ arch/x86/kernel/head_64.S         |  18 ++
  arch/x86/kernel/knc.c             | 318 ++++++++++++++++++++++++++++++
  arch/x86/kernel/setup.c           |   5 +
- 9 files changed, 400 insertions(+), 1 deletion(-)
+ 9 files changed, 410 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -105,7 +105,7 @@ index 9ad86a7d1..63fa52327 100644
  extern const struct hypervisor_x86 x86_hyper_bhyve;
  extern struct hypervisor_x86 x86_hyper_xen_hvm;
 diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
-index 058061414..ad11ce48d 100644
+index 058061414..235d78fe7 100644
 --- a/arch/x86/include/asm/knc.h
 +++ b/arch/x86/include/asm/knc.h
 @@ -17,6 +17,8 @@
@@ -117,7 +117,7 @@ index 058061414..ad11ce48d 100644
  
  /* DBOX: the POST code register the host reads at BAR4 + 0x242c. */
  #define KNC_DBOX_POSTCODE	0x242c
-@@ -43,6 +45,13 @@
+@@ -43,6 +45,15 @@
  #define KNC_POST_HALT		KNC_POST('K', 'H')
  #define KNC_POST_PANIC		KNC_POST('K', 'P')
  #define KNC_POST_ERROR		KNC_POST('K', 'E')
@@ -128,10 +128,12 @@ index 058061414..ad11ce48d 100644
 +#define KNC_POST_CPU_INIT	KNC_POST('K', 'B')	/* early_cpu_init done */
 +#define KNC_POST_E820		KNC_POST('K', 'C')	/* memory map set up */
 +#define KNC_POST_EARLY_PARAM	KNC_POST('K', 'D')	/* early parameters parsed */
++/* Written by head_64.S with literal bytes: "KF" verify_cpu passed, "KG" page
++ * tables built (before the CR3 switch), "KI" early IDT loaded. */
  
  #define KNC_MAX_CPUS		256
  #define KNC_MAX_IOAPICS		4
-@@ -74,4 +83,30 @@ u64 knc_ring_host_epoch_ns(void);
+@@ -74,4 +85,30 @@ u64 knc_ring_host_epoch_ns(void);
  /* Platform layer (knc.c). */
  void knc_postcode(u32 code);
  
@@ -210,7 +212,7 @@ index fd28b53db..2665b6b12 100644
  	/* Needed before cc_platform_has() can be used for TDX */
  	tdx_early_init();
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
-index f882849c3..59086f8ad 100644
+index f882849c3..a49b5c42b 100644
 --- a/arch/x86/kernel/head_64.S
 +++ b/arch/x86/kernel/head_64.S
 @@ -61,6 +61,16 @@ SYM_CODE_START_NOALIGN(startup_64)
@@ -230,6 +232,21 @@ index f882849c3..59086f8ad 100644
  	/*
  	 * Set up GSBASE.
  	 * Note that on SMP the boot CPU uses the init data section until
+@@ -377,6 +387,14 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+ 
+ 	/* Setup and Load IDT */
+ 	call	early_setup_idt
++#ifdef CONFIG_X86_KNC
++	/*
++	 * "KI": early IDT loaded, kernel page tables live. The direct-map
++	 * address of the DBOX faults once and the early handler maps it.
++	 */
++	movabsq	$(__PAGE_OFFSET_BASE_L4 + 0x8007C242C), %rdi
++	movl	$0x494B, (%rdi)
++#endif
+ 
+ 	/* Check if nx is implemented */
+ 	movl	$0x80000001, %eax
 diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
 new file mode 100644
 index 000000000..c4fe04590
