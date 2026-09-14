@@ -26,6 +26,10 @@ pub struct BootImage {
     pub ring_size: u64,
     /// If true, do not append the automatic parameters.
     pub raw_cmdline: bool,
+    /// If true, load everything (ring region, image, command line, SPAD5)
+    /// but do not send the boot interrupt. For bisecting host resets: the
+    /// aperture writes happen, the card never leaves the bootstrap.
+    pub load_only: bool,
 }
 
 /// Where everything ended up, for logging and for `docs/results/`.
@@ -178,7 +182,9 @@ pub fn boot(card: &Card, img: &BootImage) -> Result<BootReport> {
     //    posted aperture writes. Use `phictl peek` to test aperture reads
     //    on their own.
     let apic_id = dl.apic_id();
-    card.send_boot_interrupt();
+    if !img.load_only {
+        card.send_boot_interrupt();
+    }
 
     Ok(BootReport {
         image: info,

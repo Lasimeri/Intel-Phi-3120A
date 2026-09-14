@@ -79,6 +79,10 @@ enum Cmd {
         /// Do not tail the console after sending the boot interrupt.
         #[arg(long)]
         no_console: bool,
+        /// Write everything into card memory but do not send the boot
+        /// interrupt (bisecting host resets); implies --no-console.
+        #[arg(long)]
+        load_only: bool,
     },
     /// Read a few bytes of card memory through the BAR0 aperture and print
     /// them. A single non-posted read, for testing the aperture in isolation.
@@ -137,6 +141,7 @@ fn main() -> Result<()> {
             ring_size,
             raw_cmdline,
             no_console,
+            load_only,
         } => cmd_boot(
             cli.bdf.as_deref(),
             kernel,
@@ -145,7 +150,8 @@ fn main() -> Result<()> {
             ring_base,
             ring_size,
             raw_cmdline,
-            !no_console,
+            !no_console && !load_only,
+            load_only,
         ),
         Cmd::Peek { addr, len } => {
             let card = open(cli.bdf.as_deref())?;
@@ -331,6 +337,7 @@ fn cmd_boot(
     ring_size: u64,
     raw_cmdline: bool,
     follow: bool,
+    load_only: bool,
 ) -> Result<()> {
     let card = open(bdf)?;
     let kernel_bytes = std::fs::read(&kernel).with_context(|| format!("reading {}", kernel.display()))?;
@@ -345,10 +352,18 @@ fn cmd_boot(
         ring_base,
         ring_size,
         raw_cmdline,
+        load_only,
     };
     let t0 = Instant::now();
     let r = boot(&card, &img)?;
-    println!("boot interrupt sent to APIC {} after {:.2}s", r.apic_id, t0.elapsed().as_secs_f64());
+    if load_only {
+        println!(
+            "loaded in {:.2}s; boot interrupt NOT sent (--load-only)",
+            t0.elapsed().as_secs_f64()
+        );
+    } else {
+        println!("boot interrupt sent to APIC {} after {:.2}s", r.apic_id, t0.elapsed().as_secs_f64());
+    }
     println!(
         "  image     protocol {:#06x}, {} bytes at {:#x}",
         r.image.protocol, r.kernel_len, r.bootaddr
