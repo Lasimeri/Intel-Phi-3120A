@@ -51,3 +51,12 @@ the physical console.
 the write-side twin of `peek`. Added 2026-09-14 after `boot --load-only`
 reset the host during its first bulk write (the ring region, then at
 32 MiB). The default ring base moved to 256 MiB at the same time.
+
+## `fill`
+
+`phictl fill 0x10000000 1048576` writes a megabyte of zeros through the
+loader's own path: 4 KiB chunks, each followed by an 8-byte read-back
+that waits for the card to accept the chunk. `--chunk` and
+`--no-readback` reproduce other patterns. Added 2026-09-14 after a
+1 MiB unpaced burst reset the host three times while single 8-byte
+writes did not.

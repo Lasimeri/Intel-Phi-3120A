@@ -104,6 +104,22 @@ enum Cmd {
         #[arg(value_parser = parse_u64)]
         value: u64,
     },
+    /// Write LEN zero bytes into card memory through the aperture, in chunks
+    /// with a read-back after each (the loader's write path), and report the
+    /// time. For finding the burst size that resets the host.
+    Fill {
+        /// Card physical address (hex or decimal).
+        #[arg(value_parser = parse_u64)]
+        addr: u64,
+        /// Number of bytes.
+        len: usize,
+        /// Bytes per chunk between read-backs.
+        #[arg(long, default_value_t = 4096)]
+        chunk: usize,
+        /// Do not read back after each chunk (unpaced posted writes).
+        #[arg(long)]
+        no_readback: bool,
+    },
     /// Tail the card's console ring and forward stdin lines to it.
     Console {
         /// Card physical base of the ring region.
@@ -175,6 +191,23 @@ fn main() -> Result<()> {
             let card = open(cli.bdf.as_deref())?;
             card.write_card_memory(addr, &value.to_le_bytes())?;
             println!("{addr:#x} <- {value:#x}");
+            Ok(())
+        }
+        Cmd::Fill {
+            addr,
+            len,
+            chunk,
+            no_readback,
+        } => {
+            let card = open(cli.bdf.as_deref())?;
+            let data = vec![0u8; len];
+            let t0 = Instant::now();
+            card.write_card_memory_paced(addr, &data, chunk, !no_readback)?;
+            println!(
+                "{len:#x} bytes at {addr:#x} in {:.3}s (chunk {chunk:#x}, readback {})",
+                t0.elapsed().as_secs_f64(),
+                !no_readback
+            );
             Ok(())
         }
         Cmd::Console { ring_base, ring_size } => {

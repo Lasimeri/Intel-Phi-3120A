@@ -10,6 +10,10 @@ use phi_vfio::VfioPci;
 
 use crate::{Error, Result};
 
+/// Bytes written into the aperture between read-backs (see
+/// [`Card::write_card_memory_paced`]).
+pub const APERTURE_WRITE_CHUNK: usize = 4096;
+
 /// An opened Xeon Phi.
 pub struct Card {
     vfio: VfioPci,
@@ -235,7 +239,38 @@ impl Card {
                 phi_regs::memory::GDDR_BYTES_3120A
             )));
         }
-        self.aperture.write_bytes(addr as usize, data);
+        self.write_card_memory_paced(addr, data, APERTURE_WRITE_CHUNK, true)
+    }
+
+    /// The aperture write path with its pacing exposed (used by `phictl fill`).
+    ///
+    /// Posted writes are issued in chunks of `chunk` bytes; after each chunk,
+    /// when `readback` is set, the last eight bytes are read back. That
+    /// non-posted read does not complete until the card has accepted every
+    /// preceding posted write, which bounds the writes in flight toward a
+    /// Gen2 x8 endpoint. Measured 2026-09-14: one 8-byte write at 64 MiB or at
+    /// 256 MiB is fine; an unpaced 1 MiB burst of 8-byte writes reset the host
+    /// with nothing logged, three times running.
+    pub fn write_card_memory_paced(&self, addr: u64, data: &[u8], chunk: usize, readback: bool) -> Result<()> {
+        let end = addr
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| Error::Range("address overflow".into()))?;
+        if end > self.aperture.len() as u64 {
+            return Err(Error::Range(format!("write {addr:#x}+{:#x} exceeds aperture", data.len())));
+        }
+        let chunk = chunk.max(8);
+        let mut off = 0usize;
+        while off < data.len() {
+            let n = chunk.min(data.len() - off);
+            self.aperture.write_bytes(addr as usize + off, &data[off..off + n]);
+            if readback {
+                let stop = addr as usize + off + n;
+                let start = stop.saturating_sub(8).max(addr as usize);
+                let mut probe = [0u8; 8];
+                self.aperture.read_bytes(start, &mut probe[..stop - start]);
+            }
+            off += n;
+        }
         Ok(())
     }
 

@@ -37,3 +37,14 @@ the ready flag returns and records each distinct value with its timestamp.
 This is how the meaning of the register on this flash is established
 (`phi-regs/src/postcode.md`, open item) and it costs nothing during a
 normal reset.
+
+## Paced aperture writes (2026-09-14)
+
+`write_card_memory` issues posted writes in `APERTURE_WRITE_CHUNK`
+(4 KiB) chunks and reads eight bytes back after each. The read is
+non-posted: it cannot complete until the card has accepted every earlier
+posted write, so at most one chunk is ever in flight. Measured: single
+8-byte reads and writes at 64 MiB and 256 MiB are fine, an unpaced 1 MiB
+burst of 8-byte writes reset the host with nothing logged (three times).
+`write_card_memory_paced` exposes the chunk size and the read-back for
+`phictl fill`.

@@ -110,3 +110,13 @@ hypothesis: the bootstrap protects card memory below the download
 address and answers writes there with Unsupported Request (the sticky
 `UnsupReq+` on the card), which the platform turns into a reset. Changes:
 `phictl poke` for a single 8-byte write, ring base moved to 256 MiB.
+
+## Fourth attempt (2026-09-14, 03:07): it is the burst, not the address
+
+`phictl poke 0x4000000 0` and `phictl poke 0x10000000 0` (one 8-byte
+write each) passed; `phictl boot --load-only` with the ring at 256 MiB
+reset the host at the first bulk write again. So: single reads and
+writes through the aperture are fine at both addresses, an unpaced run
+of 131072 posted 8-byte writes is not. The loader now writes in 4 KiB
+chunks with an 8-byte read-back after each (bounding the posted writes
+in flight); `phictl fill` exposes the same path for a volume ladder.
