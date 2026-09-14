@@ -6,9 +6,12 @@ implementation planned in `card/drivers/phinet`.
 ## Placement
 
 A contiguous region of card GDDR, `PHI_RING_REGION_SIZE` bytes (1 MiB in v1),
-at card physical address `PHI_RING_REGION_BASE`. v1 uses `0x2000000`
-(32 MiB), below the typical 64 MiB download address and above everything the
-bootstrap places in low memory. The card kernel reserves it with
+at card physical address `PHI_RING_REGION_BASE`. v1 uses `0x10000000`
+(256 MiB), above the 64 MiB download address and the 128 MiB initramfs slot
+that Intel's loader used. (v1 first placed it at 32 MiB, below the download
+address; bulk writes there reset the host on 2026-09-14, see
+`docs/results/2026-09-13-p3-kernel-build.md`. Nothing of Intel's ever wrote
+below the download address.) The card kernel reserves it with
 `memmap=1M$0x2000000` on its command line (written by the host loader) and
 the `phinet` module `ioremap_cache`s it. The host reaches it at BAR0 offset
 `PHI_RING_REGION_BASE`.

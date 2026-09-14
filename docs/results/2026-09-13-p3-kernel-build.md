@@ -94,3 +94,19 @@ range at or above the 32 GiB MMIO base (patch 0012); the loader appends
 aperture; `phictl peek` reads a few bytes through the aperture so that a
 single non-posted read can be tested on its own, from the physical
 console, before any boot.
+
+## Second and third attempts (2026-09-14, 02:55 and 03:01)
+
+Second attempt with the e820 clamp, `mem=`, no read-back and `nosmp`:
+host reset again, log file empty. `phictl peek 0x4000000 --len 16` (one
+16-byte read at the download address) passed. Third attempt,
+`phictl boot --load-only` (aperture writes only, no interrupt): host
+reset during the first bulk write, the 1 MiB ring region at 32 MiB, the
+line after "bootstrap ready" in the terminal. The boot interrupt and the
+card kernel are therefore not involved. The single read was at 64 MiB,
+the region Intel's loader used; the ring was below the download address,
+where neither Intel's loader nor anything else ever wrote. Working
+hypothesis: the bootstrap protects card memory below the download
+address and answers writes there with Unsupported Request (the sticky
+`UnsupReq+` on the card), which the platform turns into a reset. Changes:
+`phictl poke` for a single 8-byte write, ring base moved to 256 MiB.

@@ -3,7 +3,7 @@
 Makes a stub image for bisecting the card boot path: the real bzImage's
 real-mode header and setup sectors, followed by one 512-byte sector at
 the 32-bit entry point that does `cli`, stores 1 into the ring header's
-`card_boot_flags` (card address `0x2000018` with the default ring base),
+`card_boot_flags` (card address `0x10000018` with the default ring base),
 and halts. `syssize` in the header is rewritten to match.
 
 Why: the first two `phictl boot` attempts reset the host with nothing

@@ -3,7 +3,7 @@
  * the card boot path. The real-mode header and setup sectors are copied
  * unchanged (the bootstrap parses them), and the 32-bit entry point that
  * follows them is replaced by a few bytes of code that set bit 0 of the ring
- * region header's card_boot_flags (offset 24 of the region at 0x2000000,
+ * region header's card_boot_flags (offset 24 of the region at 0x10000000,
  * where phictl formats it) and halt. If the host survives the boot interrupt
  * and phictl console reports "card flags 0x1", the bootstrap handed off to
  * the image and everything up to that point is exonerated. See hlt-image.md.
@@ -21,7 +21,7 @@
 static const unsigned char entry[] = {
 	0xFA,                         /* cli */
 	0xB8, 0x01, 0x00, 0x00, 0x00, /* mov eax, 1 */
-	0xA3, 0x18, 0x00, 0x00, 0x02, /* mov [0x02000018], eax: card_boot_flags */
+	0xA3, 0x18, 0x00, 0x00, 0x10, /* mov [0x10000018], eax: card_boot_flags */
 	0xF4,                         /* hlt */
 	0xEB, 0xFD                    /* jmp back to hlt */
 };

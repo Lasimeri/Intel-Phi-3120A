@@ -68,7 +68,7 @@ enum Cmd {
         #[arg(long, default_value = "earlyprintk=phiring,keep loglevel=8")]
         cmdline: String,
         /// Card physical base of the ring region (hex or decimal).
-        #[arg(long, value_parser = parse_u64, default_value = "0x2000000")]
+        #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
         ring_base: u64,
         /// Size of the ring region.
         #[arg(long, value_parser = parse_u64, default_value = "0x100000")]
@@ -94,10 +94,20 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         len: usize,
     },
+    /// Write one 8-byte value into card memory through the BAR0 aperture:
+    /// a single posted write, for testing the aperture in isolation.
+    Poke {
+        /// Card physical address (hex or decimal).
+        #[arg(value_parser = parse_u64)]
+        addr: u64,
+        /// 64-bit value (hex or decimal), written little-endian.
+        #[arg(value_parser = parse_u64)]
+        value: u64,
+    },
     /// Tail the card's console ring and forward stdin lines to it.
     Console {
         /// Card physical base of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x2000000")]
+        #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
         ring_base: u64,
         /// Size of the ring region.
         #[arg(long, value_parser = parse_u64, default_value = "0x100000")]
@@ -159,6 +169,12 @@ fn main() -> Result<()> {
             card.read_card_memory(addr, &mut buf)?;
             let hex: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
             println!("{addr:#x}: {}", hex.join(" "));
+            Ok(())
+        }
+        Cmd::Poke { addr, value } => {
+            let card = open(cli.bdf.as_deref())?;
+            card.write_card_memory(addr, &value.to_le_bytes())?;
+            println!("{addr:#x} <- {value:#x}");
             Ok(())
         }
         Cmd::Console { ring_base, ring_size } => {

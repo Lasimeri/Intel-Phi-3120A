@@ -44,3 +44,10 @@ Added after the first `boot` attempt reset the host with no error logged
 (2026-09-13); the loader no longer reads back what it wrote, and this
 command exists so that aperture reads can be tested by themselves from
 the physical console.
+
+## `poke`
+
+`phictl poke 0x4000000 0` writes one 8-byte value through the aperture,
+the write-side twin of `peek`. Added 2026-09-14 after `boot --load-only`
+reset the host during its first bulk write (the ring region, then at
+32 MiB). The default ring base moved to 256 MiB at the same time.
