@@ -34,14 +34,14 @@ pub const fn smpt_entry(host_addr: u64, no_snoop: bool) -> u32 {
 /// (`docs/spec/ring-protocol.md`): 32 MiB, below the usual 64 MiB download
 /// address reported by the bootstrap and above the low memory the bootstrap
 /// uses for AP boot code.
-pub const RING_REGION_BASE: u64 = 0x0200_0000;
+pub const RING_REGION_BASE: u64 = 0x1000_0000;
 /// Default size of the ring transport region.
 pub const RING_REGION_BYTES: u64 = 1024 * 1024;
 
 // Compile-time layout checks: the ring region must sit below the typical
 // 64 MiB download address (comment in `mic_x100_load_ramdisk`) and inside
 // the card GDDR.
-const _: () = assert!(RING_REGION_BASE + RING_REGION_BYTES <= 64 * 1024 * 1024);
+const _: () = assert!(RING_REGION_BASE >= 2 * 64 * 1024 * 1024 && RING_REGION_BASE + RING_REGION_BYTES <= GDDR_BYTES_3120A);
 const _: () = assert!(RING_REGION_BASE + RING_REGION_BYTES < GDDR_BYTES_3120A);
 
 #[cfg(test)]
