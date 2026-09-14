@@ -23,3 +23,24 @@ Kconfig fragment merged onto `x86_64_defconfig`. Each block, and why:
 Options the patch series introduces (`CONFIG_X86_KNC`) will not exist on
 an unpatched tree; `merge_config.sh` warns and drops them, which is a
 useful signal that the patches are missing.
+
+## Lines added with the patch series (2026-09-13)
+
+| Option | Reason |
+| --- | --- |
+| `EXPERT=y`, `PROCESSOR_SELECT=y` | Needed to switch off `VT`, `INPUT`, `X86_16BIT`, `X86_VSYSCALL_EMULATION`, `X86_UMIP`, `PCSPKR_PLATFORM` and the non-Intel `CPU_SUP_*` vendors, which are only visible under `EXPERT`. |
+| `HYPERVISOR_GUEST=y` | `X86_KNC` depends on it: the platform layer hooks the hypervisor detection table (patch 0001). |
+| `CPU_MITIGATIONS=n` plus the individual `MITIGATION_*` | One switch for every speculation mitigation; the individual lines stay for older trees. |
+| `PARAVIRT=n`, `KVM_GUEST=n`, `XEN=n`, `JAILHOUSE_GUEST=n`, `INTEL_TDX_GUEST=n`, `AMD_MEM_ENCRYPT=n` | Guest and memory-encryption code paths that would probe CPUID leaves and MSRs the core lacks, or add indirections for nothing. |
+| `CPU_SUP_*=n` except Intel, `X86_CPU_RESCTRL=n` | Fewer vendor quirks compiled in; resctrl reads MSRs behind CPUID leaf 7, absent here. |
+| `X86_IOPL_IOPERM=n` | No port I/O (patch 0005). |
+| `EFI=n`, `KEXEC=n`, `CRASH_DUMP=n`, `SUSPEND=n`, `HIBERNATION=n` | Not applicable to a card booted by the host through the bootstrap. |
+| `EARLY_PRINTK=y`, `EARLY_PRINTK_DBGP=n`, `EARLY_PRINTK_USB_XDBC=n` | The ring console registers through `earlyprintk=phiring` (patch 0011); the USB variants would only add port and PCI probes. |
+
+Lines that could not stay: `HPET_TIMER` and `X86_MPPARSE` are `def_bool y`
+on x86-64 (harmless: no HPET is found and the platform layer replaces the
+MP-table hooks), and `MICROCODE` is `def_bool y` since 6.6, which is why
+patch 0008 disables the loader at run time for family 0xb.
+| `X86_INTEL_MEMORY_PROTECTION_KEYS=n` | `rdpkru`/`wrpkru` on every context switch path; the feature is CPUID-gated but the instructions would sit in the text. |
+| `CRC_OPTIMIZATIONS=n`, `RD_ZSTD=n` | The x86 CRC implementations are PCLMUL/AVX code selected at run time; zstd's BMI2 decoder variants use `lzcnt`. Neither is needed (initramfs is gzip or xz). The lib/crypto SIMD variants have no switch and are excluded by patch 0014. |
+| `DRM=n` | The card has no display device; the DRM core carries `movntdqa` copies selected at run time. |

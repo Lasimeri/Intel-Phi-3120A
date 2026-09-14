@@ -7,7 +7,7 @@ verified with `phi-isa-audit`.
 
 | Directory | Contents | Phase |
 | --- | --- | --- |
-| `kernel/` | Patch series plan against mainline, the Kconfig fragment, and the KNC platform layer source that the series adds | P3, P4 |
+| `kernel/` | The patch series against a pinned mainline tag (platform layer, SFI reader, ring console, instruction-set fixes), the Kconfig fragment, and `build.sh` | P3, P4 |
 | `drivers/phinet/` | Out-of-tree module: console `tty` and `netdev` over the ring transport; the shared C header for the ring layout | P4 |
 | `userland/` | Per-component build notes: musl, busybox, dropbear, Rust `init`, clang, gcc, tcc, QuickJS, CPython | P4 to P9 |
 | `initramfs/` | How the initramfs is assembled and what `init` does | P4 |

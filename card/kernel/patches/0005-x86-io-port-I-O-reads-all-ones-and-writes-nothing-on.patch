@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:08:32 -0500
+Subject: [PATCH 05/15] x86/io: port I/O reads all ones and writes nothing on
+ Knights Corner
+
+IN and OUT are not implemented on Knights Corner (ISA reference 327364,
+Appendix B.4) and nothing sits behind them: the card has no PCH (SSDG
+4.2.2). The platform layer removes every legacy device, but generic
+code still contains inb()/outb() calls on paths that cannot know
+better (reboot fallbacks, the i8042 and PIC probes when a driver is
+built in). Make the primitives inert under X86_KNC: writes are dropped
+and reads return all ones, which is what an empty ISA bus returns and
+what every probe treats as "absent". native_io_delay() has nothing to
+delay for and returns.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/shared/io.h | 20 ++++++++++++++++++++
+ arch/x86/kernel/io_delay.c       |  4 ++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/arch/x86/include/asm/shared/io.h b/arch/x86/include/asm/shared/io.h
+index 8009d781c..4b0d405b4 100644
+--- a/arch/x86/include/asm/shared/io.h
++++ b/arch/x86/include/asm/shared/io.h
+@@ -4,6 +4,25 @@
+ 
+ #include <linux/types.h>
+ 
++#ifdef CONFIG_X86_KNC
++/*
++ * Knights Corner has no port I/O: IN and OUT are not implemented (ISA
++ * reference 327364, Appendix B.4) and there is no PCH behind them (SSDG
++ * 4.2.2). Reads return all ones like an empty bus, writes are dropped.
++ */
++#define BUILDIO(bwl, bw, type)						\
++static __always_inline void __out##bwl(type value, u16 port)		\
++{									\
++	(void)value;							\
++	(void)port;							\
++}									\
++									\
++static __always_inline type __in##bwl(u16 port)				\
++{									\
++	(void)port;							\
++	return (type)~(type)0;						\
++}
++#else
+ #define BUILDIO(bwl, bw, type)						\
+ static __always_inline void __out##bwl(type value, u16 port)		\
+ {									\
+@@ -18,6 +37,7 @@ static __always_inline type __in##bwl(u16 port)				\
+ 		     : "=a"(value) : "Nd"(port));			\
+ 	return value;							\
+ }
++#endif
+ 
+ BUILDIO(b, b, u8)
+ BUILDIO(w, w, u16)
+diff --git a/arch/x86/kernel/io_delay.c b/arch/x86/kernel/io_delay.c
+index fdb6506ce..f65893836 100644
+--- a/arch/x86/kernel/io_delay.c
++++ b/arch/x86/kernel/io_delay.c
+@@ -37,6 +37,10 @@ static int __initdata io_delay_override;
+  */
+ void native_io_delay(void)
+ {
++	/* Knights Corner: no port I/O to wait for (SSDG 4.2.2). */
++	if (IS_ENABLED(CONFIG_X86_KNC))
++		return;
++
+ 	switch (io_delay_type) {
+ 	default:
+ 	case IO_DELAY_TYPE_0X80:

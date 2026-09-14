@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:10:04 -0500
+Subject: [PATCH 09/15] x86/ioapic: accept I/O APIC addresses above 4 GiB
+
+mp_register_ioapic() takes the I/O APIC base as u32 and keeps it in
+struct mpc_ioapic, whose apicaddr field mirrors the 32-bit MP-table
+entry. Knights Corner places its I/O APIC at a fixed 64-bit address
+(SSDG 328207-002 section 4.2.5), reported by the bootstrap's SFI APIC
+table; Intel's card kernel widened the same field.
+
+Take the address as phys_addr_t, remember the full value next to the
+MP configuration, and use it when the fixmaps are (re)created. The
+MP-table copy keeps its truncated value for the existing u32 users
+(printing and ACPI bookkeeping); every existing caller passes a 32-bit
+address and is unchanged. io_apic_set_fixmap() already takes
+phys_addr_t.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/io_apic.h |  2 +-
+ arch/x86/kernel/apic/io_apic.c | 12 ++++++++----
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/arch/x86/include/asm/io_apic.h b/arch/x86/include/asm/io_apic.h
+index 0d806513c..68090e0e0 100644
+--- a/arch/x86/include/asm/io_apic.h
++++ b/arch/x86/include/asm/io_apic.h
+@@ -146,7 +146,7 @@ extern int mp_find_ioapic_pin(int ioapic, u32 gsi);
+ extern int mp_map_gsi_to_irq(u32 gsi, unsigned int flags,
+ 			     struct irq_alloc_info *info);
+ extern void mp_unmap_irq(int irq);
+-extern int mp_register_ioapic(int id, u32 address, u32 gsi_base,
++extern int mp_register_ioapic(int id, phys_addr_t address, u32 gsi_base,
+ 			      struct ioapic_domain_cfg *cfg);
+ extern int mp_unregister_ioapic(u32 gsi_base);
+ extern int mp_ioapic_registered(u32 gsi_base);
+diff --git a/arch/x86/kernel/apic/io_apic.c b/arch/x86/kernel/apic/io_apic.c
+index 7d7175d01..1636a0fab 100644
+--- a/arch/x86/kernel/apic/io_apic.c
++++ b/arch/x86/kernel/apic/io_apic.c
+@@ -111,6 +111,8 @@ static struct ioapic {
+ 	struct IO_APIC_route_entry	*saved_registers;
+ 	/* I/O APIC config */
+ 	struct mpc_ioapic		mp_config;
++	/* Full physical address; mp_config.apicaddr holds only 32 bits */
++	phys_addr_t			phys_addr;
+ 	/* IO APIC gsi routing info */
+ 	struct mp_ioapic_gsi		gsi_config;
+ 	struct ioapic_domain_cfg	irqdomain_cfg;
+@@ -2555,7 +2557,7 @@ void __init io_apic_init_mappings(void)
+ 	ioapic_res = ioapic_setup_resources();
+ 	for_each_ioapic(i) {
+ 		if (smp_found_config) {
+-			ioapic_phys = mpc_ioapic_addr(i);
++			ioapic_phys = ioapics[i].phys_addr ?: mpc_ioapic_addr(i);
+ #ifdef CONFIG_X86_32
+ 			if (!ioapic_phys) {
+ 				pr_err("WARNING: bogus zero IO-APIC address found in MPTABLE, "
+@@ -2669,7 +2671,7 @@ static int find_free_ioapic_entry(void)
+  * @gsi_base:	base of GSI associated with the IOAPIC
+  * @cfg:	configuration information for the IOAPIC
+  */
+-int mp_register_ioapic(int id, u32 address, u32 gsi_base, struct ioapic_domain_cfg *cfg)
++int mp_register_ioapic(int id, phys_addr_t address, u32 gsi_base, struct ioapic_domain_cfg *cfg)
+ {
+ 	bool hotplug = !!ioapic_initialized;
+ 	struct mp_ioapic_gsi *gsi_cfg;
+@@ -2682,8 +2684,8 @@ int mp_register_ioapic(int id, u32 address, u32 gsi_base, struct ioapic_domain_c
+ 	}
+ 
+ 	for_each_ioapic(ioapic) {
+-		if (ioapics[ioapic].mp_config.apicaddr == address) {
+-			pr_warn("address 0x%x conflicts with IOAPIC%d\n", address, ioapic);
++		if (ioapics[ioapic].phys_addr == address) {
++			pr_warn("address %pa conflicts with IOAPIC%d\n", &address, ioapic);
+ 			return -EEXIST;
+ 		}
+ 	}
+@@ -2698,6 +2700,7 @@ int mp_register_ioapic(int id, u32 address, u32 gsi_base, struct ioapic_domain_c
+ 	ioapics[idx].mp_config.type = MP_IOAPIC;
+ 	ioapics[idx].mp_config.flags = MPC_APIC_USABLE;
+ 	ioapics[idx].mp_config.apicaddr = address;
++	ioapics[idx].phys_addr = address;
+ 
+ 	io_apic_set_fixmap(FIX_IO_APIC_BASE_0 + idx, address);
+ 	if (bad_ioapic_register(idx)) {
+@@ -2794,6 +2797,7 @@ int mp_unregister_ioapic(u32 gsi_base)
+ 
+ 	/* Mark entry not present */
+ 	ioapics[ioapic].nr_registers  = 0;
++	ioapics[ioapic].phys_addr = 0;
+ 	ioapic_destroy_irqdomain(ioapic);
+ 	free_ioapic_saved_registers(ioapic);
+ 	if (ioapics[ioapic].iomem_res)

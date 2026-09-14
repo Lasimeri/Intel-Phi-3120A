@@ -14,6 +14,13 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/../env.sh"
+# env.sh prepares the CARD toolchain environment: CC=knc-cc, CXX=knc-c++ and
+# the patched clang first on PATH. This script builds LLVM for the HOST, so
+# those must not leak into cmake: the host compilers are pinned by absolute
+# path (override with PHI_HOST_CC / PHI_HOST_CXX) and CC/CXX are unset.
+unset CC CXX
+HOST_CC="${PHI_HOST_CC:-/usr/bin/clang}"
+HOST_CXX="${PHI_HOST_CXX:-/usr/bin/clang++}"
 # Real, space-free paths (see env.md): cmake and ninja record absolute paths
 # and the LLVM shared-library link passes a version-script path unquoted.
 root="$phi_build/.."
@@ -63,8 +70,8 @@ common_opts() {
         -DLLVM_INCLUDE_EXAMPLES=OFF \
         -DLLVM_INCLUDE_DOCS=OFF \
         -DLLVM_ENABLE_BINDINGS=OFF \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_C_COMPILER="$HOST_CC" \
+        -DCMAKE_CXX_COMPILER="$HOST_CXX" \
         -DLLVM_USE_LINKER=lld
 }
 
@@ -124,8 +131,13 @@ install() {
 }
 
 # check: compile the two probe files from docs/research/abi-and-toolchain.md
-# with the wrapper and audit the result.
+# with the wrapper and audit the result. The dylib variant ships no clang;
+# its check is that rustc loads it, done by toolchain/rust/build-std.sh.
 check() {
+    if [ "$VARIANT" = dylib ]; then
+        echo "== check: dylib variant has no clang; verified by toolchain/rust/build-std.sh"
+        return
+    fi
     local tmp; tmp=$(mktemp -d)
     printf 'int f(int a,int b,int c){return c?a:b;}\nlong g(long a,long b,int c){return c?a:b;}\n' > "$tmp/t.c"
     printf 'double m(double a,double b){return a*b+1.5;}\nfloat h(float a){return a/3.0f;}\n' > "$tmp/d.c"

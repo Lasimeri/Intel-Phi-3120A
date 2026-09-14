@@ -20,3 +20,14 @@ The register is live. A reset walks `"0c"`, the GDDR training codes
 and ends at `"12"` after 9.3 s. The characters match Intel table mixed
 case exactly, so the table was transcribed from this register. `"16"` is
 decoded as "undocumented" with the observation date.
+
+## Codes written by the card kernel
+
+The card kernel from `card/kernel/patches` writes its own progress codes
+into the same register (`asm/knc.h` in patch 0010): the letter `K`
+followed by one character, so they never collide with Intel's numeric
+codes. `K0` and `K1` come from the decompressor, `K2` to `K5` from the
+platform layer inside `setup_arch()`, `K6` from the ring console, `K7`
+from a late initcall just before `init` starts, and `KH`, `KP`, `KE` mark
+halt, panic and the fatal "no SFI tables" case. `phictl postcode` decodes
+them like Intel's; the decoder table lists every one.

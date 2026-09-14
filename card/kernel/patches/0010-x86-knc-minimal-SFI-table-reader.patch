@@ -1,0 +1,329 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:15:07 -0500
+Subject: [PATCH 10/15] x86/knc: minimal SFI table reader
+
+The Knights Corner bootstrap hands the kernel its CPU list, I/O APIC
+address and memory map in Simple Firmware Interface (SFI 0.7) tables
+(SSDG 328207-002 section 2.2.4.2). Mainline removed drivers/sfi in
+5.12. Add a reader for exactly the four tables the card needs: it
+locates SYST in the 0xE0000 to 0xFFFFF window on 16-byte boundaries,
+verifies the byte-sum checksum of every table, and collects CPUS (one
+u32 APIC id per entry), APIC (one u64 I/O APIC base per entry) and
+MMAP (UEFI memory descriptors). Layouts follow include/linux/sfi.h as
+of Linux 5.11, which Intel's card kernel used unchanged.
+
+asm/knc.h also carries the card's fixed physical addresses (DBOX and
+SBOX register blocks, from Intel's card kernel and the v5.9 card
+driver), the SBOX registers the platform layer reads, and the POST
+code values the kernel writes for the host to watch.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/knc.h |  77 ++++++++++++++
+ arch/x86/kernel/Makefile   |   1 +
+ arch/x86/kernel/knc_sfi.c  | 199 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 277 insertions(+)
+ create mode 100644 arch/x86/include/asm/knc.h
+ create mode 100644 arch/x86/kernel/knc_sfi.c
+
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+new file mode 100644
+index 000000000..058061414
+--- /dev/null
++++ b/arch/x86/include/asm/knc.h
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Knights Corner (Intel Xeon Phi x100) platform definitions shared by the
++ * platform layer, the SFI reader and the ring early console.
++ *
++ * Addresses: Intel's card kernel (linux-2.6.38.8+mpss3.5.1,
++ * arch/x86/include/asm/mic/mic_knc/autobaseaddress.h) and the v5.9 card
++ * driver (drivers/misc/mic/card/mic_x100.h, MIC_X100_MMIO_BASE). The host
++ * sees the same two 64 KiB blocks as PCI BAR4: DBOX at offset 0, SBOX at
++ * offset 0x10000.
++ */
++#ifndef _ASM_X86_KNC_H
++#define _ASM_X86_KNC_H
++
++#include <linux/types.h>
++
++#define KNC_DBOX_PHYS		0x08007C0000ULL
++#define KNC_SBOX_PHYS		0x08007D0000ULL
++#define KNC_BOX_SIZE		0x10000
++
++/* DBOX: the POST code register the host reads at BAR4 + 0x242c. */
++#define KNC_DBOX_POSTCODE	0x242c
++
++/* SBOX registers (micsboxdefine.h, CONFIG_MK1OM values). */
++#define KNC_SBOX_CURRENT_CLK_RATIO	0x3004
++#define KNC_SBOX_SCRATCH(n)		(0xAB20 + 4 * (n))
++#define KNC_SBOX_SCRATCH4		KNC_SBOX_SCRATCH(4)	/* platform word */
++
++/*
++ * Progress codes written to the POST register: two ASCII characters, low
++ * byte first, the convention of the bootstrap ("12" = waiting for download
++ * reads as 0x3231). The kernel uses 'K' plus a digit or letter.
++ */
++#define KNC_POST(a, b)		((u32)(a) | ((u32)(b) << 8))
++#define KNC_POST_DECOMP_ENTRY	KNC_POST('K', '0')	/* decompressor entered */
++#define KNC_POST_DECOMP_DONE	KNC_POST('K', '1')	/* kernel decompressed */
++#define KNC_POST_PLATFORM	KNC_POST('K', '2')	/* platform layer running */
++#define KNC_POST_SFI		KNC_POST('K', '3')	/* SFI tables parsed */
++#define KNC_POST_TIMERS		KNC_POST('K', '4')	/* timer init */
++#define KNC_POST_SMP		KNC_POST('K', '5')	/* CPUs and I/O APIC registered */
++#define KNC_POST_CONSOLE	KNC_POST('K', '6')	/* ring console attached */
++#define KNC_POST_INIT		KNC_POST('K', '7')	/* userspace init started */
++#define KNC_POST_HALT		KNC_POST('K', 'H')
++#define KNC_POST_PANIC		KNC_POST('K', 'P')
++#define KNC_POST_ERROR		KNC_POST('K', 'E')
++
++#define KNC_MAX_CPUS		256
++#define KNC_MAX_IOAPICS		4
++#define KNC_MAX_MEM		32
++
++/* What the bootstrap's SFI tables said (knc_sfi.c). */
++struct knc_sfi_info {
++	unsigned int num_cpus;
++	u32 apic_ids[KNC_MAX_CPUS];
++	unsigned int num_ioapics;
++	u64 ioapic_phys[KNC_MAX_IOAPICS];
++	unsigned int num_mem;
++	struct {
++		u64 start;
++		u64 size;
++		u32 type;	/* EFI memory type */
++	} mem[KNC_MAX_MEM];
++};
++
++int __init knc_sfi_parse(struct knc_sfi_info *info);
++
++/* Ring early console (knc_earlycon.c). */
++struct console;
++extern struct console knc_earlycon;
++int __init knc_earlycon_init(void);
++bool __init knc_ring_params(u64 *base, u64 *size);
++u64 knc_ring_host_epoch_ns(void);
++
++/* Platform layer (knc.c). */
++void knc_postcode(u32 code);
++
++#endif /* _ASM_X86_KNC_H */
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 31f46fd00..4d5c0defb 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,6 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
++obj-$(CONFIG_X86_KNC)		+= knc_sfi.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_sfi.c b/arch/x86/kernel/knc_sfi.c
+new file mode 100644
+index 000000000..cf61c760e
+--- /dev/null
++++ b/arch/x86/kernel/knc_sfi.c
+@@ -0,0 +1,199 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Minimal Simple Firmware Interface (SFI 0.7) reader for Knights Corner.
++ *
++ * The card bootstrap describes CPUs, I/O APICs and memory in SFI tables
++ * (SSDG 328207-002 section 2.2.4.2). Mainline removed drivers/sfi in 5.12;
++ * this file reads just the four tables the card needs. Layouts follow the
++ * SFI 0.7 specification as carried by include/linux/sfi.h of Linux 5.11
++ * and by Intel's card kernel: a 24-byte header (signature, length,
++ * revision, checksum, OEM ids), the system table SYST listing 64-bit
++ * physical addresses of the other tables, CPUS with one u32 APIC id per
++ * entry, APIC with one u64 I/O APIC base per entry, MMAP with EFI-style
++ * memory descriptors. Every table sums to zero over its length.
++ */
++
++#define pr_fmt(fmt) "KNC: SFI: " fmt
++
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/sizes.h>
++#include <linux/string.h>
++
++#include <asm/knc.h>
++
++#define SFI_SYST_SEARCH_BEGIN	0x000E0000
++#define SFI_SYST_SEARCH_END	0x000FFFFF
++#define SFI_SYST_MAX_LEN	SZ_4K
++
++struct sfi_table_header {
++	char	sig[4];
++	u32	len;
++	u8	rev;
++	u8	csum;
++	char	oem_id[6];
++	char	oem_table_id[8];
++} __packed;
++
++struct sfi_table_simple {
++	struct sfi_table_header	header;
++	u64			pentry[];
++} __packed;
++
++struct sfi_cpu_table_entry {
++	u32	apic_id;
++} __packed;
++
++struct sfi_apic_table_entry {
++	u64	phys_addr;
++} __packed;
++
++/* UEFI 2.1 memory descriptor, as SFI carries it. */
++struct sfi_mem_entry {
++	u32	type;
++	u64	phys_start;
++	u64	virt_start;
++	u64	pages;
++	u64	attrib;
++} __packed;
++
++static bool __init sfi_checksum_ok(const void *table, u32 len)
++{
++	const u8 *p = table;
++	u8 sum = 0;
++
++	while (len--)
++		sum += *p++;
++	return sum == 0;
++}
++
++/* Map a whole table by physical address after validating its header. */
++static struct sfi_table_header __init *sfi_map_table(u64 pa, u32 *len_out)
++{
++	struct sfi_table_header *h;
++	u32 len;
++
++	h = early_memremap(pa, sizeof(*h));
++	if (!h)
++		return NULL;
++	len = h->len;
++	early_memunmap(h, sizeof(*h));
++
++	if (len < sizeof(*h) || len > SZ_1M) {
++		pr_warn("table at %#llx has bad length %u\n", pa, len);
++		return NULL;
++	}
++	h = early_memremap(pa, len);
++	if (!h)
++		return NULL;
++	if (!sfi_checksum_ok(h, len)) {
++		pr_warn("table %.4s at %#llx fails its checksum\n", h->sig, pa);
++		early_memunmap(h, len);
++		return NULL;
++	}
++	*len_out = len;
++	return h;
++}
++
++#define SFI_ENTRIES(len, type) (((len) - sizeof(struct sfi_table_header)) / sizeof(type))
++
++static void __init sfi_parse_one(u64 pa, struct knc_sfi_info *info)
++{
++	struct sfi_table_header *h;
++	struct sfi_table_simple *sb;
++	unsigned int i, n;
++	u32 len;
++
++	h = sfi_map_table(pa, &len);
++	if (!h)
++		return;
++	sb = (struct sfi_table_simple *)h;
++
++	if (!memcmp(h->sig, "CPUS", 4)) {
++		struct sfi_cpu_table_entry *e = (void *)sb->pentry;
++
++		n = SFI_ENTRIES(len, *e);
++		for (i = 0; i < n && info->num_cpus < KNC_MAX_CPUS; i++)
++			info->apic_ids[info->num_cpus++] = e[i].apic_id;
++		pr_info("CPUS: %u entries\n", n);
++	} else if (!memcmp(h->sig, "APIC", 4)) {
++		struct sfi_apic_table_entry *e = (void *)sb->pentry;
++
++		n = SFI_ENTRIES(len, *e);
++		for (i = 0; i < n && info->num_ioapics < KNC_MAX_IOAPICS; i++) {
++			info->ioapic_phys[info->num_ioapics++] = e[i].phys_addr;
++			pr_info("APIC: I/O APIC %u at %#llx\n", i, e[i].phys_addr);
++		}
++	} else if (!memcmp(h->sig, "MMAP", 4)) {
++		struct sfi_mem_entry *e = (void *)sb->pentry;
++
++		n = SFI_ENTRIES(len, *e);
++		for (i = 0; i < n && info->num_mem < KNC_MAX_MEM; i++) {
++			info->mem[info->num_mem].start = e[i].phys_start;
++			info->mem[info->num_mem].size = e[i].pages << 12;
++			info->mem[info->num_mem].type = e[i].type;
++			info->num_mem++;
++			pr_info("MMAP: type %u at %#llx, %llu pages\n",
++				e[i].type, e[i].phys_start, e[i].pages);
++		}
++	} else {
++		pr_info("%.4s: %u bytes, not used\n", h->sig, len);
++	}
++	early_memunmap(h, len);
++}
++
++/**
++ * knc_sfi_parse() - Find the SFI system table and read the card's tables.
++ * @info: filled with APIC ids, I/O APIC addresses and memory ranges.
++ *
++ * The system table lives on a 16-byte boundary in the 0xE0000 to 0xFFFFF
++ * physical range (SFI 0.7 section 2.1). Returns 0 when at least one CPU
++ * was found, -ENODEV otherwise.
++ */
++int __init knc_sfi_parse(struct knc_sfi_info *info)
++{
++	const u32 span = SFI_SYST_SEARCH_END - SFI_SYST_SEARCH_BEGIN + 1;
++	struct sfi_table_simple *syst = NULL;
++	unsigned int i, n;
++	void *start;
++	u32 off;
++
++	memset(info, 0, sizeof(*info));
++
++	start = early_memremap(SFI_SYST_SEARCH_BEGIN, span);
++	if (!start)
++		return -ENODEV;
++
++	for (off = 0; off + sizeof(struct sfi_table_header) <= span; off += 16) {
++		struct sfi_table_header *h = start + off;
++
++		if (memcmp(h->sig, "SYST", 4))
++			continue;
++		if (h->len < sizeof(*h) || h->len > SFI_SYST_MAX_LEN ||
++		    off + h->len > span)
++			continue;
++		if (!sfi_checksum_ok(h, h->len))
++			continue;
++		pr_info("SYST at %#x, %u bytes, OEM %.6s %.8s\n",
++			SFI_SYST_SEARCH_BEGIN + off, h->len, h->oem_id, h->oem_table_id);
++		syst = (struct sfi_table_simple *)h;
++		break;
++	}
++
++	if (!syst) {
++		pr_warn("no system table in %#x-%#x\n",
++			SFI_SYST_SEARCH_BEGIN, SFI_SYST_SEARCH_END);
++		early_memunmap(start, span);
++		return -ENODEV;
++	}
++
++	n = SFI_ENTRIES(syst->header.len, u64);
++	for (i = 0; i < n; i++)
++		sfi_parse_one(syst->pentry[i], info);
++	early_memunmap(start, span);
++
++	pr_info("%u CPU(s), %u I/O APIC(s), %u memory range(s)\n",
++		info->num_cpus, info->num_ioapics, info->num_mem);
++	return info->num_cpus ? 0 : -ENODEV;
++}

@@ -1,0 +1,18 @@
+diff --git a/clang/include/clang/Options/Options.td b/clang/include/clang/Options/Options.td
+index b2b8dc5d4..3001a75be 100644
+--- a/clang/include/clang/Options/Options.td
++++ b/clang/include/clang/Options/Options.td
+@@ -6931,6 +6931,13 @@ def mlzcnt : Flag<["-"], "mlzcnt">, Group<m_x86_Features_Group>;
+ def mno_lzcnt : Flag<["-"], "mno-lzcnt">, Group<m_x86_Features_Group>;
+ def mmovbe : Flag<["-"], "mmovbe">, Group<m_x86_Features_Group>;
+ def mno_movbe : Flag<["-"], "mno-movbe">, Group<m_x86_Features_Group>;
++// Intel Phi 3120A project: expose the "cmov" and "nopl" subtarget features as
++// driver flags so that they reach the integrated assembler for .S files too
++// (-Xclang -target-feature only reaches cc1). Knights Corner has neither.
++def mcmov : Flag<["-"], "mcmov">, Group<m_x86_Features_Group>;
++def mno_cmov : Flag<["-"], "mno-cmov">, Group<m_x86_Features_Group>;
++def mnopl : Flag<["-"], "mnopl">, Group<m_x86_Features_Group>;
++def mno_nopl : Flag<["-"], "mno-nopl">, Group<m_x86_Features_Group>;
+ def mmovdiri : Flag<["-"], "mmovdiri">, Group<m_x86_Features_Group>;
+ def mno_movdiri : Flag<["-"], "mno-movdiri">, Group<m_x86_Features_Group>;
+ def mmovdir64b : Flag<["-"], "mmovdir64b">, Group<m_x86_Features_Group>;

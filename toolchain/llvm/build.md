@@ -57,3 +57,14 @@ symbols under the `LLVM_22.1` version node; rustc's driver binds
 `std::string::_M_replace@LLVM_22.1` and refuses a dylib that links
 libstdc++ dynamically (`symbol lookup error ... version LLVM_22.1`,
 measured 2026-09-13).
+
+## Host compiler
+
+`env.sh` prepares the card environment (`CC=knc-cc`, `CXX=knc-c++`, the
+patched clang first on `PATH`). This script builds LLVM for the host, so
+it unsets `CC`/`CXX` after sourcing and pins `/usr/bin/clang` and
+`/usr/bin/clang++` by absolute path (`PHI_HOST_CC`, `PHI_HOST_CXX` to
+override). Measured 2026-09-13: with a bare `clang++`, a rebuild after the
+first install picked up the card clang (musl triple, libc++ without
+libc++abi) and the first host tool link failed with undefined
+`operator new` and `__cxa_guard_acquire`.

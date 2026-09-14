@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:07:51 -0500
+Subject: [PATCH 01/15] x86/Kconfig: add X86_KNC for the Xeon Phi x100 (Knights
+ Corner) card
+
+The Knights Corner coprocessor (CPUID family 0x0B, model 0x01) runs a
+64-bit kernel but is not a PC: no PIC, PIT, RTC, HPET, ACPI, i8042 or
+port I/O (SSDG 328207-002 section 4.2.2), an I/O APIC at a 64-bit
+address (4.2.5), CPU and memory description in SFI tables built by the
+card bootstrap (2.2.4.2), no global pages (4.2.10), and an instruction
+set without SSE, CMOV, PAUSE, MONITOR/MWAIT, CMPXCHG16B, the fences,
+CLFLUSH and PREFETCH (ISA reference 327364, Appendix B).
+
+Add the umbrella option. It depends on HYPERVISOR_GUEST because the
+platform layer hooks the hypervisor detection table, the one place in
+setup_arch() that runs after the memory map is known and before timers
+and APICs are configured (the same way arch/x86/kernel/jailhouse.c
+does). The option excludes configurations that need instructions or
+MSRs the core does not have.
+
+Part of the Intel Phi 3120A project (github.com/Lasimeri/Intel-Phi-3120A).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/Kconfig | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
+index bdad90f21..c00ea79f0 100644
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -659,6 +659,26 @@ config X86_GOLDFISH
+ 	  for Android development. Unless you are building for the Android
+ 	  Goldfish emulator say N here.
+ 
++config X86_KNC
++	bool "Intel Xeon Phi x100 (Knights Corner) coprocessor card"
++	depends on X86_64
++	depends on X86_EXTENDED_PLATFORM
++	depends on SMP && X86_LOCAL_APIC && X86_IO_APIC
++	depends on !X86_X2APIC
++	depends on !X86_KERNEL_IBT && !KVM && !X86_MCE && !IA32_EMULATION
++	depends on !MITIGATION_RETPOLINE && !MITIGATION_RETHUNK
++	depends on HYPERVISOR_GUEST
++	help
++	  Run this kernel on the Intel Xeon Phi x100 coprocessor card
++	  (Knights Corner, CPUID family 0x0B). The card has no PC platform
++	  devices, its I/O APIC sits at a 64-bit address, CPUs and memory
++	  are described by SFI tables built by the card bootstrap, and the
++	  core lacks SSE, CMOV, PAUSE, fences, CLFLUSH, PREFETCH, port I/O
++	  and global pages. This option adds the platform layer (detected
++	  by CPUID at boot) and changes the instruction choices of the
++	  kernel itself accordingly. Intended only for the card; say N on
++	  any other machine.
++
+ # Following is an alphabetically sorted list of 32 bit extended platforms
+ # Please maintain the alphabetic order if and when there are additions
+ 

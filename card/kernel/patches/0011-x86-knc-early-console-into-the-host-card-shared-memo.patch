@@ -1,0 +1,298 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:15:58 -0500
+Subject: [PATCH 11/15] x86/knc: early console into the host/card shared-memory
+ ring
+
+The card has no UART (SSDG 328207-002 section 4.2.2); the only path to
+the host is card memory, which the host reads through the PCI aperture.
+Add earlyprintk=phiring[,keep]: it locates the ring region the host
+loader formatted (phi.ring=<base>,<size> on the command line, layout
+per the Intel Phi 3120A ring protocol v1), validates the region and
+console-channel magics, and appends printk output to the card-to-host
+ring, publishing the head index after a write barrier. A full ring
+drops bytes rather than stalling boot; the count is reported once the
+permanent mapping is in place.
+
+The region is mapped uncached, with early_ioremap() during setup_arch()
+and re-mapped with ioremap() from an early initcall so the console can
+be kept. The region header's card_boot_flags bit 0 is set on attach,
+which gives the host a "kernel alive" signal before the first line, and
+host_epoch_ns from the same header is exported for the wall clock.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/kernel/Makefile       |   2 +-
+ arch/x86/kernel/early_printk.c |  11 ++
+ arch/x86/kernel/knc_earlycon.c | 220 +++++++++++++++++++++++++++++++++
+ 3 files changed, 232 insertions(+), 1 deletion(-)
+ create mode 100644 arch/x86/kernel/knc_earlycon.c
+
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 4d5c0defb..d33d62fe9 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc_sfi.o
++obj-$(CONFIG_X86_KNC)		+= knc_sfi.o knc_earlycon.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/early_printk.c b/arch/x86/kernel/early_printk.c
+index cba75306e..cc17550f0 100644
+--- a/arch/x86/kernel/early_printk.c
++++ b/arch/x86/kernel/early_printk.c
+@@ -21,6 +21,9 @@
+ #include <linux/usb/xhci-dbgp.h>
+ #include <asm/pci_x86.h>
+ #include <linux/static_call.h>
++#ifdef CONFIG_X86_KNC
++#include <asm/knc.h>
++#endif
+ 
+ /* Simple VGA output */
+ #define VGABASE		(__ISA_IO_base + 0xb8000)
+@@ -440,6 +443,14 @@ static int __init setup_early_printk(char *buf)
+ 		if (!strncmp(buf, "xdbc", 4))
+ 			early_xdbc_parse_parameter(buf + 4, keep);
+ #endif
++#ifdef CONFIG_X86_KNC
++		/* Knights Corner: the host/card shared-memory ring (knc_earlycon.c). */
++		if (!strncmp(buf, "phiring", 7)) {
++			buf += 7;
++			if (!knc_earlycon_init())
++				early_console_register(&knc_earlycon, keep);
++		}
++#endif
+ 
+ 		buf++;
+ 	}
+diff --git a/arch/x86/kernel/knc_earlycon.c b/arch/x86/kernel/knc_earlycon.c
+new file mode 100644
+index 000000000..cc1cefd48
+--- /dev/null
++++ b/arch/x86/kernel/knc_earlycon.c
+@@ -0,0 +1,220 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Early console into the host/card shared-memory ring for Knights Corner.
++ *
++ * The card has no UART (SSDG 328207-002 section 4.2.2). The host loader
++ * formats a region of card memory according to the Intel Phi 3120A ring
++ * protocol v1 (docs/spec/ring-protocol.md in that project) and names it on
++ * the command line as phi.ring=<base>,<size>. This console appends bytes
++ * to the card-to-host ring of the console channel; the host tails it with
++ * "phictl console". Enable with earlyprintk=phiring[,keep].
++ *
++ * Region layout (little-endian, every structure 64-byte aligned):
++ *
++ *   region header at 0: magic "PHIR", version, region_size, channel_count,
++ *                       host_epoch_ns (u64 at 16), card_boot_flags (u64 at 24)
++ *   channel descriptors at 64 + 64*i: kind (1 = console), flags,
++ *                       h2c_offset, h2c_size, c2h_offset, c2h_size
++ *   ring at each offset: magic "RING", size, head (u32 at 64),
++ *                       tail (u32 at 128), data (at 192)
++ *
++ * The producer writes data[head % size] and then publishes head; head and
++ * tail are free-running u32 indices. The region is accessed uncached so
++ * that PCIe reads from the host never see stale lines.
++ */
++
++#define pr_fmt(fmt) "KNC: ring console: " fmt
++
++#include <linux/console.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
++
++#include <asm/barrier.h>
++#include <asm/knc.h>
++#include <asm/setup.h>
++
++#define PHI_REGION_MAGIC	0x52494850	/* "PHIR" */
++#define PHI_RING_MAGIC		0x474E4952	/* "RING" */
++#define PHI_REGION_VERSION	1
++#define PHI_CHANNEL_CONSOLE	1
++
++#define REGION_MAGIC		0
++#define REGION_VERSION		4
++#define REGION_SIZE		8
++#define REGION_CHANNEL_COUNT	12
++#define REGION_HOST_EPOCH_NS	16
++#define REGION_CARD_BOOT_FLAGS	24
++#define REGION_DESC(i)		(64 + 64 * (i))
++#define DESC_KIND		0
++#define DESC_C2H_OFFSET		16
++#define DESC_C2H_SIZE		20
++
++#define RING_MAGIC		0
++#define RING_SIZE		4
++#define RING_HEAD		64
++#define RING_TAIL		128
++#define RING_DATA		192
++
++#define CARD_BOOT_FLAG_KERNEL	BIT_ULL(0)
++
++static u64 knc_ring_base;
++static u64 knc_ring_size;
++static void __iomem *knc_region;	/* whole region */
++static void __iomem *knc_con;		/* console card-to-host ring */
++static u32 knc_con_size;
++static u32 knc_con_head;
++static unsigned long knc_con_dropped;
++static bool knc_region_is_early;	/* mapped with early_ioremap() */
++
++/**
++ * knc_ring_params() - Read phi.ring=<base>,<size> from the boot command line.
++ *
++ * Parsed here rather than through early_param() so that the console can be
++ * set up regardless of where the host placed the parameter on the line.
++ */
++bool __init knc_ring_params(u64 *base, u64 *size)
++{
++	const char *p = strstr(boot_command_line, "phi.ring=");
++	char *end;
++
++	if (!p)
++		return false;
++	p += strlen("phi.ring=");
++	*base = simple_strtoull(p, &end, 0);
++	if (*end != ',')
++		return false;
++	*size = simple_strtoull(end + 1, &end, 0);
++	return *base && *size >= SZ_4K && *size <= SZ_64M;
++}
++
++/* Validate the region and locate the console ring; @map is the region. */
++static bool knc_ring_attach(void __iomem *map)
++{
++	u32 count, i;
++
++	if (readl(map + REGION_MAGIC) != PHI_REGION_MAGIC ||
++	    readl(map + REGION_VERSION) != PHI_REGION_VERSION)
++		return false;
++	count = readl(map + REGION_CHANNEL_COUNT);
++	if (count > 16)
++		return false;
++	for (i = 0; i < count; i++) {
++		void __iomem *desc = map + REGION_DESC(i);
++		u32 off, size;
++
++		if (readl(desc + DESC_KIND) != PHI_CHANNEL_CONSOLE)
++			continue;
++		off = readl(desc + DESC_C2H_OFFSET);
++		size = readl(desc + DESC_C2H_SIZE);
++		if (!size || (size & (size - 1)) || off + RING_DATA + size > knc_ring_size)
++			return false;
++		if (readl(map + off + RING_MAGIC) != PHI_RING_MAGIC ||
++		    readl(map + off + RING_SIZE) != size)
++			return false;
++		knc_con = map + off;
++		knc_con_size = size;
++		knc_con_head = readl(knc_con + RING_HEAD);
++		knc_region = map;
++		return true;
++	}
++	return false;
++}
++
++static void knc_earlycon_write(struct console *con, const char *s, unsigned int n)
++{
++	u32 head = knc_con_head;
++	u32 tail;
++
++	if (!knc_con)
++		return;
++	tail = readl(knc_con + RING_TAIL);
++	while (n--) {
++		if (head - tail >= knc_con_size) {
++			/* Host has not drained the ring; drop rather than stall boot. */
++			knc_con_dropped += n + 1;
++			break;
++		}
++		writeb(*s++, knc_con + RING_DATA + (head % knc_con_size));
++		head++;
++	}
++	/* Data before index: patched to a locked add on this core. */
++	wmb();
++	writel(head, knc_con + RING_HEAD);
++	knc_con_head = head;
++}
++
++struct console knc_earlycon = {
++	.name	= "phiring",
++	.write	= knc_earlycon_write,
++	.flags	= CON_PRINTBUFFER,
++	.index	= -1,
++};
++
++/**
++ * knc_earlycon_init() - Map the ring region with early_ioremap() and attach.
++ *
++ * Called from setup_early_printk() while early_ioremap() is available
++ * (setup_arch() runs early_ioremap_init() before parse_early_param()).
++ * Returns 0 when the console can be registered.
++ */
++int __init knc_earlycon_init(void)
++{
++	void __iomem *map;
++
++	if (knc_con)
++		return 0;
++	if (!knc_ring_params(&knc_ring_base, &knc_ring_size))
++		return -ENODEV;
++	map = early_ioremap(knc_ring_base, knc_ring_size);
++	if (!map)
++		return -ENOMEM;
++	if (!knc_ring_attach(map)) {
++		early_iounmap(map, knc_ring_size);
++		return -ENODEV;
++	}
++	knc_region_is_early = true;
++	/* Tell the host the kernel is alive before the first line arrives. */
++	writeq(readq(map + REGION_CARD_BOOT_FLAGS) | CARD_BOOT_FLAG_KERNEL,
++	       map + REGION_CARD_BOOT_FLAGS);
++	return 0;
++}
++
++/* Host wall clock at boot, written by the loader into the region header. */
++u64 knc_ring_host_epoch_ns(void)
++{
++	if (!knc_region)
++		return 0;
++	return readq(knc_region + REGION_HOST_EPOCH_NS);
++}
++
++/*
++ * Once the vmalloc area exists, replace the early fixmap mapping with a
++ * permanent one so that the console (with "keep") outlives setup_arch()
++ * and the early_ioremap slot is released.
++ */
++static int __init knc_earlycon_remap(void)
++{
++	void __iomem *map, *old;
++
++	if (!knc_region || !knc_region_is_early)
++		return 0;
++	map = ioremap(knc_ring_base, knc_ring_size);
++	if (!map) {
++		pr_warn("ioremap failed; console stays on the early mapping\n");
++		return 0;
++	}
++	old = knc_region;
++	if (!knc_ring_attach(map)) {
++		iounmap(map);
++		return 0;
++	}
++	knc_region_is_early = false;
++	early_iounmap(old, knc_ring_size);
++	if (knc_con_dropped)
++		pr_warn("%lu byte(s) dropped before the host drained the ring\n",
++			knc_con_dropped);
++	return 0;
++}
++early_initcall(knc_earlycon_remap);

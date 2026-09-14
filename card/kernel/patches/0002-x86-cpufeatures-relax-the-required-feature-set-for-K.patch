@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:07:51 -0500
+Subject: [PATCH 02/15] x86/cpufeatures: relax the required-feature set for
+ Knights Corner
+
+Kconfig.cpufeatures folds CMOV, PGE, XMM and XMM2 into the set every
+x86-64 kernel requires; verify_cpu() refuses to boot without them and
+cpu_feature_enabled() treats them as compile-time true. Knights Corner
+has none of the three instruction-set features (ISA reference 327364,
+Appendix B) and its CR4.PGE write faults although CPUID reports PGE
+(SSDG 4.2.10). Under X86_KNC these four stop being required, so the
+checks and the alternatives follow CPUID instead.
+
+Two more sites on the boot path:
+
+- verify_cpu() reads IA32_MISC_ENABLE on every Intel CPU of family > 6
+  to clear XD_DISABLE. Intel's own card kernel documents that Knights
+  Corner does not implement that MSR (arch/x86/kernel/cpu/intel.c in
+  the k1om tree); skip the read for family 0xb.
+- head_64.S sets CR4.PGE unconditionally for the boot CPU and every AP
+  on the way to 64-bit mode. Leave it clear.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/Kconfig.cpufeatures | 8 ++++----
+ arch/x86/kernel/head_64.S    | 5 ++++-
+ arch/x86/kernel/verify_cpu.S | 6 ++++++
+ 3 files changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/arch/x86/Kconfig.cpufeatures b/arch/x86/Kconfig.cpufeatures
+index 09833c88f..83861977a 100644
+--- a/arch/x86/Kconfig.cpufeatures
++++ b/arch/x86/Kconfig.cpufeatures
+@@ -47,7 +47,7 @@ config X86_REQUIRED_FEATURE_CX8
+ # generates cmov.
+ config X86_REQUIRED_FEATURE_CMOV
+ 	def_bool y
+-	depends on X86_CMOV
++	depends on X86_CMOV && !X86_KNC
+ 
+ # this should be set for all -march= options where the compiler
+ # generates movbe.
+@@ -80,7 +80,7 @@ config X86_REQUIRED_FEATURE_PSE
+ 
+ config X86_REQUIRED_FEATURE_PGE
+ 	def_bool y
+-	depends on X86_64 && !PARAVIRT_XXL
++	depends on X86_64 && !PARAVIRT_XXL && !X86_KNC
+ 
+ config X86_REQUIRED_FEATURE_MSR
+ 	def_bool y
+@@ -92,11 +92,11 @@ config X86_REQUIRED_FEATURE_FXSR
+ 
+ config X86_REQUIRED_FEATURE_XMM
+ 	def_bool y
+-	depends on X86_64
++	depends on X86_64 && !X86_KNC
+ 
+ config X86_REQUIRED_FEATURE_XMM2
+ 	def_bool y
+-	depends on X86_64
++	depends on X86_64 && !X86_KNC
+ 
+ config X86_REQUIRED_FEATURE_LM
+ 	def_bool y
+diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
+index 7ed5520dd..f882849c3 100644
+--- a/arch/x86/kernel/head_64.S
++++ b/arch/x86/kernel/head_64.S
+@@ -227,10 +227,13 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+ 	movq	%rcx, %cr4
+ 
+ 	/*
+-	 * Set CR4.PGE to re-enable global translations.
++	 * Set CR4.PGE to re-enable global translations. Not on Knights Corner:
++	 * CPUID advertises PGE but writing CR4.PGE raises #GP (SSDG 4.2.10).
+ 	 */
++#ifndef CONFIG_X86_KNC
+ 	btsl	$X86_CR4_PGE_BIT, %ecx
+ 	movq	%rcx, %cr4
++#endif
+ 
+ #ifdef CONFIG_SMP
+ 	/*
+diff --git a/arch/x86/kernel/verify_cpu.S b/arch/x86/kernel/verify_cpu.S
+index 37ad43792..be67c3d78 100644
+--- a/arch/x86/kernel/verify_cpu.S
++++ b/arch/x86/kernel/verify_cpu.S
+@@ -84,6 +84,12 @@ SYM_FUNC_START_LOCAL(verify_cpu)
+ 
+ 	andl	$0x0ff00f00, %eax	# mask family and extended family
+ 	shrl	$8, %eax
++#ifdef CONFIG_X86_KNC
++	# Knights Corner (family 0xb) does not implement IA32_MISC_ENABLE
++	# (Intel k1om tree, arch/x86/kernel/cpu/intel.c); skip the XD check.
++	cmpl	$0xb, %eax
++	je	.Lverify_cpu_check
++#endif
+ 	cmpl	$6, %eax
+ 	ja	.Lverify_cpu_clear_xd	# family > 6, ok
+ 	jb	.Lverify_cpu_check	# family < 6, skip

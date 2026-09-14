@@ -1,0 +1,444 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:18:17 -0500
+Subject: [PATCH 12/15] x86/knc: platform layer for the Knights Corner card
+
+Hook the Xeon Phi x100 card into setup_arch() through the hypervisor
+detection table, as arch/x86/kernel/jailhouse.c does, with detection by
+CPUID (family 0x0b, model 0x01) and the native hypervisor type so that
+nothing else changes behavior. The platform init:
+
+- maps the DBOX and SBOX register blocks and writes progress codes to
+  the POST register the host reads at BAR4 + 0x242c ('K' plus a
+  character; the decompressor writes "K0" on entry and "K1" before
+  jumping to the kernel);
+- reads the bootstrap's SFI tables and registers CPUs and the I/O APIC
+  (64-bit address) from them, with the local APIC at its architectural
+  default (SSDG 328207-002 sections 2.2.4.2, 4.2.4, 4.2.5); falls back
+  to the SFI memory map only if boot_params carries no e820 entries;
+- removes every legacy device: PIC, PIT, HPET, RTC, i8042, VGA, ROM
+  probing (4.2.2);
+- reports the core clock, decoded from SBOX SCRATCH4 and
+  CURRENT_CLK_RATIO the way Intel's card kernel did (overridable with
+  knc.core_khz=), as the TSC rate; calibrate_APIC_clock() then measures
+  the LAPIC timer against the TSC, so no PIT is needed (4.2.6);
+- takes the wall clock from the host's epoch in the ring region header
+  (4.2.6);
+- clears PGE before any CR4 write, forces ARAT and the TSC flags
+  (4.2.10, 4.2.17.1);
+- halts on restart, power-off and panic with a POST code, since reset
+  is the host's job through SBOX RGCR.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/boot/compressed/misc.c   |  25 +++
+ arch/x86/include/asm/hypervisor.h |   1 +
+ arch/x86/kernel/Makefile          |   2 +-
+ arch/x86/kernel/cpu/hypervisor.c  |   3 +
+ arch/x86/kernel/knc.c             | 309 ++++++++++++++++++++++++++++++
+ 5 files changed, 339 insertions(+), 1 deletion(-)
+ create mode 100644 arch/x86/kernel/knc.c
+
+diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
+index 0f41ca0e5..6e8e4d56b 100644
+--- a/arch/x86/boot/compressed/misc.c
++++ b/arch/x86/boot/compressed/misc.c
+@@ -404,6 +404,29 @@ static void early_sev_detect(void)
+  *             |-------uncompressed kernel image---------|
+  *
+  */
++#ifdef CONFIG_X86_KNC
++/*
++ * Knights Corner: report progress in the DBOX POST code register the host
++ * reads (asm/knc.h has the same constants; this file stays self-contained).
++ * Only when running on the card (CPUID family 0x0b), so the image still
++ * boots elsewhere. The address is above 4 GiB and is identity-mapped on
++ * demand by the decompressor's page fault handler.
++ */
++static void knc_post(u32 code)
++{
++	u32 eax, ebx, ecx, edx;
++
++	asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
++	if (((eax >> 8) & 0xf) != 0x0b)
++		return;
++	*(volatile u32 *)(0x08007C0000ULL + 0x242c) = code;
++}
++#define KNC_POST(a, b)	((u32)(a) | ((u32)(b) << 8))
++#else
++static inline void knc_post(u32 code) { }
++#define KNC_POST(a, b)	0
++#endif
++
+ asmlinkage __visible void *extract_kernel(void *rmode, unsigned char *output)
+ {
+ 	unsigned long virt_addr = LOAD_PHYSICAL_ADDR;
+@@ -413,6 +436,7 @@ asmlinkage __visible void *extract_kernel(void *rmode, unsigned char *output)
+ 
+ 	/* Retain x86 boot parameters pointer passed from startup_32/64. */
+ 	boot_params_ptr = rmode;
++	knc_post(KNC_POST('K', '0'));
+ 
+ 	/* Clear flags intended for solely in-kernel use. */
+ 	boot_params_ptr->hdr.loadflags &= ~KASLR_FLAG;
+@@ -533,5 +557,6 @@ asmlinkage __visible void *extract_kernel(void *rmode, unsigned char *output)
+ 		error_putstr("\n");
+ 	}
+ 
++	knc_post(KNC_POST('K', '1'));
+ 	return output + entry_offset;
+ }
+diff --git a/arch/x86/include/asm/hypervisor.h b/arch/x86/include/asm/hypervisor.h
+index 9ad86a7d1..63fa52327 100644
+--- a/arch/x86/include/asm/hypervisor.h
++++ b/arch/x86/include/asm/hypervisor.h
+@@ -64,6 +64,7 @@ extern const struct hypervisor_x86 x86_hyper_ms_hyperv;
+ extern const struct hypervisor_x86 x86_hyper_xen_pv;
+ extern const struct hypervisor_x86 x86_hyper_kvm;
+ extern const struct hypervisor_x86 x86_hyper_jailhouse;
++extern const struct hypervisor_x86 x86_hyper_knc;
+ extern const struct hypervisor_x86 x86_hyper_acrn;
+ extern const struct hypervisor_x86 x86_hyper_bhyve;
+ extern struct hypervisor_x86 x86_hyper_xen_hvm;
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index d33d62fe9..20784d975 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc_sfi.o knc_earlycon.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/cpu/hypervisor.c b/arch/x86/kernel/cpu/hypervisor.c
+index f3e921984..d8b443498 100644
+--- a/arch/x86/kernel/cpu/hypervisor.c
++++ b/arch/x86/kernel/cpu/hypervisor.c
+@@ -42,6 +42,9 @@ static const __initconst struct hypervisor_x86 * const hypervisors[] =
+ #ifdef CONFIG_JAILHOUSE_GUEST
+ 	&x86_hyper_jailhouse,
+ #endif
++#ifdef CONFIG_X86_KNC
++	&x86_hyper_knc,
++#endif
+ #ifdef CONFIG_ACRN_GUEST
+ 	&x86_hyper_acrn,
+ #endif
+diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
+new file mode 100644
+index 000000000..9c84ad647
+--- /dev/null
++++ b/arch/x86/kernel/knc.c
+@@ -0,0 +1,309 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Knights Corner (Intel Xeon Phi x100) platform layer.
++ *
++ * The card is a 64-bit x86 machine without any PC platform device: no
++ * PIC, PIT, RTC, HPET, ACPI, i8042 or port I/O (SSDG 328207-002 section
++ * 4.2.2). Its I/O APIC sits at a 64-bit address (4.2.5), CPUs and memory
++ * are described by SFI tables from the bootstrap (2.2.4.2), the LAPIC
++ * timer is the only timer and the core frequency comes from an SBOX
++ * register (4.2.6), time of day comes from the host (4.2.6), CR4.PGE
++ * faults although CPUID reports PGE (4.2.10), and the LAPIC timer keeps
++ * running in deep idle without CPUID leaf 6 to say so (4.2.17.1).
++ *
++ * Modeled on arch/x86/kernel/jailhouse.c: the platform hooks into the
++ * hypervisor detection table, which setup_arch() consults after the
++ * memory map is known and before timers and APICs are configured.
++ * Detection is by CPUID (family 0x0b, model 0x01).
++ *
++ * Progress is reported in the DBOX POST code register that the host reads
++ * at PCI BAR4 + 0x242c ("phictl postcode"), using 'K' plus a character.
++ */
++
++#define pr_fmt(fmt) "KNC: " fmt
++
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/notifier.h>
++#include <linux/panic_notifier.h>
++#include <linux/pm.h>
++#include <linux/reboot.h>
++#include <linux/time64.h>
++
++#include <asm/apic.h>
++#include <asm/apicdef.h>
++#include <asm/cpufeature.h>
++#include <asm/e820/api.h>
++#include <asm/hypervisor.h>
++#include <asm/i8259.h>
++#include <asm/io_apic.h>
++#include <asm/irqdomain.h>
++#include <asm/knc.h>
++#include <asm/processor.h>
++#include <asm/reboot.h>
++#include <asm/setup.h>
++#include <asm/x86_init.h>
++
++/* UEFI memory type "conventional memory", the only type turned into RAM. */
++#define EFI_CONVENTIONAL_MEMORY_TYPE	7
++
++static void __iomem *knc_dbox;
++static void __iomem *knc_sbox;
++static bool knc_boxes_early;		/* mapped with early_ioremap() */
++static struct knc_sfi_info knc_sfi __initdata;
++static unsigned long knc_core_khz;
++
++/**
++ * knc_postcode() - Write a progress code for the host to read.
++ * @code: two ASCII bytes packed by KNC_POST().
++ */
++void knc_postcode(u32 code)
++{
++	void __iomem *dbox = READ_ONCE(knc_dbox);
++
++	if (dbox)
++		writel(code, dbox + KNC_DBOX_POSTCODE);
++}
++
++/*
++ * Core clock from the SBOX, decoded as Intel's card kernel did
++ * (arch/x86/kernel/intelmic.c, get_core_freq, KNC branch): the platform
++ * word SCRATCH4 carries the ICC divider in bits 29:25, the reference
++ * clock is 4000 MHz / divider; CURRENT_CLK_RATIO carries the feedback
++ * divider in bits 8:1 and a feedforward code in bits 10:9 (3 = /1,
++ * 2 = /2, else /4). Core MHz = reference * fb / ff.
++ */
++static unsigned long __init knc_read_core_khz(void)
++{
++	u32 spad4 = readl(knc_sbox + KNC_SBOX_SCRATCH4);
++	u32 ratio = readl(knc_sbox + KNC_SBOX_CURRENT_CLK_RATIO);
++	u32 icc_div = (spad4 >> 25) & 0x1f;
++	u32 fb = (ratio >> 1) & 0xff;
++	u32 ffcode = (ratio >> 9) & 0x3;
++	u32 ff = ffcode == 3 ? 1 : ffcode == 2 ? 2 : 4;
++
++	if (!icc_div || !fb)
++		return 0;
++	return (4000000UL / icc_div) * fb / ff;
++}
++
++/* knc.core_khz=N overrides the SBOX decode (unverified on real hardware). */
++static int __init knc_core_khz_setup(char *s)
++{
++	return kstrtoul(s, 0, &knc_core_khz);
++}
++early_param("knc.core_khz", knc_core_khz_setup);
++
++static unsigned long knc_get_tsc_khz(void)
++{
++	return knc_core_khz;
++}
++
++static void __init knc_timer_init(void)
++{
++	/*
++	 * No PIT or HPET to program. calibrate_APIC_clock() measures the
++	 * LAPIC timer against the TSC because tsc_khz is known.
++	 */
++	knc_postcode(KNC_POST_TIMERS);
++}
++
++static void knc_get_wallclock(struct timespec64 *now)
++{
++	*now = ns_to_timespec64(knc_ring_host_epoch_ns());
++}
++
++static int knc_set_wallclock(const struct timespec64 *now)
++{
++	return -ENODEV;
++}
++
++static void __init knc_parse_smp_config(void)
++{
++	struct ioapic_domain_cfg ioapic_cfg = {
++		.type = IOAPIC_DOMAIN_STRICT,
++		.ops = &mp_ioapic_irqdomain_ops,
++	};
++	unsigned int i;
++
++	/* The local APICs are at the architectural default (Intel's SFI code). */
++	register_lapic_address(APIC_DEFAULT_PHYS_BASE);
++
++	for (i = 0; i < knc_sfi.num_cpus; i++)
++		topology_register_apic(knc_sfi.apic_ids[i], CPU_ACPIID_INVALID, true);
++	smp_found_config = 1;
++
++	/*
++	 * SSDG 4.2.5: the I/O APIC pins are SBOX interrupt sources (DMA,
++	 * thermal, doorbells), not ISA IRQs, so no legacy identity mapping.
++	 */
++	for (i = 0; i < knc_sfi.num_ioapics; i++)
++		mp_register_ioapic(i, knc_sfi.ioapic_phys[i], gsi_top, &ioapic_cfg);
++
++	knc_postcode(KNC_POST_SMP);
++}
++
++/*
++ * The bootstrap fills the e820 map in boot_params (POST code 0x05,
++ * "Program E820 table"). Should a firmware leave it empty, the SFI memory
++ * map is the fallback; memblock is populated from e820 later in
++ * setup_arch(), so adding entries here is still in time.
++ */
++static void __init knc_memory_from_sfi(void)
++{
++	unsigned int i;
++
++	if (boot_params.e820_entries)
++		return;
++	pr_info("boot_params has no e820 entries; using the SFI memory map\n");
++	for (i = 0; i < knc_sfi.num_mem; i++) {
++		enum e820_type type = knc_sfi.mem[i].type == EFI_CONVENTIONAL_MEMORY_TYPE ?
++				      E820_TYPE_RAM : E820_TYPE_RESERVED;
++
++		e820__range_add(knc_sfi.mem[i].start, knc_sfi.mem[i].size, type);
++	}
++	e820__update_table(e820_table);
++	pr_info("added %u range(s) from the SFI memory map to e820\n", i);
++}
++
++static void knc_halt_forever(u32 code)
++{
++	knc_postcode(code);
++	local_irq_disable();
++	for (;;)
++		native_halt();
++}
++
++/* Reset is the host's job (SBOX RGCR); the card just stops. */
++static void knc_emergency_restart(void)
++{
++	pr_notice("restart is done by the host; halting\n");
++	knc_halt_forever(KNC_POST_HALT);
++}
++
++static void knc_power_off(void)
++{
++	knc_halt_forever(KNC_POST_HALT);
++}
++
++static int knc_panic_notify(struct notifier_block *nb, unsigned long event, void *unused)
++{
++	knc_postcode(KNC_POST_PANIC);
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block knc_panic_nb = {
++	.notifier_call = knc_panic_notify,
++};
++
++static uint32_t __init knc_detect(void)
++{
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
++	    boot_cpu_data.x86 == 0x0b && boot_cpu_data.x86_model == 0x01)
++		return 1;
++	return 0;
++}
++
++static void __init knc_init_platform(void)
++{
++	knc_dbox = early_ioremap(KNC_DBOX_PHYS, KNC_BOX_SIZE);
++	knc_sbox = early_ioremap(KNC_SBOX_PHYS, KNC_BOX_SIZE);
++	knc_boxes_early = true;
++	knc_postcode(KNC_POST_PLATFORM);
++	pr_info("Knights Corner platform layer (family %#x model %#x stepping %#x)\n",
++		boot_cpu_data.x86, boot_cpu_data.x86_model, boot_cpu_data.x86_stepping);
++
++	if (knc_sfi_parse(&knc_sfi)) {
++		knc_postcode(KNC_POST_ERROR);
++		panic("KNC: no usable SFI tables from the bootstrap");
++	}
++	knc_postcode(KNC_POST_SFI);
++	knc_memory_from_sfi();
++
++	if (!knc_core_khz)
++		knc_core_khz = knc_read_core_khz();
++	if (!knc_core_khz) {
++		knc_core_khz = 1100000;
++		pr_warn("could not decode the core clock; assuming %lu kHz\n", knc_core_khz);
++	}
++	pr_info("core clock %lu kHz (SCRATCH4 %#x, CLK_RATIO %#x)\n", knc_core_khz,
++		readl(knc_sbox + KNC_SBOX_SCRATCH4),
++		readl(knc_sbox + KNC_SBOX_CURRENT_CLK_RATIO));
++
++	/* SSDG 4.2.2 and 4.2.6: none of the PC-AT devices exist. */
++	x86_init.irqs.pre_vector_init		= x86_init_noop;
++	x86_init.timers.timer_init		= knc_timer_init;
++	x86_init.mpparse.find_mptable		= x86_init_noop;
++	x86_init.mpparse.early_parse_smp_cfg	= x86_init_noop;
++	x86_init.mpparse.parse_smp_cfg		= knc_parse_smp_config;
++	x86_init.resources.probe_roms		= x86_init_noop;
++
++	x86_platform.calibrate_cpu		= knc_get_tsc_khz;
++	x86_platform.calibrate_tsc		= knc_get_tsc_khz;
++	x86_platform.get_wallclock		= knc_get_wallclock;
++	x86_platform.set_wallclock		= knc_set_wallclock;
++	x86_platform.legacy.rtc			= 0;
++	x86_platform.legacy.warm_reset		= 0;
++	x86_platform.legacy.no_vga		= 1;
++	x86_platform.legacy.i8042		= X86_LEGACY_I8042_PLATFORM_ABSENT;
++	legacy_pic				= &null_legacy_pic;
++
++	machine_ops.emergency_restart		= knc_emergency_restart;
++	pm_power_off				= knc_power_off;
++	atomic_notifier_chain_register(&panic_notifier_list, &knc_panic_nb);
++
++	/*
++	 * SSDG 4.2.10: CPUID advertises PGE but CR4.PGE faults; clear the
++	 * feature before cr4_init() and init_mem_mapping() look at it.
++	 * SSDG 4.2.17.1: the LAPIC timer keeps running in C3 but leaf 6 is
++	 * absent. The TSC runs at core clock and never stops (Intel used it
++	 * as the clocksource); tell tsc.c so it trusts the reported rate.
++	 */
++	setup_clear_cpu_cap(X86_FEATURE_PGE);
++	setup_force_cpu_cap(X86_FEATURE_ARAT);
++	setup_force_cpu_cap(X86_FEATURE_TSC_KNOWN_FREQ);
++	setup_force_cpu_cap(X86_FEATURE_CONSTANT_TSC);
++	setup_force_cpu_cap(X86_FEATURE_NONSTOP_TSC);
++}
++
++/* Replace the early fixmap mappings once ioremap() works. */
++static int __init knc_remap_boxes(void)
++{
++	void __iomem *dbox, *sbox, *old_dbox, *old_sbox;
++
++	if (!knc_boxes_early)
++		return 0;
++	dbox = ioremap(KNC_DBOX_PHYS, KNC_BOX_SIZE);
++	sbox = ioremap(KNC_SBOX_PHYS, KNC_BOX_SIZE);
++	if (!dbox || !sbox) {
++		pr_warn("ioremap of the register blocks failed; keeping early mappings\n");
++		return 0;
++	}
++	old_dbox = knc_dbox;
++	old_sbox = knc_sbox;
++	WRITE_ONCE(knc_dbox, dbox);
++	WRITE_ONCE(knc_sbox, sbox);
++	knc_boxes_early = false;
++	early_iounmap(old_dbox, KNC_BOX_SIZE);
++	early_iounmap(old_sbox, KNC_BOX_SIZE);
++	return 0;
++}
++early_initcall(knc_remap_boxes);
++
++/* The last kernel milestone the host can see before userspace speaks. */
++static int __init knc_mark_init(void)
++{
++	knc_postcode(KNC_POST_INIT);
++	return 0;
++}
++late_initcall_sync(knc_mark_init);
++
++const struct hypervisor_x86 x86_hyper_knc __refconst = {
++	.name			= "Knights Corner card (native)",
++	.detect			= knc_detect,
++	/* Not a hypervisor: keep every other native path. */
++	.type			= X86_HYPER_NATIVE,
++	.init.init_platform	= knc_init_platform,
++	.ignore_nopv		= true,
++};

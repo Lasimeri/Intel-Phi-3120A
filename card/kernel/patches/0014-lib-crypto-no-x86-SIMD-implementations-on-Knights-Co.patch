@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 23:18:43 -0500
+Subject: [PATCH 14/15] lib/crypto: no x86 SIMD implementations on Knights
+ Corner
+
+lib/crypto selects the x86 assembly implementations of SHA-1, SHA-2,
+AES, GHASH, BLAKE2s, ChaCha, Poly1305 and Curve25519 by default on
+X86_64. They dispatch at run time on CPUID (static keys), so they never
+execute on Knights Corner, but they are 4000+ SSE/AVX/SHA-NI/PCLMUL
+instructions in the kernel text that the audit would have to wave
+through. Leave them out under X86_KNC; the generic C code serves.
+CRC_OPTIMIZATIONS is a visible option and is switched off in the
+configuration instead.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ lib/crypto/Kconfig | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/lib/crypto/Kconfig b/lib/crypto/Kconfig
+index 83d4c95e0..7605b5a81 100644
+--- a/lib/crypto/Kconfig
++++ b/lib/crypto/Kconfig
+@@ -20,7 +20,7 @@ config CRYPTO_LIB_AES_ARCH
+ 		     RISCV_EFFICIENT_VECTOR_UNALIGNED_ACCESS
+ 	default y if S390
+ 	default y if SPARC64
+-	default y if X86
++	default y if X86 && !X86_KNC
+ 
+ config CRYPTO_LIB_AESCFB
+ 	tristate
+@@ -64,7 +64,7 @@ config CRYPTO_LIB_BLAKE2S_ARCH
+ 	bool
+ 	depends on !UML
+ 	default y if ARM
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_CHACHA
+ 	tristate
+@@ -83,7 +83,7 @@ config CRYPTO_LIB_CHACHA_ARCH
+ 	default y if RISCV && 64BIT && TOOLCHAIN_HAS_VECTOR_CRYPTO && \
+ 		     RISCV_EFFICIENT_VECTOR_UNALIGNED_ACCESS
+ 	default y if S390
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_CURVE25519
+ 	tristate
+@@ -97,7 +97,7 @@ config CRYPTO_LIB_CURVE25519_ARCH
+ 	depends on CRYPTO_LIB_CURVE25519 && !UML && !KMSAN
+ 	default y if ARM && KERNEL_MODE_NEON && !CPU_BIG_ENDIAN
+ 	default y if PPC64 && CPU_LITTLE_ENDIAN
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_CURVE25519_GENERIC
+ 	bool
+@@ -122,7 +122,7 @@ config CRYPTO_LIB_GF128HASH_ARCH
+ 	default y if RISCV && 64BIT && TOOLCHAIN_HAS_VECTOR_CRYPTO && \
+ 		     RISCV_EFFICIENT_VECTOR_UNALIGNED_ACCESS
+ 	default y if S390
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_MD5
+ 	tristate
+@@ -148,7 +148,7 @@ config CRYPTO_LIB_NH_ARCH
+ 	depends on CRYPTO_LIB_NH && !UML && !KMSAN
+ 	default y if ARM && KERNEL_MODE_NEON
+ 	default y if ARM64
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_POLY1305
+ 	tristate
+@@ -165,7 +165,7 @@ config CRYPTO_LIB_POLY1305_ARCH
+ 	# The PPC64 code needs to be fixed to work in softirq context.
+ 	default y if PPC64 && CPU_LITTLE_ENDIAN && VSX && BROKEN
+ 	default y if RISCV
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ # This symbol controls the inclusion of the Poly1305 generic code.  This differs
+ # from most of the other algorithms, which handle the generic code
+@@ -206,7 +206,7 @@ config CRYPTO_LIB_SHA1_ARCH
+ 	default y if PPC
+ 	default y if S390
+ 	default y if SPARC64
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_SHA256
+ 	tristate
+@@ -226,7 +226,7 @@ config CRYPTO_LIB_SHA256_ARCH
+ 		     RISCV_EFFICIENT_VECTOR_UNALIGNED_ACCESS
+ 	default y if S390
+ 	default y if SPARC64
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_SHA512
+ 	tristate
+@@ -245,7 +245,7 @@ config CRYPTO_LIB_SHA512_ARCH
+ 		     RISCV_EFFICIENT_VECTOR_UNALIGNED_ACCESS
+ 	default y if S390
+ 	default y if SPARC64
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC
+ 
+ config CRYPTO_LIB_SHA3
+ 	tristate
+@@ -272,4 +272,4 @@ config CRYPTO_LIB_SM3_ARCH
+ 	default y if ARM64
+ 	default y if RISCV && 64BIT && TOOLCHAIN_HAS_VECTOR_CRYPTO && \
+ 		     RISCV_EFFICIENT_VECTOR_UNALIGNED_ACCESS
+-	default y if X86_64
++	default y if X86_64 && !X86_KNC

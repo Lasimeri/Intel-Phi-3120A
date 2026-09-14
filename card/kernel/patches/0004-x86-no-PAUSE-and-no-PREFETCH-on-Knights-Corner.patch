@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:08:32 -0500
+Subject: [PATCH 04/15] x86: no PAUSE and no PREFETCH on Knights Corner
+
+cpu_relax() is a bare PAUSE and the prefetch helpers emit PREFETCHT0 as
+the base instruction of an alternative. Neither instruction exists on
+Knights Corner (ISA reference 327364, Appendix B.2; SSDG 4.2.12):
+PAUSE raises #UD. Under X86_KNC cpu_relax() becomes a compiler barrier
+and prefetch()/prefetchw() become no-ops. The alternatives keyed on
+X86_FEATURE_XMM and X86_FEATURE_3DNOWPREFETCH would never have been
+patched in (both CPUID bits are clear), but removing them keeps the
+slots and the padding out of the text. The two hand-written PREFETCHT0
+in copy_page_64.S and csum-copy_64.S are dropped as well; both run on
+every card (copy_page_regs is the path without REP_GOOD).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/processor.h      | 11 +++++++++++
+ arch/x86/include/asm/vdso/processor.h |  5 +++++
+ arch/x86/lib/copy_page_64.S           |  2 ++
+ arch/x86/lib/csum-copy_64.S           |  2 ++
+ 4 files changed, 20 insertions(+)
+
+diff --git a/arch/x86/include/asm/processor.h b/arch/x86/include/asm/processor.h
+index 96a09f61a..5233b2331 100644
+--- a/arch/x86/include/asm/processor.h
++++ b/arch/x86/include/asm/processor.h
+@@ -617,6 +617,9 @@ extern char			ignore_fpu_irq;
+ #ifdef CONFIG_X86_32
+ # define BASE_PREFETCH		""
+ # define ARCH_HAS_PREFETCH
++#elif defined(CONFIG_X86_KNC)
++/* No PREFETCH on Knights Corner (SSDG 4.2.12); VPREFETCH is not worth it here. */
++# define BASE_PREFETCH		""
+ #else
+ # define BASE_PREFETCH		"prefetcht0 %1"
+ #endif
+@@ -629,9 +632,13 @@ extern char			ignore_fpu_irq;
+  */
+ static inline void prefetch(const void *x)
+ {
++#ifdef CONFIG_X86_KNC
++	(void)x;
++#else
+ 	alternative_input(BASE_PREFETCH, "prefetchnta %1",
+ 			  X86_FEATURE_XMM,
+ 			  "m" (*(const char *)x));
++#endif
+ }
+ 
+ /*
+@@ -641,9 +648,13 @@ static inline void prefetch(const void *x)
+  */
+ static __always_inline void prefetchw(const void *x)
+ {
++#ifdef CONFIG_X86_KNC
++	(void)x;
++#else
+ 	alternative_input(BASE_PREFETCH, "prefetchw %1",
+ 			  X86_FEATURE_3DNOWPREFETCH,
+ 			  "m" (*(const char *)x));
++#endif
+ }
+ 
+ #define TOP_OF_INIT_STACK ((unsigned long)&init_stack + sizeof(init_stack) - \
+diff --git a/arch/x86/include/asm/vdso/processor.h b/arch/x86/include/asm/vdso/processor.h
+index 93e0e24e5..2096e9810 100644
+--- a/arch/x86/include/asm/vdso/processor.h
++++ b/arch/x86/include/asm/vdso/processor.h
+@@ -10,7 +10,12 @@
+ /* PAUSE is a good thing to insert into busy-wait loops. */
+ static __always_inline void native_pause(void)
+ {
++#ifdef CONFIG_X86_KNC
++	/* No PAUSE on Knights Corner (ISA reference 327364, App. B.2). */
++	asm volatile("" ::: "memory");
++#else
+ 	asm volatile("pause" ::: "memory");
++#endif
+ }
+ 
+ static __always_inline void cpu_relax(void)
+diff --git a/arch/x86/lib/copy_page_64.S b/arch/x86/lib/copy_page_64.S
+index d8e87fedc..0acf7a006 100644
+--- a/arch/x86/lib/copy_page_64.S
++++ b/arch/x86/lib/copy_page_64.S
+@@ -40,7 +40,9 @@ SYM_FUNC_START_LOCAL(copy_page_regs)
+ 	movq	0x8*6(%rsi), %r11
+ 	movq	0x8*7(%rsi), %r12
+ 
++#ifndef CONFIG_X86_KNC	/* no PREFETCH on Knights Corner (SSDG 4.2.12) */
+ 	prefetcht0 5*64(%rsi)
++#endif
+ 
+ 	movq	%rax, 0x8*0(%rdi)
+ 	movq	%rbx, 0x8*1(%rdi)
+diff --git a/arch/x86/lib/csum-copy_64.S b/arch/x86/lib/csum-copy_64.S
+index d9e16a2cf..0187dd08c 100644
+--- a/arch/x86/lib/csum-copy_64.S
++++ b/arch/x86/lib/csum-copy_64.S
+@@ -90,7 +90,9 @@ SYM_FUNC_START(csum_partial_copy_generic)
+ 	 * potentially unmapped kernel address.
+ 	 */
+ 	_ASM_EXTABLE(30b, 2f)
++#ifndef CONFIG_X86_KNC	/* no PREFETCH on Knights Corner (SSDG 4.2.12) */
+ 	prefetcht0 5*64(%rdi)
++#endif
+ 2:
+ 	adcq  %rbx, %rax
+ 	adcq  %r8, %rax

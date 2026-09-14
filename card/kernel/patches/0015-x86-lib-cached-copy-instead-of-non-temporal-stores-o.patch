@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 23:24:27 -0500
+Subject: [PATCH 15/15] x86/lib: cached copy instead of non-temporal stores on
+ Knights Corner
+
+__copy_user_nocache() is hand-written with MOVNTI and SFENCE, both SSE2
+and absent on Knights Corner (ISA reference 327364, Appendix B). Under
+X86_KNC assemble the same code with ordinary MOV and no fence: callers
+of the "nocache" copy only lose the cache-bypass hint, the data path is
+unchanged.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/lib/copy_user_uncached_64.S | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/x86/lib/copy_user_uncached_64.S b/arch/x86/lib/copy_user_uncached_64.S
+index 8ed0ce3ad..a81314202 100644
+--- a/arch/x86/lib/copy_user_uncached_64.S
++++ b/arch/x86/lib/copy_user_uncached_64.S
+@@ -7,6 +7,15 @@
+ #include <linux/linkage.h>
+ #include <linux/objtool.h>
+ #include <asm/asm.h>
++#ifdef CONFIG_X86_KNC
++/*
++ * Knights Corner has no SSE2: MOVNTI and SFENCE are undefined (ISA
++ * reference 327364, Appendix B). The uncached copy becomes a cached one;
++ * every caller tolerates that, it only loses the cache-bypass hint.
++ */
++#define movnti mov
++#define sfence
++#endif
+ 
+ /*
+  * copy_user_nocache - Uncached memory copy with exception handling

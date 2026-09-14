@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:07:51 -0500
+Subject: [PATCH 03/15] x86/barrier: locked add instead of fences on Knights
+ Corner
+
+MFENCE, LFENCE and SFENCE are absent from Knights Corner (ISA reference
+327364, Appendix B.5). Use "lock addl $0,-4(%rsp)" for mb(), rmb() and
+wmb(), the same sequence the 32-bit kernel selects on CPUs without
+SSE2. smp_*() barriers already use it, and barrier_nospec() is an
+alternative keyed on X86_FEATURE_LFENCE_RDTSC, which is derived from
+XMM2 and therefore stays empty on this core. weak_wrmsr_fence() (an
+"mfence; lfence" original that alternatives remove on most CPUs) becomes
+the same locked add, and clear_bhb_loop(), whose only caller is the BHI
+mitigation macro, is now built only with that mitigation.
+
+weak_wrmsr_fence() (an "mfence; lfence" original that alternatives remove
+on most CPUs) becomes the same locked add, as do the LFENCE in
+clear_bhb_loop(), a routine only ever entered through the
+X86_FEATURE_CLEAR_BHB_LOOP alternative, and the MFENCE before the TSC
+deadline MSR write in __setup_APIC_LVTT().
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/entry/entry_64.S        | 8 +++++++-
+ arch/x86/include/asm/barrier.h   | 9 +++++++++
+ arch/x86/include/asm/processor.h | 5 +++++
+ arch/x86/kernel/apic/apic.c      | 5 ++++-
+ 4 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/arch/x86/entry/entry_64.S b/arch/x86/entry/entry_64.S
+index 253f0a585..8c2db55da 100644
+--- a/arch/x86/entry/entry_64.S
++++ b/arch/x86/entry/entry_64.S
+@@ -1568,7 +1568,13 @@ SYM_FUNC_START(clear_bhb_loop)
+ 	sub	$1, %ecx
+ 	jnz	1b
+ .Lret2:	RET
+-5:	lfence
++5:
++#ifdef CONFIG_X86_KNC
++	/* No LFENCE on Knights Corner; never entered there (X86_FEATURE_CLEAR_BHB_LOOP). */
++	lock addl $0, -4(%rsp)
++#else
++	lfence
++#endif
+ 	pop	%rbp
+ 	RET
+ SYM_FUNC_END(clear_bhb_loop)
+diff --git a/arch/x86/include/asm/barrier.h b/arch/x86/include/asm/barrier.h
+index db7083223..0c8d6dcff 100644
+--- a/arch/x86/include/asm/barrier.h
++++ b/arch/x86/include/asm/barrier.h
+@@ -18,6 +18,15 @@
+ 				       X86_FEATURE_XMM2) ::: "memory", "cc")
+ #define wmb() asm volatile(ALTERNATIVE("lock addl $0,-4(%%esp)", "sfence", \
+ 				       X86_FEATURE_XMM2) ::: "memory", "cc")
++#elif defined(CONFIG_X86_KNC)
++/*
++ * Knights Corner has no MFENCE, LFENCE or SFENCE (ISA reference 327364,
++ * Appendix B.5). A locked read-modify-write on the stack orders everything,
++ * as the 32-bit build already uses on CPUs without SSE2.
++ */
++#define __mb()	asm volatile("lock addl $0,-4(%%rsp)" ::: "memory", "cc")
++#define __rmb()	asm volatile("lock addl $0,-4(%%rsp)" ::: "memory", "cc")
++#define __wmb()	asm volatile("lock addl $0,-4(%%rsp)" ::: "memory", "cc")
+ #else
+ #define __mb()	asm volatile("mfence":::"memory")
+ #define __rmb()	asm volatile("lfence":::"memory")
+diff --git a/arch/x86/include/asm/processor.h b/arch/x86/include/asm/processor.h
+index 87b1d4c07..96a09f61a 100644
+--- a/arch/x86/include/asm/processor.h
++++ b/arch/x86/include/asm/processor.h
+@@ -781,7 +781,12 @@ extern bool gds_ucode_mitigated(void);
+  */
+ static inline void weak_wrmsr_fence(void)
+ {
++#ifdef CONFIG_X86_KNC
++	/* No MFENCE/LFENCE on Knights Corner (ISA reference 327364, App. B.5). */
++	asm volatile("lock addl $0,-4(%%rsp)" ::: "memory", "cc");
++#else
+ 	alternative("mfence; lfence", "", ALT_NOT(X86_FEATURE_APIC_MSRS_FENCE));
++#endif
+ }
+ 
+ #endif /* _ASM_X86_PROCESSOR_H */
+diff --git a/arch/x86/kernel/apic/apic.c b/arch/x86/kernel/apic/apic.c
+index aa1e19979..bda5a6760 100644
+--- a/arch/x86/kernel/apic/apic.c
++++ b/arch/x86/kernel/apic/apic.c
+@@ -305,7 +305,10 @@ static void __setup_APIC_LVTT(unsigned int clocks, int oneshot, int irqen)
+ 		 * writing to the APIC LVTT and TSC_DEADLINE MSR isn't serialized.
+ 		 * According to Intel, MFENCE can do the serialization here.
+ 		 */
+-		asm volatile("mfence" : : : "memory");
++		if (IS_ENABLED(CONFIG_X86_KNC))
++			asm volatile("lock addl $0,-4(%%rsp)" ::: "memory", "cc"); /* no MFENCE on Knights Corner */
++		else
++			asm volatile("mfence" : : : "memory");
+ 		return;
+ 	}
+ 

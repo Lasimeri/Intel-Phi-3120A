@@ -290,6 +290,12 @@ fn audit_one(data: &[u8], prefix: &str) -> anyhow::Result<Report> {
         if section.kind() != SectionKind::Text {
             continue;
         }
+        // Kernel alternatives: replacement slots are only copied into the
+        // text when the CPU feature they are keyed on is present, so their
+        // bytes never execute on a CPU that lacks the feature.
+        if section.name().ok() == Some(".altinstr_replacement") {
+            continue;
+        }
         let name = format!("{prefix}{}", section.name().unwrap_or("?"));
         let data = match section.data() {
             Ok(d) if !d.is_empty() => d,

@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:10:03 -0500
+Subject: [PATCH 07/15] x86: cache-line flush helpers without CLFLUSH on
+ Knights Corner
+
+CLFLUSH, CLFLUSHOPT and CLWB do not exist on Knights Corner (ISA
+reference 327364, Appendix B) and CPUID reports CLFSH clear, so the
+page-attribute code already takes its WBINVD path. The inline helpers
+still expand to the missing instructions for their direct callers.
+Under X86_KNC make all three WBINVD, the only instruction on the core
+that writes a line back; the callers are rare and correctness beats
+speed here. ARCH_HAS_UACCESS_FLUSHCACHE is not selected: its
+__memcpy_flushcache() uses MOVNTI (SSE2) and only pmem/dax need it.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/Kconfig                     |  2 +-
+ arch/x86/include/asm/special_insns.h | 23 +++++++++++++++++++++++
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
+index c00ea79f0..f7fcb6a2d 100644
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -100,7 +100,7 @@ config X86
+ 	select ARCH_HAS_PTE_SPECIAL
+ 	select ARCH_HAS_HW_PTE_YOUNG
+ 	select ARCH_HAS_NONLEAF_PMD_YOUNG	if PGTABLE_LEVELS > 2
+-	select ARCH_HAS_UACCESS_FLUSHCACHE	if X86_64
++	select ARCH_HAS_UACCESS_FLUSHCACHE	if X86_64 && !X86_KNC
+ 	select ARCH_HAS_COPY_MC			if X86_64
+ 	select ARCH_HAS_SET_MEMORY
+ 	select ARCH_HAS_SET_DIRECT_MAP
+diff --git a/arch/x86/include/asm/special_insns.h b/arch/x86/include/asm/special_insns.h
+index 46aa2c9c1..36fd2cb7f 100644
+--- a/arch/x86/include/asm/special_insns.h
++++ b/arch/x86/include/asm/special_insns.h
+@@ -182,6 +182,28 @@ static inline void __write_cr4(unsigned long x)
+ }
+ #endif /* CONFIG_PARAVIRT_XXL */
+ 
++#ifdef CONFIG_X86_KNC
++/*
++ * Knights Corner has no CLFLUSH, CLFLUSHOPT or CLWB (ISA reference 327364,
++ * Appendix B; CPUID CLFSH is clear, so the generic paths already prefer
++ * WBINVD via cpa_flush_all()). For the few direct callers, WBINVD is the
++ * only instruction that writes the line back.
++ */
++static __always_inline void clflush(volatile void *__p)
++{
++	asm volatile("wbinvd" : "+m" (*(volatile char __force *)__p) : : "memory");
++}
++
++static inline void clflushopt(volatile void *__p)
++{
++	clflush(__p);
++}
++
++static inline void clwb(volatile void *__p)
++{
++	clflush(__p);
++}
++#else
+ static __always_inline void clflush(volatile void *__p)
+ {
+ 	asm volatile("clflush %0" : "+m" (*(volatile char __force *)__p));
+@@ -204,6 +226,7 @@ static inline void clwb(volatile void *__p)
+ 		"clwb %0", X86_FEATURE_CLWB)
+ 		: "+m" (*p));
+ }
++#endif
+ 
+ #ifdef CONFIG_X86_USER_SHADOW_STACK
+ static inline int write_user_shstk_64(u64 __user *addr, u64 val)

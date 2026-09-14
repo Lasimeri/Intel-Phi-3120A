@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:37:40 -0500
+Subject: [PATCH 13/15] x86: inline assembly without CMOV on Knights Corner
+
+The compiler is told not to use CMOV, but two headers write it by hand.
+mask_user_address() clamps a user pointer with "cmova" so that the
+check is branch-free (its purpose is to avoid the fence of a
+conditional user_access_begin() on speculating cores). ffs() and fls()
+select a "cmovzl" variant whenever CONFIG_X86_CMOV is set, which
+Kconfig.cpu forces on for every x86-64 build.
+
+Knights Corner has no CMOV (ISA reference 327364, Appendix B) and is an
+in-order core, so a branch costs nothing it did not already pay. Under
+X86_KNC the user-pointer clamp becomes compare, branch, move; and
+X86_CMOV is switched off, which makes bitops.h pick its existing
+branch-based ffs()/fls().
+
+Measured: a kernel built for the card had "cmova" in every user-access
+path (arch/x86/lib/usercopy_64.o and onward) although no compiler-
+generated CMOV appeared anywhere. getuser.S clamps the same way in its
+check_range macro; it gets the branch form too.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/Kconfig.cpu              |  3 +++
+ arch/x86/include/asm/uaccess_64.h | 14 ++++++++++++++
+ arch/x86/lib/getuser.S            |  7 +++++++
+ 3 files changed, 24 insertions(+)
+
+diff --git a/arch/x86/Kconfig.cpu b/arch/x86/Kconfig.cpu
+index e4654388d..5cf8dc3f9 100644
+--- a/arch/x86/Kconfig.cpu
++++ b/arch/x86/Kconfig.cpu
+@@ -275,6 +275,9 @@ config X86_CX8
+ config X86_CMOV
+ 	def_bool y
+ 	depends on (MK7 || MPENTIUM4 || MPENTIUMM || MPENTIUMIII || MPENTIUMII || M686 || MVIAC3_2 || MVIAC7 || MCRUSOE || MEFFICEON || MATOM || MGEODE_LX || X86_64)
++	# Knights Corner has no CMOV (ISA reference 327364, Appendix B); the
++	# branch variants of ffs()/fls() in <asm/bitops.h> are used instead.
++	depends on !X86_KNC
+ 
+ config X86_MINIMUM_CPU_FAMILY
+ 	int
+diff --git a/arch/x86/include/asm/uaccess_64.h b/arch/x86/include/asm/uaccess_64.h
+index 20de34cc9..4a8230742 100644
+--- a/arch/x86/include/asm/uaccess_64.h
++++ b/arch/x86/include/asm/uaccess_64.h
+@@ -64,11 +64,25 @@ static inline unsigned long __untagged_addr_remote(struct mm_struct *mm,
+ static inline void __user *mask_user_address(const void __user *ptr)
+ {
+ 	void __user *ret;
++#ifdef CONFIG_X86_KNC
++	/*
++	 * No CMOV on Knights Corner (ISA reference 327364, Appendix B). The
++	 * core is an in-order design, so a branch gives up nothing here.
++	 */
++	asm("cmp %1,%0\n\t"
++	    "jbe 1f\n\t"
++	    "mov %1,%0\n"
++	    "1:"
++		:"=r" (ret)
++		:"r" (runtime_const_ptr(USER_PTR_MAX)),
++		 "0" (ptr));
++#else
+ 	asm("cmp %1,%0\n\t"
+ 	    "cmova %1,%0"
+ 		:"=r" (ret)
+ 		:"r" (runtime_const_ptr(USER_PTR_MAX)),
+ 		 "0" (ptr));
++#endif
+ 	return ret;
+ }
+ #define masked_user_access_begin(x) ({				\
+diff --git a/arch/x86/lib/getuser.S b/arch/x86/lib/getuser.S
+index 9d5654b8a..fe2023a81 100644
+--- a/arch/x86/lib/getuser.S
++++ b/arch/x86/lib/getuser.S
+@@ -43,7 +43,14 @@
+ .if IS_ENABLED(CONFIG_X86_64)
+ 	RUNTIME_CONST_PTR USER_PTR_MAX, rdx
+ 	cmp %rdx, %rax
++#ifdef CONFIG_X86_KNC
++	/* No CMOV on Knights Corner; in-order core, a branch is fine. */
++	jbe 1f
++	mov %rdx, %rax
++1:
++#else
+ 	cmova %rdx, %rax
++#endif
+ .else
+ 	cmp $TASK_SIZE_MAX-\size+1, %eax
+ 	jae .Lbad_get_user

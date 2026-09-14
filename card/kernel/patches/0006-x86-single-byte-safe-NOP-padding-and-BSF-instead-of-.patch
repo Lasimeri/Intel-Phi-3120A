@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:10:03 -0500
+Subject: [PATCH 06/15] x86: single-byte-safe NOP padding and BSF instead of
+ TZCNT on Knights Corner
+
+The 64-bit NOP table uses the 0F 1F (NOPL) forms for every slot longer
+than two bytes; alternatives padding and the assembler's alignment
+fill both draw from it. The Knights Corner core descends from the P54C
+and NOPL is not documented for it (ISA reference 327364); Intel's own
+card kernel used prefixed one-byte NOPs. Under X86_KNC use operand-size
+prefixes on 0x90 and pairs of those for the longer slots, exactly the
+K8 table the x86-64 kernel used until 5.10.
+
+__ffs() emits TZCNT, whose encoding is REP BSF. Pre-BMI CPUs ignore
+the prefix; on Knights Corner that is again undocumented. The input is
+nonzero on this path, so BSF returns the same value; use it.
+
+objtool rewrites jump-label sites and other slots with NOPs from its own
+copy of the table at build time; it has no CONFIG view, so its table is
+the prefixed form unconditionally in this tree.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/bitops.h   | 13 ++++++++++++-
+ arch/x86/include/asm/nops.h     | 26 ++++++++++++++++++++++++++
+ tools/objtool/arch/x86/decode.c | 17 ++++++++++++-----
+ 3 files changed, 50 insertions(+), 6 deletions(-)
+
+diff --git a/arch/x86/include/asm/bitops.h b/arch/x86/include/asm/bitops.h
+index c2ce213f2..ddf68733d 100644
+--- a/arch/x86/include/asm/bitops.h
++++ b/arch/x86/include/asm/bitops.h
+@@ -240,9 +240,20 @@ arch_test_bit_acquire(unsigned long nr, const volatile unsigned long *addr)
+ 					  variable_test_bit(nr, addr);
+ }
+ 
++/*
++ * TZCNT is encoded as REP BSF; pre-BMI CPUs run it as BSF, which is
++ * undocumented for Knights Corner. __ffs() is only called with a nonzero
++ * word, so BSF gives the same answer there.
++ */
++#ifdef CONFIG_X86_KNC
++#define __FFS_INSN "bsf"
++#else
++#define __FFS_INSN "tzcnt"
++#endif
++
+ static __always_inline __attribute_const__ unsigned long variable__ffs(unsigned long word)
+ {
+-	asm("tzcnt %1,%0"
++	asm(__FFS_INSN " %1,%0"
+ 		: "=r" (word)
+ 		: ASM_INPUT_RM (word));
+ 	return word;
+diff --git a/arch/x86/include/asm/nops.h b/arch/x86/include/asm/nops.h
+index cd94221d8..faaac1976 100644
+--- a/arch/x86/include/asm/nops.h
++++ b/arch/x86/include/asm/nops.h
+@@ -36,6 +36,32 @@
+ 
+ #define ASM_NOP_MAX 8
+ 
++#elif defined(CONFIG_X86_KNC)
++
++/*
++ * Knights Corner: the core descends from the P54C and NOPL (0F 1F /0) is
++ * not documented for it (ISA reference 327364). Pad with operand-size
++ * prefixes on the one-byte NOP, which every x86 decodes, and with pairs
++ * of those for the longer slots, as the x86-64 kernel did before 5.10.
++ */
++#define BYTES_NOP1	0x90
++#define BYTES_NOP2	0x66,BYTES_NOP1
++#define BYTES_NOP3	0x66,BYTES_NOP2
++#define BYTES_NOP4	0x66,BYTES_NOP3
++#define BYTES_NOP5	BYTES_NOP3,BYTES_NOP2
++#define BYTES_NOP6	BYTES_NOP3,BYTES_NOP3
++#define BYTES_NOP7	BYTES_NOP4,BYTES_NOP3
++#define BYTES_NOP8	BYTES_NOP4,BYTES_NOP4
++#define BYTES_NOP9	BYTES_NOP5,BYTES_NOP4
++#define BYTES_NOP10	BYTES_NOP5,BYTES_NOP5
++#define BYTES_NOP11	BYTES_NOP6,BYTES_NOP5
++
++#define ASM_NOP9  _ASM_BYTES(BYTES_NOP9)
++#define ASM_NOP10 _ASM_BYTES(BYTES_NOP10)
++#define ASM_NOP11 _ASM_BYTES(BYTES_NOP11)
++
++#define ASM_NOP_MAX 11
++
+ #else
+ 
+ /*
+diff --git a/tools/objtool/arch/x86/decode.c b/tools/objtool/arch/x86/decode.c
+index 1b387d5a1..7625f63c9 100644
+--- a/tools/objtool/arch/x86/decode.c
++++ b/tools/objtool/arch/x86/decode.c
+@@ -846,12 +846,19 @@ void arch_initial_func_cfi_state(struct cfi_init_state *state)
+ 
+ const char *arch_nop_insn(int len)
+ {
++	/*
++	 * Intel Phi 3120A project: the kernel built from this tree runs on
++	 * Knights Corner, where the 0F 1F NOPL forms in <asm/nops.h> are not
++	 * documented. objtool has no CONFIG view, so its table is the prefixed
++	 * one-byte NOPs unconditionally (same bytes as arch/x86/include/asm/nops.h
++	 * under CONFIG_X86_KNC).
++	 */
+ 	static const char nops[5][5] = {
+-		{ BYTES_NOP1 },
+-		{ BYTES_NOP2 },
+-		{ BYTES_NOP3 },
+-		{ BYTES_NOP4 },
+-		{ BYTES_NOP5 },
++		{ 0x90 },
++		{ 0x66, 0x90 },
++		{ 0x66, 0x66, 0x90 },
++		{ 0x66, 0x66, 0x66, 0x90 },
++		{ 0x66, 0x66, 0x90, 0x66, 0x90 },
+ 	};
+ 
+ 	if (len < 1 || len > 5) {

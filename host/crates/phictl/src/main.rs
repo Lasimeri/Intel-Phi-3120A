@@ -65,7 +65,7 @@ enum Cmd {
         #[arg(long)]
         initrd: Option<PathBuf>,
         /// Kernel command line.
-        #[arg(long, default_value = "console=phiring loglevel=8")]
+        #[arg(long, default_value = "earlyprintk=phiring,keep loglevel=8")]
         cmdline: String,
         /// Card physical base of the ring region (hex or decimal).
         #[arg(long, value_parser = parse_u64, default_value = "0x2000000")]

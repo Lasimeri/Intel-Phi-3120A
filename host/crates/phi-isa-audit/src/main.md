@@ -31,7 +31,9 @@ Exit status is the contract for build scripts: 0 clean, 1 hits, 2 error.
 A hit inside a function that is provably never executed on KNC (an
 `alternative()` slot the kernel patches out, an IFUNC variant selected only
 when CPUID advertises the feature) is a false positive. The kernel keeps
-such code in `.altinstr_replacement`, a non-`Text` section, so it is not
-scanned; IFUNC variants in musl do not exist. When a hit is a genuine false
+such code in `.altinstr_replacement`, which the audit skips by name (it
+is an executable section, but its bytes are only copied into the text
+when the keyed CPU feature is present); IFUNC variants in musl do not
+exist. When a hit is a genuine false
 positive, record it in the build script that invokes the audit, with the
 reason.

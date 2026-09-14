@@ -1,0 +1,16 @@
+# Linux tag: v7.2.3
+0001-x86-Kconfig-add-X86_KNC-for-the-Xeon-Phi-x100-Knight.patch
+0002-x86-cpufeatures-relax-the-required-feature-set-for-K.patch
+0003-x86-barrier-locked-add-instead-of-fences-on-Knights-.patch
+0004-x86-no-PAUSE-and-no-PREFETCH-on-Knights-Corner.patch
+0005-x86-io-port-I-O-reads-all-ones-and-writes-nothing-on.patch
+0006-x86-single-byte-safe-NOP-padding-and-BSF-instead-of-.patch
+0007-x86-cache-line-flush-helpers-without-CLFLUSH-on-Knig.patch
+0008-x86-cpu-intel-skip-the-MSRs-Knights-Corner-does-not-.patch
+0009-x86-ioapic-accept-I-O-APIC-addresses-above-4-GiB.patch
+0010-x86-knc-minimal-SFI-table-reader.patch
+0011-x86-knc-early-console-into-the-host-card-shared-memo.patch
+0012-x86-knc-platform-layer-for-the-Knights-Corner-card.patch
+0013-x86-inline-assembly-without-CMOV-on-Knights-Corner.patch
+0014-lib-crypto-no-x86-SIMD-implementations-on-Knights-Co.patch
+0015-x86-lib-cached-copy-instead-of-non-temporal-stores-o.patch

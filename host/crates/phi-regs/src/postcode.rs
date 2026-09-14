@@ -40,6 +40,19 @@ impl Postcode {
     pub fn describe(self) -> Option<&'static str> {
         let t = self.text().to_ascii_lowercase();
         let d = match t.as_str() {
+            // Written by this project's card kernel (card/kernel/patches, asm/knc.h):
+            // 'K' plus a character, so they never collide with Intel's numeric codes.
+            "k0" => "kernel: decompressor entered",
+            "k1" => "kernel: decompressed, jumping to the kernel",
+            "k2" => "kernel: KNC platform layer running",
+            "k3" => "kernel: SFI tables parsed",
+            "k4" => "kernel: timer init",
+            "k5" => "kernel: CPUs and I/O APIC registered",
+            "k6" => "kernel: ring console attached",
+            "k7" => "kernel: late initcalls done, starting init",
+            "kh" => "kernel: halted (restart or power off requested)",
+            "kp" => "kernel: panic",
+            "ke" => "kernel: fatal error before console (no SFI tables)",
             "01" => "LIDT",
             "02" => "SBOX initialization",
             "03" => "Set GDDR top",
@@ -113,6 +126,10 @@ mod tests {
         assert_eq!(Postcode(0x6330).text(), "0c");
         assert_eq!(Postcode(0x6330).describe(), Some("Cache C code"));
         assert!(!Postcode(0x6330).is_ready());
+        // The card kernel's own codes: 'K' plus a character (asm/knc.h).
+        assert_eq!(Postcode(0x0000_324B).text(), "K2");
+        assert_eq!(Postcode(0x0000_324B).describe(), Some("kernel: KNC platform layer running"));
+        assert_eq!(Postcode(0x0000_504B).describe(), Some("kernel: panic"));
         // Mixed case in Intel's table is matched case-insensitively.
         assert_eq!(
             Postcode(u32::from_le_bytes(*b"3D\0\0")).describe(),

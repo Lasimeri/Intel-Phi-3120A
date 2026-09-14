@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 22:10:04 -0500
+Subject: [PATCH 08/15] x86/cpu/intel: skip the MSRs Knights Corner does not
+ implement
+
+Early Intel CPU setup reads IA32_BIOS_SIGN_ID (microcode revision),
+IA32_PLATFORM_ID and IA32_MISC_ENABLE on every family >= 6 part.
+Knights Corner is family 0xb and, per the comment Intel left in its
+card kernel (arch/x86/kernel/cpu/intel.c, k1om tree), does not
+implement IA32_MISC_ENABLE; the other two are equally undocumented for
+it and an unimplemented MSR is a #GP before the kernel can handle one.
+Skip all of them for family 0xb under X86_KNC, and skip the Debug Store
+probe (SSDG 4.2.7: no DS).
+
+While there, clear REP_GOOD and ERMS as Intel's kernel did: the string
+operations are microcoded on this core and the unrolled memcpy/memset
+variants are faster.
+
+The early microcode loader is unconditional since MICROCODE became
+def_bool y; it collects the CPU signature through the same MSR before
+any platform code runs. Disable it for family 0xb, which also covers
+the AP path.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/kernel/cpu/intel.c          | 30 ++++++++++++++++++++++++----
+ arch/x86/kernel/cpu/microcode/core.c | 10 ++++++++++
+ 2 files changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/arch/x86/kernel/cpu/intel.c b/arch/x86/kernel/cpu/intel.c
+index abb398433..6f8eb4d11 100644
+--- a/arch/x86/kernel/cpu/intel.c
++++ b/arch/x86/kernel/cpu/intel.c
+@@ -183,11 +183,25 @@ static void detect_tme_early(struct cpuinfo_x86 *c)
+ 		     keyid_bits);
+ }
+ 
++/*
++ * Knights Corner (family 0xb) does not implement IA32_MISC_ENABLE,
++ * IA32_PLATFORM_ID or IA32_BIOS_SIGN_ID; Intel's card kernel skipped them
++ * (arch/x86/kernel/cpu/intel.c in the k1om tree) and there is no Debug
++ * Store either (SSDG 4.2.7).
++ */
++static inline bool intel_is_knc(struct cpuinfo_x86 *c)
++{
++	return IS_ENABLED(CONFIG_X86_KNC) && c->x86 == 0xb;
++}
++
+ void intel_unlock_cpuid_leafs(struct cpuinfo_x86 *c)
+ {
+ 	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
+ 		return;
+ 
++	if (intel_is_knc(c))
++		return;
++
+ 	if (c->x86_vfm < INTEL_PENTIUM_M_DOTHAN)
+ 		return;
+ 
+@@ -203,9 +217,10 @@ static void early_init_intel(struct cpuinfo_x86 *c)
+ {
+ 	u64 misc_enable;
+ 
+-	if (c->x86 >= 6 && !cpu_has(c, X86_FEATURE_IA64))
++	if (c->x86 >= 6 && !cpu_has(c, X86_FEATURE_IA64) && !intel_is_knc(c))
+ 		c->microcode = intel_get_microcode_revision();
+-	c->intel_platform_id = intel_get_platform_id();
++	if (!intel_is_knc(c))
++		c->intel_platform_id = intel_get_platform_id();
+ 
+ 	/* Now if any of them are set, check the blacklist and clear the lot */
+ 	if ((cpu_has(c, X86_FEATURE_SPEC_CTRL) ||
+@@ -299,7 +314,14 @@ static void early_init_intel(struct cpuinfo_x86 *c)
+ 	 * Adhere to the preference and program the Linux-defined fast
+ 	 * string flag and enhanced fast string capabilities accordingly.
+ 	 */
+-	if (c->x86_vfm >= INTEL_PENTIUM_M_DOTHAN) {
++	if (intel_is_knc(c)) {
++		/*
++		 * No MISC_ENABLE to consult. Intel's card kernel also cleared
++		 * REP_GOOD: the string operations are microcoded and slow.
++		 */
++		setup_clear_cpu_cap(X86_FEATURE_REP_GOOD);
++		setup_clear_cpu_cap(X86_FEATURE_ERMS);
++	} else if (c->x86_vfm >= INTEL_PENTIUM_M_DOTHAN) {
+ 		rdmsrq(MSR_IA32_MISC_ENABLE, misc_enable);
+ 		if (misc_enable & MSR_IA32_MISC_ENABLE_FAST_STRING) {
+ 			/* X86_FEATURE_ERMS is set based on CPUID */
+@@ -541,7 +563,7 @@ static void init_intel(struct cpuinfo_x86 *c)
+ 	if (cpu_has(c, X86_FEATURE_XMM2))
+ 		set_cpu_cap(c, X86_FEATURE_LFENCE_RDTSC);
+ 
+-	if (boot_cpu_has(X86_FEATURE_DS)) {
++	if (boot_cpu_has(X86_FEATURE_DS) && !intel_is_knc(c)) {
+ 		unsigned int l1, l2;
+ 
+ 		rdmsr(MSR_IA32_MISC_ENABLE, l1, l2);
+diff --git a/arch/x86/kernel/cpu/microcode/core.c b/arch/x86/kernel/cpu/microcode/core.c
+index 0dd0c7241..e41ca7e34 100644
+--- a/arch/x86/kernel/cpu/microcode/core.c
++++ b/arch/x86/kernel/cpu/microcode/core.c
+@@ -183,6 +183,16 @@ void __init load_ucode_bsp(void)
+ 
+ 	cpuid_1_eax = native_cpuid_eax(1);
+ 
++	/*
++	 * Knights Corner (Intel family 0xb) implements neither IA32_BIOS_SIGN_ID
++	 * nor OS microcode updates; the loader would #GP on the MSR.
++	 */
++	if (IS_ENABLED(CONFIG_X86_KNC) && x86_cpuid_vendor() == X86_VENDOR_INTEL &&
++	    x86_family(cpuid_1_eax) == 0xb) {
++		dis_ucode_ldr = true;
++		return;
++	}
++
+ 	switch (x86_cpuid_vendor()) {
+ 	case X86_VENDOR_INTEL:
+ 		if (x86_family(cpuid_1_eax) < 6)
