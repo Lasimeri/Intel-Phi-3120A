@@ -79,6 +79,10 @@ enum Cmd {
         /// Do not tail the console after sending the boot interrupt.
         #[arg(long)]
         no_console: bool,
+        /// Also watch a 32-bit word in card memory (the kernel's knc_boot_mark)
+        /// and print it as a POST-style code whenever it changes.
+        #[arg(long, value_parser = parse_u64)]
+        watch: Option<u64>,
         /// Write everything into card memory but do not send the boot
         /// interrupt (bisecting host resets); implies --no-console.
         #[arg(long)]
@@ -128,6 +132,9 @@ enum Cmd {
         /// Size of the ring region.
         #[arg(long, value_parser = parse_u64, default_value = "0x100000")]
         ring_size: u64,
+        /// Also watch a 32-bit word in card memory and print changes.
+        #[arg(long, value_parser = parse_u64)]
+        watch: Option<u64>,
     },
 }
 
@@ -168,6 +175,7 @@ fn main() -> Result<()> {
             raw_cmdline,
             no_console,
             load_only,
+            watch,
         } => cmd_boot(
             cli.bdf.as_deref(),
             kernel,
@@ -178,6 +186,7 @@ fn main() -> Result<()> {
             raw_cmdline,
             !no_console && !load_only,
             load_only,
+            watch,
         ),
         Cmd::Peek { addr, len } => {
             let card = open(cli.bdf.as_deref())?;
@@ -215,9 +224,13 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Console { ring_base, ring_size } => {
+        Cmd::Console {
+            ring_base,
+            ring_size,
+            watch,
+        } => {
             let card = open(cli.bdf.as_deref())?;
-            console(&card, ring_base, ring_size)
+            console(&card, ring_base, ring_size, watch)
         }
     }
 }
@@ -392,6 +405,7 @@ fn cmd_boot(
     raw_cmdline: bool,
     follow: bool,
     load_only: bool,
+    watch: Option<u64>,
 ) -> Result<()> {
     let card = open(bdf)?;
     let kernel_bytes = std::fs::read(&kernel).with_context(|| format!("reading {}", kernel.display()))?;
@@ -429,14 +443,14 @@ fn cmd_boot(
     }
     println!("  ring      {ring_size:#x} bytes at {ring_base:#x}");
     if follow {
-        console(&card, ring_base, ring_size)
+        console(&card, ring_base, ring_size, watch)
     } else {
         Ok(())
     }
 }
 
 /// Tail the console ring, print POST code changes, forward stdin lines.
-fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
+fn console(card: &Card, ring_base: u64, ring_size: u64, watch: Option<u64>) -> Result<()> {
     if ring_base + ring_size > memory::GDDR_BYTES_3120A {
         anyhow::bail!("ring region beyond card memory");
     }
@@ -465,6 +479,7 @@ fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
     let mut buf = [0u8; 4096];
     let mut last_post = card.postcode();
     let mut last_flags = 0u64;
+    let mut last_mark = 0u32;
     let start = Instant::now();
     eprintln!("[phictl] console: tailing c2h ring at {ring_base:#x}; Ctrl-C to stop");
     loop {
@@ -494,6 +509,22 @@ fn console(card: &Card, ring_base: u64, ring_size: u64) -> Result<()> {
                 post.describe().unwrap_or("")
             );
             last_post = post;
+        }
+        if let Some(addr) = watch {
+            let mut w = [0u8; 4];
+            if card.read_card_memory(addr, &mut w).is_ok() {
+                let mark = u32::from_le_bytes(w);
+                if mark != last_mark {
+                    let p = phi_regs::postcode::Postcode(mark);
+                    eprintln!(
+                        "[phictl] +{:>8.3}s mark \"{}\" {}",
+                        start.elapsed().as_secs_f64(),
+                        p.text(),
+                        p.describe().unwrap_or("")
+                    );
+                    last_mark = mark;
+                }
+            }
         }
         let flags = Region::card_boot_flags(&mem);
         if flags != last_flags {

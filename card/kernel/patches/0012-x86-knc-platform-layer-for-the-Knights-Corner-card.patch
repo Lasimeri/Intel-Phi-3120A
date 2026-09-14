@@ -33,14 +33,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/boot/compressed/misc.c   |  25 +++
  arch/x86/include/asm/hypervisor.h |   1 +
- arch/x86/include/asm/knc.h        |  37 ++++
+ arch/x86/include/asm/knc.h        |  47 +++++
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
  arch/x86/kernel/head64.c          |   2 +
- arch/x86/kernel/head_64.S         |  26 +++
- arch/x86/kernel/knc.c             | 318 ++++++++++++++++++++++++++++++
+ arch/x86/kernel/head_64.S         |  38 ++++
+ arch/x86/kernel/knc.c             | 320 ++++++++++++++++++++++++++++++
  arch/x86/kernel/setup.c           |   5 +
- 9 files changed, 418 insertions(+), 1 deletion(-)
+ 9 files changed, 442 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -105,7 +105,7 @@ index 9ad86a7d1..63fa52327 100644
  extern const struct hypervisor_x86 x86_hyper_bhyve;
  extern struct hypervisor_x86 x86_hyper_xen_hvm;
 diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
-index 058061414..235d78fe7 100644
+index 058061414..bce9a4165 100644
 --- a/arch/x86/include/asm/knc.h
 +++ b/arch/x86/include/asm/knc.h
 @@ -17,6 +17,8 @@
@@ -133,10 +133,21 @@ index 058061414..235d78fe7 100644
  
  #define KNC_MAX_CPUS		256
  #define KNC_MAX_IOAPICS		4
-@@ -74,4 +85,30 @@ u64 knc_ring_host_epoch_ns(void);
+@@ -73,5 +84,41 @@ u64 knc_ring_host_epoch_ns(void);
+ 
  /* Platform layer (knc.c). */
  void knc_postcode(u32 code);
- 
++/*
++ * A progress word in .data (never .bss: clear_bss() would wipe it) that
++ * head_64.S writes with plain stores from the moment the kernel's own page
++ * tables are live, before any MMIO or page-fault handling exists. The host
++ * reads it from card memory at LOAD_PHYSICAL_ADDR + (address - kernel
++ * virtual base); phictl boot --watch prints changes. Values are ASCII
++ * pairs like the POST codes: "KJ" CR3 loaded, "KL" at the virtual address,
++ * "KM" stack and GS set, "KN" early IDT loaded.
++ */
++extern u32 knc_boot_mark;
++
 +#ifndef __ASSEMBLER__
 +#include <asm/page.h>
 +
@@ -162,7 +173,7 @@ index 058061414..235d78fe7 100644
 +		*(volatile u32 *)__va(KNC_DBOX_PHYS + KNC_DBOX_POSTCODE) = code;
 +}
 +#endif /* !__ASSEMBLER__ */
-+
+ 
  #endif /* _ASM_X86_KNC_H */
 diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
 index d33d62fe9..20784d975 100644
@@ -212,7 +223,7 @@ index fd28b53db..2665b6b12 100644
  	/* Needed before cc_platform_has() can be used for TDX */
  	tdx_early_init();
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
-index f882849c3..fcc039f30 100644
+index f882849c3..0a229c5b0 100644
 --- a/arch/x86/kernel/head_64.S
 +++ b/arch/x86/kernel/head_64.S
 @@ -61,6 +61,16 @@ SYM_CODE_START_NOALIGN(startup_64)
@@ -243,7 +254,7 @@ index f882849c3..fcc039f30 100644
  
  	/*
  	 * Derive the kernel's physical-to-virtual offset from the physical and
-@@ -133,6 +147,10 @@ SYM_CODE_START_NOALIGN(startup_64)
+@@ -133,7 +147,14 @@ SYM_CODE_START_NOALIGN(startup_64)
  	 * Switch to early_top_pgt which still has the identity mappings
  	 * present.
  	 */
@@ -252,12 +263,33 @@ index f882849c3..fcc039f30 100644
 +	movl	$0x474B, (%rdi)
 +#endif
  	movq	%rax, %cr3
++#ifdef CONFIG_X86_KNC
++	movl	$0x4A4B, knc_boot_mark(%rip)	/* "KJ": new CR3 loaded */
++#endif
  
  	/* Branch to the common startup code at its kernel virtual address */
-@@ -377,6 +395,14 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+ 	ANNOTATE_RETPOLINE_SAFE
+@@ -198,6 +219,9 @@ SYM_INNER_LABEL(secondary_startup_64_no_verify, SYM_L_GLOBAL)
+ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+ 	UNWIND_HINT_END_OF_STACK
+ 	ANNOTATE_NOENDBR
++#ifdef CONFIG_X86_KNC
++	movl	$0x4C4B, knc_boot_mark(%rip)	/* "KL": running at the virtual address */
++#endif
+ 
+ 	/*
+ 	 * Create a mask of CR4 bits to preserve. Omit PGE in order to flush
+@@ -376,7 +400,21 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
+ 	wrmsr
  
  	/* Setup and Load IDT */
++#ifdef CONFIG_X86_KNC
++	movl	$0x4D4B, knc_boot_mark(%rip)	/* "KM": stack and GS base set */
++#endif
  	call	early_setup_idt
++#ifdef CONFIG_X86_KNC
++	movl	$0x4E4B, knc_boot_mark(%rip)	/* "KN": early IDT loaded */
++#endif
 +#ifdef CONFIG_X86_KNC
 +	/*
 +	 * "KI": early IDT loaded, kernel page tables live. The direct-map
@@ -271,10 +303,10 @@ index f882849c3..fcc039f30 100644
  	movl	$0x80000001, %eax
 diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
 new file mode 100644
-index 000000000..c4fe04590
+index 000000000..ab0c22215
 --- /dev/null
 +++ b/arch/x86/kernel/knc.c
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,320 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Knights Corner (Intel Xeon Phi x100) platform layer.
@@ -324,6 +356,8 @@ index 000000000..c4fe04590
 +
 +/* UEFI memory type "conventional memory", the only type turned into RAM. */
 +#define EFI_CONVENTIONAL_MEMORY_TYPE	7
++
++u32 knc_boot_mark __section(".data") = KNC_POST('K', '-');
 +
 +static void __iomem *knc_dbox;
 +static void __iomem *knc_sbox;
