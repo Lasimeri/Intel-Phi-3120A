@@ -202,6 +202,7 @@ fn main() -> Result<()> {
             no_readback,
         } => {
             let card = open(cli.bdf.as_deref())?;
+            card.wait_ready(std::time::Duration::from_secs(20))?;
             let data = vec![0u8; len];
             let t0 = Instant::now();
             card.write_card_memory_paced(addr, &data, chunk, !no_readback)?;
