@@ -23,9 +23,9 @@ the prefixed form unconditionally in this tree.
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/include/asm/bitops.h   | 13 ++++++++++++-
- arch/x86/include/asm/nops.h     | 26 ++++++++++++++++++++++++++
+ arch/x86/include/asm/nops.h     | 27 +++++++++++++++++++++++++++
  tools/objtool/arch/x86/decode.c | 17 ++++++++++++-----
- 3 files changed, 50 insertions(+), 6 deletions(-)
+ 3 files changed, 51 insertions(+), 6 deletions(-)
 
 diff --git a/arch/x86/include/asm/bitops.h b/arch/x86/include/asm/bitops.h
 index c2ce213f2..ddf68733d 100644
@@ -54,10 +54,10 @@ index c2ce213f2..ddf68733d 100644
  		: ASM_INPUT_RM (word));
  	return word;
 diff --git a/arch/x86/include/asm/nops.h b/arch/x86/include/asm/nops.h
-index cd94221d8..faaac1976 100644
+index cd94221d8..7bc20ca5b 100644
 --- a/arch/x86/include/asm/nops.h
 +++ b/arch/x86/include/asm/nops.h
-@@ -36,6 +36,32 @@
+@@ -36,6 +36,33 @@
  
  #define ASM_NOP_MAX 8
  
@@ -73,7 +73,8 @@ index cd94221d8..faaac1976 100644
 +#define BYTES_NOP2	0x66,BYTES_NOP1
 +#define BYTES_NOP3	0x66,BYTES_NOP2
 +#define BYTES_NOP4	0x66,BYTES_NOP3
-+#define BYTES_NOP5	BYTES_NOP3,BYTES_NOP2
++/* A single instruction: jump-label and static-call sites are decoded and patched as one. */
++#define BYTES_NOP5	0x66,0x66,0x66,0x66,0x90
 +#define BYTES_NOP6	BYTES_NOP3,BYTES_NOP3
 +#define BYTES_NOP7	BYTES_NOP4,BYTES_NOP3
 +#define BYTES_NOP8	BYTES_NOP4,BYTES_NOP4
@@ -91,7 +92,7 @@ index cd94221d8..faaac1976 100644
  
  /*
 diff --git a/tools/objtool/arch/x86/decode.c b/tools/objtool/arch/x86/decode.c
-index 1b387d5a1..7625f63c9 100644
+index 1b387d5a1..d382c158c 100644
 --- a/tools/objtool/arch/x86/decode.c
 +++ b/tools/objtool/arch/x86/decode.c
 @@ -846,12 +846,19 @@ void arch_initial_func_cfi_state(struct cfi_init_state *state)
@@ -115,7 +116,7 @@ index 1b387d5a1..7625f63c9 100644
 +		{ 0x66, 0x90 },
 +		{ 0x66, 0x66, 0x90 },
 +		{ 0x66, 0x66, 0x66, 0x90 },
-+		{ 0x66, 0x66, 0x90, 0x66, 0x90 },
++		{ 0x66, 0x66, 0x66, 0x66, 0x90 },	/* one instruction: jump-label sites are decoded */
  	};
  
  	if (len < 1 || len > 5) {
