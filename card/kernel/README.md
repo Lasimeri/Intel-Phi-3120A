@@ -1,13 +1,13 @@
 # card/kernel
 
-A mainline Linux kernel for Knights Corner: a sixteen-patch series against
+A mainline Linux kernel for Knights Corner: a seventeen-patch series against
 a pinned stable tag (`patches/SERIES`), a Kconfig fragment
 (`config/knc.config`), and `build.sh`, which fetches, patches, configures,
 builds with the project's patched clang and audits the result.
 
 ## The series (v7.2.3)
 
-Sixteen patches. Each patch is a reviewable commit whose message cites the SSDG section
+Seventeen patches. Each patch is a reviewable commit whose message cites the SSDG section
 (`docs/research/os-limitations.md`), the ISA reference appendix
 (`docs/research/isa-deletions.md`), Intel's card kernel, or a measurement.
 
@@ -29,6 +29,7 @@ Sixteen patches. Each patch is a reviewable commit whose message cites the SSDG 
 | 0014 | `lib/crypto: no x86 SIMD implementations` | `lib/crypto/Kconfig` | The SHA/AES/GHASH/BLAKE2s/ChaCha/Poly1305/Curve25519 x86 assembly is default-on for X86_64 with no switch; excluded under X86_KNC (4000+ SIMD instructions that would only ever be dispatched around) |
 | 0015 | `x86/lib: cached copy instead of non-temporal stores` | `arch/x86/lib/copy_user_uncached_64.S` | `__copy_user_nocache` assembled with `mov` and no `sfence` (both SSE2) |
 | 0016 | `x86/knc: tty on the host/card ring` | `kernel/knc_tty.c`, `kernel/knc_earlycon.c` | `ttyPHI0`: output through the shared console ring under a lock, input polled from the host-to-card ring every 10 ms; `console=ttyPHI0` gives init its `/dev/console` |
+| 0017 | `x86/knc: expanded APIC ID and ICR destination fields, AP lock without PAUSE` | `include/asm/apicdef.h`, `kernel/apic/apic_flat_64.c`, `realmode/rm/trampoline_64.S` | LAPIC ID at bits 31:23 and ICR2 destination at bits 31:16 (SSDG 4.2.4, Intel EARLYMIC hunks); the real-mode AP lock spins with `nop` because `pause` is deleted |
 
 Not in the series, deliberately: SMP bring-up. Intel's card kernel used
 the standard INIT/SIPI sequence (`arch/x86/kernel/smpboot.c` in the k1om

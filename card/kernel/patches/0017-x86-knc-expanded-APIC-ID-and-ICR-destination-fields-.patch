@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 09:15:39 -0500
+Subject: [PATCH] x86/knc: expanded APIC ID and ICR destination fields, AP lock
+ without PAUSE
+
+Knights Corner widens the xAPIC identity fields (SSDG 4.2.4, "expanded
+ID fields"): the local APIC ID register carries a 9-bit ID at bits
+31:23, so the xAPIC decode (bits 31:24) returns the ID shifted right by
+one (the first boot logged "APIC ID mismatch. CPUID: 0x00e0 APIC:
+0x0070"), and the interrupt command register's destination field is 16
+bits wide at bits 31:16 of ICR2 instead of 8 bits at 31:24. Intel's
+k1om tree makes the same two changes under CONFIG_X86_EARLYMIC
+(apicdef.h SET_APIC_DEST_FIELD, apic_flat_64.c read_xapic_id and
+set_apic_id with apic_id_mask 0x1ff << 23).
+
+With the plain decode every INIT, SIPI and IPI would be addressed to the
+wrong core, which is why "nosmp" was mandatory so far. Under
+CONFIG_X86_KNC the physical flat driver now decodes the ID from bit 23
+and the two ICR2 writers (native_apic_icr_write, __prepare_ICR2) place
+the destination at bit 16.
+
+The real-mode AP trampoline's parallel-bringup lock spins with PAUSE,
+which the card's core does not implement (ISA reference 327364,
+appendix B); the trampoline runs with an empty IDT, so a #UD there
+would triple fault the AP silently. Spin with NOP on KNC.
+
+The I/O APIC redirection entries keep the standard 8-bit destination:
+Intel's tree changes nothing there and the card's APIC IDs end at 0xe3.
+---
+ arch/x86/include/asm/apicdef.h       | 10 ++++++++++
+ arch/x86/kernel/apic/apic_flat_64.c  |  8 ++++++++
+ arch/x86/realmode/rm/trampoline_64.S |  4 ++++
+ 3 files changed, 22 insertions(+)
+
+diff --git a/arch/x86/include/asm/apicdef.h b/arch/x86/include/asm/apicdef.h
+index bc125c442..407a74c57 100644
+--- a/arch/x86/include/asm/apicdef.h
++++ b/arch/x86/include/asm/apicdef.h
+@@ -98,8 +98,18 @@
+ #define		APIC_DM_EXTINT		0x00700
+ #define		APIC_VECTOR_MASK	0x000FF
+ #define	APIC_ICR2	0x310
++#ifdef CONFIG_X86_KNC
++/*
++ * Knights Corner widens the ICR destination to 16 bits at bits 31:16 of
++ * ICR2 (SSDG 4.2.4 "expanded ID fields"; Intel's k1om tree makes the same
++ * change under CONFIG_X86_EARLYMIC).
++ */
++#define		GET_XAPIC_DEST_FIELD(x)	(((x) >> 16) & 0xFFFF)
++#define		SET_XAPIC_DEST_FIELD(x)	((x) << 16)
++#else
+ #define		GET_XAPIC_DEST_FIELD(x)	(((x) >> 24) & 0xFF)
+ #define		SET_XAPIC_DEST_FIELD(x)	((x) << 24)
++#endif
+ #define	APIC_LVTT	0x320
+ #define	APIC_LVTTHMR	0x330
+ #define	APIC_LVTPC	0x340
+diff --git a/arch/x86/kernel/apic/apic_flat_64.c b/arch/x86/kernel/apic/apic_flat_64.c
+index e0308d8c4..a750ec1e7 100644
+--- a/arch/x86/kernel/apic/apic_flat_64.c
++++ b/arch/x86/kernel/apic/apic_flat_64.c
+@@ -16,7 +16,15 @@
+ 
+ static u32 physflat_get_apic_id(u32 x)
+ {
++#ifdef CONFIG_X86_KNC
++	/*
++	 * Knights Corner keeps a 9-bit APIC ID at bits 31:23 of the ID register
++	 * (SSDG 4.2.4); the xAPIC decode returns the ID shifted right by one.
++	 */
++	return (x >> 23) & 0x1FF;
++#else
+ 	return (x >> 24) & 0xFF;
++#endif
+ }
+ 
+ static int physflat_probe(void)
+diff --git a/arch/x86/realmode/rm/trampoline_64.S b/arch/x86/realmode/rm/trampoline_64.S
+index 14d9c7daf..69a2adcd8 100644
+--- a/arch/x86/realmode/rm/trampoline_64.S
++++ b/arch/x86/realmode/rm/trampoline_64.S
+@@ -50,7 +50,11 @@
+         lock btsl       $0, tr_lock
+ 	.endif
+         jnc             2f
++#ifdef CONFIG_X86_KNC
++        nop                             # Knights Corner has no PAUSE
++#else
+         pause
++#endif
+         jmp             .Llock_rm\@
+ 2:
+ 	# Setup stack

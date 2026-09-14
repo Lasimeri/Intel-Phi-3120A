@@ -15,3 +15,4 @@
 0014-lib-crypto-no-x86-SIMD-implementations-on-Knights-Co.patch
 0015-x86-lib-cached-copy-instead-of-non-temporal-stores-o.patch
 0016-x86-knc-tty-on-the-host-card-ring.patch
+0017-x86-knc-expanded-APIC-ID-and-ICR-destination-fields-.patch
