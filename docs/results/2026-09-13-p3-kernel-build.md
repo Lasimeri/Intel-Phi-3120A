@@ -65,3 +65,32 @@ without the BHI mitigation (0003 substitutes its fence instead).
   card is shared with the other session (VFIO single-open).
 - SMP bring-up is untested (Intel's card kernel used the standard
   INIT/SIPI sequence).
+
+## First boot attempt: the host reset (2026-09-13 about 23:40)
+
+`sudo phictl boot --kernel .../bzImage` over SSH. The host hard-reset
+within seconds: the journal ends at 23:40:14 with no shutdown, oops,
+panic, AER or IOMMU message (the last seconds never reached disk), no
+pstore record, SSH sessions marked "crash", new boot at 23:41:39. After
+the reboot the root port `00:03.1` shows no error bits (a platform reset
+clears them) while the card keeps `DevSta: CorrErr+ UnsupReq+` (it was
+not power-cycled; Linux clears AER status at enumeration but leaves
+Device Status). So the card saw at least one unsupported request during
+the attempt, direction unknown.
+
+Ranked causes: (1) a fatal PCIe error on the first-ever host access
+through the BAR0 aperture (P1 used BAR4 only), turned into a silent
+reset by the platform; (2) the card kernel running and touching the
+512 GiB SMPT window onto host memory because the loader omitted Intel's
+`mem=` cap and the platform layer took the bootstrap's e820 at face
+value (host memory corruption is excluded: the IOMMU is in translated
+mode and the host maps nothing for card DMA, so every card-originated
+access was refused, but a storm of refusals or a refused non-posted read
+may still end in a platform reset); (3) UPS overload, no evidence.
+
+Changes before the next attempt: the platform layer drops every RAM
+range at or above the 32 GiB MMIO base (patch 0012); the loader appends
+`mem=6144M` as Intel's did and no longer reads back through the
+aperture; `phictl peek` reads a few bytes through the aperture so that a
+single non-posted read can be tested on its own, from the physical
+console, before any boot.

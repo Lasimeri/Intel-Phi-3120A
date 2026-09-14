@@ -33,10 +33,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/boot/compressed/misc.c   |  25 +++
  arch/x86/include/asm/hypervisor.h |   1 +
+ arch/x86/include/asm/knc.h        |   2 +
  arch/x86/kernel/Makefile          |   2 +-
  arch/x86/kernel/cpu/hypervisor.c  |   3 +
- arch/x86/kernel/knc.c             | 309 ++++++++++++++++++++++++++++++
- 5 files changed, 339 insertions(+), 1 deletion(-)
+ arch/x86/kernel/knc.c             | 318 ++++++++++++++++++++++++++++++
+ 6 files changed, 350 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc.c
 
 diff --git a/arch/x86/boot/compressed/misc.c b/arch/x86/boot/compressed/misc.c
@@ -100,6 +101,19 @@ index 9ad86a7d1..63fa52327 100644
  extern const struct hypervisor_x86 x86_hyper_acrn;
  extern const struct hypervisor_x86 x86_hyper_bhyve;
  extern struct hypervisor_x86 x86_hyper_xen_hvm;
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+index 058061414..2523f9971 100644
+--- a/arch/x86/include/asm/knc.h
++++ b/arch/x86/include/asm/knc.h
+@@ -17,6 +17,8 @@
+ #define KNC_DBOX_PHYS		0x08007C0000ULL
+ #define KNC_SBOX_PHYS		0x08007D0000ULL
+ #define KNC_BOX_SIZE		0x10000
++/* First address that is not card memory: register blocks from 32 GiB, the SMPT window onto host memory from 512 GiB. */
++#define KNC_MMIO_BASE		0x0800000000ULL
+ 
+ /* DBOX: the POST code register the host reads at BAR4 + 0x242c. */
+ #define KNC_DBOX_POSTCODE	0x242c
 diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
 index d33d62fe9..20784d975 100644
 --- a/arch/x86/kernel/Makefile
@@ -129,10 +143,10 @@ index f3e921984..d8b443498 100644
  #endif
 diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
 new file mode 100644
-index 000000000..9c84ad647
+index 000000000..c4fe04590
 --- /dev/null
 +++ b/arch/x86/kernel/knc.c
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,318 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Knights Corner (Intel Xeon Phi x100) platform layer.
@@ -355,6 +369,15 @@ index 000000000..9c84ad647
 +	}
 +	knc_postcode(KNC_POST_SFI);
 +	knc_memory_from_sfi();
++	/*
++	 * Nothing at or above the MMIO base is card memory: the register
++	 * blocks live there and, from 512 GiB up, the SMPT window onto host
++	 * memory. A map that lists any of it as RAM must not be believed;
++	 * Intel's loader capped its kernel with mem= for the same reason.
++	 */
++	e820__range_remove(KNC_MMIO_BASE, ~0ULL - KNC_MMIO_BASE, E820_TYPE_RAM);
++	e820__update_table(e820_table);
++	pr_info("memory map clamped below %#llx\n", KNC_MMIO_BASE);
 +
 +	if (!knc_core_khz)
 +		knc_core_khz = knc_read_core_khz();

@@ -68,11 +68,21 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
-/// The command line parameters that tell the kernel where the ring is.
-/// `memmap=<size>$<base>` marks the region reserved; `phi.ring=` is read by
-/// the KNC platform code and by `phinet`.
+/// The command line parameters that tell the kernel where the ring is and
+/// how much memory it may use. `memmap=<size>$<base>` marks the ring region
+/// reserved; `phi.ring=` is read by the KNC platform code and by `phinet`;
+/// `mem=` caps the kernel at the card's GDDR, as Intel's loader did with the
+/// aperture size, so that nothing the bootstrap lists above it (register
+/// blocks, the SMPT window onto host memory) is ever treated as RAM.
 pub fn ring_cmdline_params(base: u64, size: u64) -> String {
-    format!("memmap={}K${:#x} phi.ring={:#x},{:#x}", size / 1024, base, base, size)
+    format!(
+        "memmap={}K${:#x} phi.ring={:#x},{:#x} mem={}M",
+        size / 1024,
+        base,
+        base,
+        size,
+        memory::GDDR_BYTES_3120A >> 20
+    )
 }
 
 /// Validate everything, format the ring region, copy the image, command
@@ -162,9 +172,11 @@ pub fn boot(card: &Card, img: &BootImage) -> Result<BootReport> {
         card.write_card_memory(a, data)?;
     }
 
-    // 9. Drain posted writes (read back the last bytes we wrote), then go.
-    let mut probe = [0u8; 4];
-    card.read_card_memory(bootaddr, &mut probe)?;
+    // 9. Go. No read-back: the first boot attempt reset the host, and a
+    //    non-posted read through the aperture is one of the suspects; the
+    //    boot interrupt is a register write that the card orders after the
+    //    posted aperture writes. Use `phictl peek` to test aperture reads
+    //    on their own.
     let apic_id = dl.apic_id();
     card.send_boot_interrupt();
 
@@ -186,6 +198,6 @@ mod tests {
     #[test]
     fn ring_params_are_what_the_kernel_expects() {
         let s = ring_cmdline_params(0x0200_0000, 1024 * 1024);
-        assert_eq!(s, "memmap=1024K$0x2000000 phi.ring=0x2000000,0x100000");
+        assert_eq!(s, "memmap=1024K$0x2000000 phi.ring=0x2000000,0x100000 mem=6144M");
     }
 }

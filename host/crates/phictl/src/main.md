@@ -35,3 +35,12 @@ appended by `phi-hw::boot` unless `--raw-cmdline`.
 `Ctrl-C` stops the console. Errors from the layers below are printed as a
 chain (`anyhow`), for example the "not bound to vfio-pci" check that runs
 before any VFIO call so the message can name the fix.
+
+## `peek`
+
+`phictl peek 0x4000000 --len 16` reads a few bytes of card memory through
+the BAR0 aperture and prints them: one non-posted read, nothing else.
+Added after the first `boot` attempt reset the host with no error logged
+(2026-09-13); the loader no longer reads back what it wrote, and this
+command exists so that aperture reads can be tested by themselves from
+the physical console.

@@ -80,6 +80,16 @@ enum Cmd {
         #[arg(long)]
         no_console: bool,
     },
+    /// Read a few bytes of card memory through the BAR0 aperture and print
+    /// them. A single non-posted read, for testing the aperture in isolation.
+    Peek {
+        /// Card physical address (hex or decimal).
+        #[arg(value_parser = parse_u64)]
+        addr: u64,
+        /// Number of bytes (at most 256).
+        #[arg(long, default_value_t = 4)]
+        len: usize,
+    },
     /// Tail the card's console ring and forward stdin lines to it.
     Console {
         /// Card physical base of the ring region.
@@ -137,6 +147,14 @@ fn main() -> Result<()> {
             raw_cmdline,
             !no_console,
         ),
+        Cmd::Peek { addr, len } => {
+            let card = open(cli.bdf.as_deref())?;
+            let mut buf = vec![0u8; len.min(256)];
+            card.read_card_memory(addr, &mut buf)?;
+            let hex: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
+            println!("{addr:#x}: {}", hex.join(" "));
+            Ok(())
+        }
         Cmd::Console { ring_base, ring_size } => {
             let card = open(cli.bdf.as_deref())?;
             console(&card, ring_base, ring_size)
