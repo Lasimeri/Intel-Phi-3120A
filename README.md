@@ -49,7 +49,7 @@ See [`docs/plan.md`](docs/plan.md) for the phase table. Short version: research
 is complete; the card answers over VFIO and survives a traced reset (P1); the
 card toolchain (patched LLVM, musl, compiler-rt, libunwind, Rust `std`) builds
 and its exit check passes on the host (P2); the kernel port (P3) is next.
-Nothing has booted on the card yet. Every claim about hardware behavior in this repository
+The card kernel boots to init with `nosmp` (2026-09-14); an initramfs and a tty over the ring (P4) are next. Every claim about hardware behavior in this repository
 is labeled with its source: a document, a source tree, or a measurement on this
 machine.
 
