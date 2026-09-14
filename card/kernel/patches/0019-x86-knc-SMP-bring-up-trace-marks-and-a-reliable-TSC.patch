@@ -1,0 +1,258 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 14:13:08 -0500
+Subject: [PATCH] x86/knc: SMP bring-up trace marks and a reliable TSC
+
+The first SMP boot went silent at the first AP kick: no line after
+"Booting SMP configuration", no timeout message, no panic, for minutes.
+To see where the boot CPU and the AP stop, the wake-up path now leaves
+marks that the host reads without any console. The BSP writes POST
+codes "S0".."S6" around INIT and the two SIPIs (native_kick_ap,
+send_init_sequence, wakeup_secondary_cpu_via_init). The AP writes "A1"
+from the trampoline's 32-bit code and "A2" from its long-mode code into
+the RAM trace word (no MMIO mapping exists there; the word's physical
+address travels in a new trampoline_header.knc_mark field that
+setup_real_mode fills), then "A3".."A8" from start_secondary to its
+first idle entry through knc_trace(), which writes both the POST
+register and the trace word.
+
+The platform layer also marks the TSC reliable: the card is one die
+with one TSC, and Intel's k1om tree skips check_tsc_sync_source on MIC
+(smpboot.c under CONFIG_X86_EARLYMIC); with X86_FEATURE_TSC_RELIABLE
+mainline skips both halves of the check (tsc_init).
+---
+ arch/x86/include/asm/knc.h           | 20 ++++++++++++++++++++
+ arch/x86/include/asm/realmode.h      |  2 ++
+ arch/x86/kernel/knc.c                |  7 +++++++
+ arch/x86/kernel/smpboot.c            | 13 +++++++++++++
+ arch/x86/realmode/init.c             |  5 +++++
+ arch/x86/realmode/rm/trampoline_64.S | 19 +++++++++++++++++++
+ 6 files changed, 66 insertions(+)
+
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+index abe87b61b..5e80251f9 100644
+--- a/arch/x86/include/asm/knc.h
++++ b/arch/x86/include/asm/knc.h
+@@ -122,6 +122,26 @@ static inline void knc_early_post(u32 code)
+ 	if (IS_ENABLED(CONFIG_X86_KNC) && knc_is_this_cpu())
+ 		*(volatile u32 *)__va(KNC_DBOX_PHYS + KNC_DBOX_POSTCODE) = code;
+ }
++
++/*
++ * SMP bring-up trace. The BSP writes "S0" when it kicks an AP, "S1"/"S2"
++ * around the INIT assert, "S3" after the deassert, "S4"/"S5" after each
++ * SIPI and "S6" when the wake-up sequence returns (kernel/smpboot.c). The
++ * AP writes "A1" from the trampoline's 32-bit code and "A2" from its
++ * long-mode code (RAM mark only: no MMIO mapping exists there, the address
++ * travels in trampoline_header.knc_mark), then "A3" at start_secondary,
++ * "A4" once the BSP released it, "A5" after cpu_init and the FPU, "A6"
++ * after the local APIC, "A7" after the TSC sync check and "A8" before its
++ * first idle entry. Both the POST register and the RAM mark are written so
++ * that phictl's POST trail and --watch show them.
++ */
++static inline void knc_trace(u32 code)
++{
++	if (IS_ENABLED(CONFIG_X86_KNC)) {
++		knc_boot_mark = code;
++		knc_postcode(code);
++	}
++}
+ #endif /* !__ASSEMBLER__ */
+ 
+ #endif /* _ASM_X86_KNC_H */
+diff --git a/arch/x86/include/asm/realmode.h b/arch/x86/include/asm/realmode.h
+index e406a1e92..29bf26392 100644
+--- a/arch/x86/include/asm/realmode.h
++++ b/arch/x86/include/asm/realmode.h
+@@ -53,6 +53,8 @@ struct trampoline_header {
+ 	u32 cr4;
+ 	u32 flags;
+ 	u32 lock;
++	u32 knc_pad;
++	u64 knc_mark;	/* Knights Corner: physical address of the AP trace word */
+ #endif
+ };
+ 
+diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
+index ab0c22215..6d277aba4 100644
+--- a/arch/x86/kernel/knc.c
++++ b/arch/x86/kernel/knc.c
+@@ -260,6 +260,13 @@ static void __init knc_init_platform(void)
+ 	x86_platform.legacy.i8042		= X86_LEGACY_I8042_PLATFORM_ABSENT;
+ 	legacy_pic				= &null_legacy_pic;
+ 
++	/*
++	 * One die, one TSC: Intel's k1om tree skips check_tsc_sync_source on
++	 * MIC (smpboot.c under CONFIG_X86_EARLYMIC); marking the TSC reliable
++	 * skips both halves of the check in mainline (tsc_init).
++	 */
++	setup_force_cpu_cap(X86_FEATURE_TSC_RELIABLE);
++
+ 	machine_ops.emergency_restart		= knc_emergency_restart;
+ 	pm_power_off				= knc_power_off;
+ 	atomic_notifier_chain_register(&panic_notifier_list, &knc_panic_nb);
+diff --git a/arch/x86/kernel/smpboot.c b/arch/x86/kernel/smpboot.c
+index cb999feb6..2c264856f 100644
+--- a/arch/x86/kernel/smpboot.c
++++ b/arch/x86/kernel/smpboot.c
+@@ -73,6 +73,7 @@
+ #include <asm/numa.h>
+ #include <asm/tlbflush.h>
+ #include <asm/mtrr.h>
++#include <asm/knc.h>
+ #include <asm/mwait.h>
+ #include <asm/apic.h>
+ #include <asm/io_apic.h>
+@@ -185,6 +186,7 @@ static void ap_starting(void)
+ 	 * most boards.
+ 	 */
+ 	apic_ap_setup();
++	knc_trace(KNC_POST('A', '6'));
+ 
+ 	/* Save the processor parameters. */
+ 	identify_secondary_cpu(cpuid);
+@@ -234,6 +236,7 @@ static void notrace __noendbr start_secondary(void *unused)
+ 	 * limit the things done here to the most necessary things.
+ 	 */
+ 	cr4_init();
++	knc_trace(KNC_POST('A', '3'));
+ 
+ 	/*
+ 	 * 32-bit specific. 64-bit reaches this code with the correct page
+@@ -271,9 +274,11 @@ static void notrace __noendbr start_secondary(void *unused)
+ 	 * release this CPU for further bringup.
+ 	 */
+ 	cpuhp_ap_sync_alive();
++	knc_trace(KNC_POST('A', '4'));
+ 
+ 	cpu_init();
+ 	fpu__init_cpu();
++	knc_trace(KNC_POST('A', '5'));
+ 	rcutree_report_cpu_starting(raw_smp_processor_id());
+ 	x86_cpuinit.early_percpu_clock_init();
+ 
+@@ -281,6 +286,7 @@ static void notrace __noendbr start_secondary(void *unused)
+ 
+ 	/* Check TSC synchronization with the control CPU. */
+ 	check_tsc_sync_target();
++	knc_trace(KNC_POST('A', '7'));
+ 
+ 	/*
+ 	 * Calibrate the delay loop after the TSC synchronization check.
+@@ -309,6 +315,7 @@ static void notrace __noendbr start_secondary(void *unused)
+ 	x86_cpuinit.setup_percpu_clockev();
+ 
+ 	wmb();
++	knc_trace(KNC_POST('A', '8'));
+ 	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
+ }
+ ANNOTATE_NOENDBR_SYM(start_secondary);
+@@ -855,14 +862,17 @@ static void send_init_sequence(u32 phys_apicid)
+ 	}
+ 
+ 	/* Assert INIT on the target CPU */
++	knc_trace(KNC_POST('S', '1'));
+ 	apic_icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT, phys_apicid);
+ 	safe_apic_wait_icr_idle();
++	knc_trace(KNC_POST('S', '2'));
+ 
+ 	udelay(init_udelay);
+ 
+ 	/* Deassert INIT on the target CPU */
+ 	apic_icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT, phys_apicid);
+ 	safe_apic_wait_icr_idle();
++	knc_trace(KNC_POST('S', '3'));
+ }
+ 
+ /*
+@@ -911,6 +921,7 @@ static int wakeup_secondary_cpu_via_init(u32 phys_apicid, unsigned long start_ei
+ 		/* Kick the second */
+ 		apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12),
+ 			       phys_apicid);
++		knc_trace(KNC_POST('S', '3' + j));
+ 
+ 		/*
+ 		 * Give the other CPU some time to accept the IPI.
+@@ -940,6 +951,7 @@ static int wakeup_secondary_cpu_via_init(u32 phys_apicid, unsigned long start_ei
+ 			break;
+ 	}
+ 	pr_debug("After Startup\n");
++	knc_trace(KNC_POST('S', '6'));
+ 
+ 	if (send_status)
+ 		pr_err("APIC never delivered???\n");
+@@ -1104,6 +1116,7 @@ int native_kick_ap(unsigned int cpu, struct task_struct *tidle)
+ 	 * Save current MTRR state in case it was changed since early boot
+ 	 * (e.g. by the ACPI SMI) to initialize new CPUs with MTRRs in sync:
+ 	 */
++	knc_trace(KNC_POST('S', '0'));
+ 	mtrr_save_state();
+ 
+ 	/* the FPU context is blank, nobody can own it */
+diff --git a/arch/x86/realmode/init.c b/arch/x86/realmode/init.c
+index 694d80a5c..e20c38523 100644
+--- a/arch/x86/realmode/init.c
++++ b/arch/x86/realmode/init.c
+@@ -7,6 +7,7 @@
+ 
+ #include <asm/set_memory.h>
+ #include <asm/realmode.h>
++#include <asm/knc.h>
+ #include <asm/tlbflush.h>
+ #include <asm/crash.h>
+ #include <asm/msr.h>
+@@ -158,6 +159,10 @@ static void __init setup_real_mode(void)
+ 
+ 	trampoline_lock = &trampoline_header->lock;
+ 	*trampoline_lock = 0;
++#ifdef CONFIG_X86_KNC
++	/* Physical address of the AP trace word, see knc_trace() in asm/knc.h. */
++	trampoline_header->knc_mark = __pa_symbol(&knc_boot_mark);
++#endif
+ 
+ 	trampoline_pgd = (u64 *) __va(real_mode_header->trampoline_pgd);
+ 
+diff --git a/arch/x86/realmode/rm/trampoline_64.S b/arch/x86/realmode/rm/trampoline_64.S
+index 69a2adcd8..c03b833c8 100644
+--- a/arch/x86/realmode/rm/trampoline_64.S
++++ b/arch/x86/realmode/rm/trampoline_64.S
+@@ -135,6 +135,15 @@ SYM_CODE_START(startup_32)
+ 	movl	%edx, %fs
+ 	movl	%edx, %gs
+ 
++#ifdef CONFIG_X86_KNC
++	/* Knights Corner: "A1", this AP runs 32-bit protected mode code. */
++	movl	pa_tr_knc_mark, %eax
++	testl	%eax, %eax
++	jz	.Lknc_a1_done
++	movl	$0x3141, (%eax)
++.Lknc_a1_done:
++#endif
++
+ 	/*
+ 	 * Check for memory encryption support. This is a safety net in
+ 	 * case BIOS hasn't done the necessary step of setting the bit in
+@@ -211,6 +220,14 @@ SYM_CODE_END(pa_trampoline_compat)
+ 	.code64
+ 	.balign 4
+ SYM_CODE_START(startup_64)
++#ifdef CONFIG_X86_KNC
++	/* Knights Corner: "A2", this AP is in long mode on the trampoline page tables. */
++	movq	tr_knc_mark(%rip), %rax
++	testq	%rax, %rax
++	jz	.Lknc_a2_done
++	movl	$0x3241, (%rax)
++.Lknc_a2_done:
++#endif
+ 	# Now jump into the kernel using virtual addresses
+ 	jmpq	*tr_start(%rip)
+ SYM_CODE_END(startup_64)
+@@ -293,6 +310,8 @@ SYM_DATA_START(trampoline_header)
+ 	SYM_DATA(tr_cr4,		.space 4)
+ 	SYM_DATA(tr_flags,		.space 4)
+ 	SYM_DATA(tr_lock,		.space 4)
++	SYM_DATA_LOCAL(tr_knc_pad,	.space 4)
++	SYM_DATA(tr_knc_mark,		.space 8)
+ SYM_DATA_END(trampoline_header)
+ 
+ #include "trampoline_common.S"
