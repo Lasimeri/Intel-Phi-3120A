@@ -1,7 +1,10 @@
 # Ring protocol v1: host/card shared-memory transport
 
-Status: specified; host implementation in `host/crates/phi-ring`; card
-implementation planned in `card/drivers/phinet`.
+Status: specified and implemented. Host: `host/crates/phi-ring` (layout),
+`phictl console` (console channel), `phictl boot --net` (network channel,
+`host/crates/phictl/src/net.rs`). Card: kernel patches 0011/0016 (console)
+and 0021 (`arch/x86/kernel/knc_net.c`, network), sharing
+`arch/x86/include/asm/knc_ring.h`.
 
 ## Placement
 

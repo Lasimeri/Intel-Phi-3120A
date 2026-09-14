@@ -1,19 +1,42 @@
 #!/bin/sh
-# init: first process on the card. Mounts the pseudo filesystems, reports
-# what it runs on, and supervises an interactive shell on the console.
-# PID 1 stays this script: busybox's poweroff/halt/reboot signal PID 1
-# (SIGUSR2/SIGUSR1/SIGTERM), the trap turns that into the kernel's power
-# off (the KNC platform layer writes POST "KH" and halts), and a shell that
-# exits is replaced instead of taking init down with it. See build.md.
+# init: first process on the card. Mounts the pseudo filesystems, brings up
+# the ring network device, starts the SSH server when the image has one,
+# reports what it runs on, and supervises an interactive shell on the
+# console. PID 1 stays this script: busybox's poweroff/halt/reboot signal
+# PID 1 (SIGUSR2/SIGUSR1/SIGTERM), the trap turns that into the kernel's
+# power off (the KNC platform layer writes POST "KH" and halts), and a shell
+# that exits is replaced instead of taking init down with it. See build.md.
 /bin/busybox mkdir -p /proc /sys /dev /tmp
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 /bin/busybox mount -t tmpfs tmpfs /tmp
+/bin/busybox mkdir -p /dev/pts
+/bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null
+/bin/busybox hostname phi
+# phi0 is the Ethernet device over the host/card ring (kernel patch 0021);
+# the host side is phictl boot --net phi0, 10.9.0.1/24 by default.
+/bin/busybox ip link set lo up
+if /bin/busybox ip link show phi0 > /dev/null 2>&1; then
+	/bin/busybox ip addr add ${PHI_CARD_ADDR:-10.9.0.2/24} dev phi0
+	/bin/busybox ip link set phi0 up
+	net="phi0 $(/bin/busybox ip -4 -o addr show phi0 | /bin/busybox awk '{print $4}')"
+else
+	net="no phi0 device"
+fi
+if [ -x /bin/dropbear ]; then
+	# -s: public keys only (root has no password); -R would create keys the
+	# image lacks; -E: log to the console; keys live in /etc/dropbear.
+	/bin/dropbear -s -E -p 22 2>/dev/null
+	sshd="dropbear on port 22"
+else
+	sshd="no SSH server in this image"
+fi
 echo
 echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) online"
 /bin/busybox grep -m1 "model name" /proc/cpuinfo
 /bin/busybox free -m | /bin/busybox head -2
+echo "network: $net; $sshd"
 echo "type 'poweroff' to halt the card"
 echo
 trap '/bin/busybox poweroff -f' USR1 USR2 TERM

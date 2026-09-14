@@ -44,6 +44,29 @@ if [ -d "$extra" ]; then
 	echo "extra files: $n"
 fi
 
+# dropbear: the static multi-call binary, its applet links, the host keys
+# generated on the host by card/userland/components/dropbear.sh (stable
+# fingerprint across card boots), and the user's public keys for root.
+# Password logins are off (dropbear -s), so without a key nothing can log in.
+dropbear="$phi_build/userland/dropbear"
+if [ -x "$dropbear/dropbearmulti" ]; then
+	cp "$dropbear/dropbearmulti" "$root/bin/dropbearmulti"
+	for a in dropbear dropbearkey dbclient scp; do ln -sfn dropbearmulti "$root/bin/$a"; done
+	ln -sfn dbclient "$root/bin/ssh"
+	mkdir -p "$root/etc/dropbear" "$root/root/.ssh"
+	cp "$dropbear"/keys/dropbear_*_host_key "$root/etc/dropbear/"
+	chmod 600 "$root/etc/dropbear"/*
+	auth="$root/root/.ssh/authorized_keys"
+	: > "$auth"
+	for k in ${PHI_SSH_PUBKEYS:-"$HOME"/.ssh/id_ed25519.pub "$HOME"/.ssh/id_ecdsa.pub "$HOME"/.ssh/id_rsa.pub}; do
+		[ -r "$k" ] && cat "$k" >> "$auth"
+	done
+	chmod 700 "$root/root" "$root/root/.ssh"; chmod 600 "$auth"
+	echo "dropbear: $(wc -l < "$auth") authorized key(s) for root"
+else
+	echo "dropbear: not built (card/userland/components/dropbear.sh); no SSH server in this image"
+fi
+
 # newc cpio, root-owned, gzip: the kernel config enables RD_GZIP.
 (cd "$root" && bsdtar --format newc --uid 0 --gid 0 -cf - .) | gzip -9 > "$out"
 ls -l "$out"

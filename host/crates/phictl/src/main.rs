@@ -19,6 +19,8 @@ use phi_regs::memory;
 use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
 
+mod net;
+
 /// Control the Intel Xeon Phi 3120A.
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -87,6 +89,13 @@ enum Cmd {
         /// interrupt (bisecting host resets); implies --no-console.
         #[arg(long)]
         load_only: bool,
+        /// Bridge the ring network channel to a host TAP device of this name
+        /// (created if absent) so the card is reachable over IP; needs root.
+        #[arg(long)]
+        net: Option<String>,
+        /// IPv4 address with prefix length assigned to the TAP device.
+        #[arg(long, default_value = "10.9.0.1/24")]
+        net_addr: String,
     },
     /// Read a few bytes of card memory through the BAR0 aperture and print
     /// them. A single non-posted read, for testing the aperture in isolation.
@@ -135,6 +144,12 @@ enum Cmd {
         /// Also watch a 32-bit word in card memory and print changes.
         #[arg(long, value_parser = parse_u64)]
         watch: Option<u64>,
+        /// Bridge the ring network channel to a host TAP device of this name.
+        #[arg(long)]
+        net: Option<String>,
+        /// IPv4 address with prefix length assigned to the TAP device.
+        #[arg(long, default_value = "10.9.0.1/24")]
+        net_addr: String,
     },
 }
 
@@ -176,6 +191,8 @@ fn main() -> Result<()> {
             no_console,
             load_only,
             watch,
+            net,
+            net_addr,
         } => cmd_boot(
             cli.bdf.as_deref(),
             kernel,
@@ -187,6 +204,7 @@ fn main() -> Result<()> {
             !no_console && !load_only,
             load_only,
             watch,
+            net.map(|n| (n, net_addr)),
         ),
         Cmd::Peek { addr, len } => {
             let card = open(cli.bdf.as_deref())?;
@@ -228,9 +246,11 @@ fn main() -> Result<()> {
             ring_base,
             ring_size,
             watch,
+            net,
+            net_addr,
         } => {
             let card = open(cli.bdf.as_deref())?;
-            console(&card, ring_base, ring_size, watch)
+            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)))
         }
     }
 }
@@ -406,6 +426,7 @@ fn cmd_boot(
     follow: bool,
     load_only: bool,
     watch: Option<u64>,
+    net: Option<(String, String)>,
 ) -> Result<()> {
     let card = open(bdf)?;
     let kernel_bytes = std::fs::read(&kernel).with_context(|| format!("reading {}", kernel.display()))?;
@@ -443,14 +464,29 @@ fn cmd_boot(
     }
     println!("  ring      {ring_size:#x} bytes at {ring_base:#x}");
     if follow {
-        console(&card, ring_base, ring_size, watch)
+        console(&card, ring_base, ring_size, watch, net)
     } else {
         Ok(())
     }
 }
 
+/// Tail the console ring and, when asked, bridge the network channel to a
+/// TAP device from a second thread; both run until Ctrl-C.
+fn console(card: &Card, ring_base: u64, ring_size: u64, watch: Option<u64>, net: Option<(String, String)>) -> Result<()> {
+    thread::scope(|s| {
+        if let Some((name, addr)) = &net {
+            s.spawn(move || {
+                if let Err(e) = net::bridge(card, ring_base, ring_size, name, addr) {
+                    eprintln!("[phictl] net: {e:#}");
+                }
+            });
+        }
+        console_loop(card, ring_base, ring_size, watch)
+    })
+}
+
 /// Tail the console ring, print POST code changes, forward stdin lines.
-fn console(card: &Card, ring_base: u64, ring_size: u64, watch: Option<u64>) -> Result<()> {
+fn console_loop(card: &Card, ring_base: u64, ring_size: u64, watch: Option<u64>) -> Result<()> {
     if ring_base + ring_size > memory::GDDR_BYTES_3120A {
         anyhow::bail!("ring region beyond card memory");
     }

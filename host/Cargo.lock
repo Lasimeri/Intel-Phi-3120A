@@ -319,6 +319,7 @@ dependencies = [
  "anyhow",
  "clap",
  "env_logger",
+ "libc",
  "log",
  "phi-hw",
  "phi-regs",

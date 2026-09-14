@@ -1,0 +1,425 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 18:40:20 -0500
+Subject: [PATCH] x86/knc: Ethernet over the host/card ring (phi0)
+
+A network device on the ring region's kind-2 channel: frames travel as
+u16 length plus payload, padded to 4 bytes, in one byte ring per
+direction (docs/spec/ring-protocol.md v1). The driver polls the
+host-to-card ring every jiffy from a delayed work item and copies frames
+into the card-to-host ring from ndo_start_xmit, dropping when the host
+has not drained it. The rings are mapped uncached because the host
+writes card memory through the PCIe aperture behind the card's caches
+and the core has no CLFLUSH.
+
+The ring layout constants move from the console driver into
+asm/knc_ring.h, shared by both, and the console driver's command-line
+parser (phi.ring=base,size) is exported so the network device finds
+the same region. The host side is phictl's --net bridge to a TAP
+device.
+---
+ arch/x86/include/asm/knc.h      |   2 +
+ arch/x86/include/asm/knc_ring.h |  52 +++++++
+ arch/x86/kernel/Makefile        |   2 +-
+ arch/x86/kernel/knc_earlycon.c  |  24 +--
+ arch/x86/kernel/knc_net.c       | 264 ++++++++++++++++++++++++++++++++
+ 5 files changed, 320 insertions(+), 24 deletions(-)
+ create mode 100644 arch/x86/include/asm/knc_ring.h
+ create mode 100644 arch/x86/kernel/knc_net.c
+
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+index 5e80251f9..53b75bc8f 100644
+--- a/arch/x86/include/asm/knc.h
++++ b/arch/x86/include/asm/knc.h
+@@ -84,6 +84,7 @@ u64 knc_ring_host_epoch_ns(void);
+ void knc_ring_con_write(const char *s, unsigned int n);
+ int knc_ring_con_read(u8 *buf, int len);
+ bool knc_ring_permanent(void);
++bool __init knc_ring_params(u64 *base, u64 *size);
+ 
+ /* Platform layer (knc.c). */
+ void knc_postcode(u32 code);
+@@ -99,6 +100,7 @@ void knc_postcode(u32 code);
+ extern u32 knc_boot_mark;
+ 
+ #ifndef __ASSEMBLER__
++#include <linux/init.h>
+ #include <asm/page.h>
+ 
+ static inline bool knc_is_this_cpu(void)
+diff --git a/arch/x86/include/asm/knc_ring.h b/arch/x86/include/asm/knc_ring.h
+new file mode 100644
+index 000000000..faf3d416c
+--- /dev/null
++++ b/arch/x86/include/asm/knc_ring.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Layout of the host/card ring region on Knights Corner, protocol v1
++ * (docs/spec/ring-protocol.md in the host repository). The host formats the
++ * region in card memory before it starts the kernel; the ring console
++ * (knc_earlycon.c, knc_tty.c) and the ring network device (knc_net.c) map
++ * it and attach to their channel by kind. Offsets are in bytes; every field
++ * is a little-endian u32 unless noted. All structures are 64-byte aligned
++ * so that no two fields written by different sides share a cache line.
++ */
++#ifndef _ASM_X86_KNC_RING_H
++#define _ASM_X86_KNC_RING_H
++
++#define PHI_REGION_MAGIC	0x52494850	/* "PHIR" */
++#define PHI_RING_MAGIC		0x474E4952	/* "RING" */
++#define PHI_REGION_VERSION	1
++#define PHI_CHANNEL_CONSOLE	1
++#define PHI_CHANNEL_NETWORK	2
++
++/* Region header at offset 0. */
++#define REGION_MAGIC		0
++#define REGION_VERSION		4
++#define REGION_SIZE		8
++#define REGION_CHANNEL_COUNT	12
++#define REGION_HOST_EPOCH_NS	16	/* u64: host wall clock at boot */
++#define REGION_CARD_BOOT_FLAGS	24	/* u64, written by the card */
++#define REGION_DESC(i)		(64 + 64 * (i))
++
++/* Channel descriptor, 64 bytes each from offset 64. */
++#define DESC_KIND		0
++#define DESC_FLAGS		4
++#define DESC_H2C_OFFSET		8	/* host-to-card ring, region offset */
++#define DESC_H2C_SIZE		12	/* data bytes, power of two */
++#define DESC_C2H_OFFSET		16	/* card-to-host ring */
++#define DESC_C2H_SIZE		20
++
++/* One ring per direction: header, then `size` data bytes at RING_DATA. */
++#define RING_MAGIC		0
++#define RING_SIZE		4
++#define RING_HEAD		64	/* producer index, free-running mod 2^32 */
++#define RING_TAIL		128	/* consumer index */
++#define RING_DATA		192
++
++/*
++ * Network channel records: u16 frame length, the Ethernet frame, padding to
++ * a multiple of 4 bytes. A record never straddles a publish: the producer
++ * writes it whole, then publishes the new head.
++ */
++#define PHI_NET_HDR		2
++#define PHI_NET_ALIGN		4
++
++#endif /* _ASM_X86_KNC_RING_H */
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 92fdeb228..1381dbaf6 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_earlycon.c b/arch/x86/kernel/knc_earlycon.c
+index e8119805d..901e53276 100644
+--- a/arch/x86/kernel/knc_earlycon.c
++++ b/arch/x86/kernel/knc_earlycon.c
+@@ -40,29 +40,7 @@
+ #include <asm/knc.h>
+ #include <asm/setup.h>
+ 
+-#define PHI_REGION_MAGIC	0x52494850	/* "PHIR" */
+-#define PHI_RING_MAGIC		0x474E4952	/* "RING" */
+-#define PHI_REGION_VERSION	1
+-#define PHI_CHANNEL_CONSOLE	1
+-
+-#define REGION_MAGIC		0
+-#define REGION_VERSION		4
+-#define REGION_SIZE		8
+-#define REGION_CHANNEL_COUNT	12
+-#define REGION_HOST_EPOCH_NS	16
+-#define REGION_CARD_BOOT_FLAGS	24
+-#define REGION_DESC(i)		(64 + 64 * (i))
+-#define DESC_KIND		0
+-#define DESC_H2C_OFFSET		8
+-#define DESC_H2C_SIZE		12
+-#define DESC_C2H_OFFSET		16
+-#define DESC_C2H_SIZE		20
+-
+-#define RING_MAGIC		0
+-#define RING_SIZE		4
+-#define RING_HEAD		64
+-#define RING_TAIL		128
+-#define RING_DATA		192
++#include <asm/knc_ring.h>
+ 
+ #define CARD_BOOT_FLAG_KERNEL	BIT_ULL(0)
+ 
+diff --git a/arch/x86/kernel/knc_net.c b/arch/x86/kernel/knc_net.c
+new file mode 100644
+index 000000000..5fdedfd09
+--- /dev/null
++++ b/arch/x86/kernel/knc_net.c
+@@ -0,0 +1,264 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * knc_net.c - Ethernet over the host/card ring on Knights Corner.
++ *
++ * The host lays out a network channel (kind 2) in the ring region: one
++ * host-to-card and one card-to-host byte ring, see asm/knc_ring.h. Frames
++ * travel as records of u16 length plus payload, padded to 4 bytes. Both
++ * sides poll: the host from phictl's bridge thread at 1 kHz, this driver
++ * from a delayed work item every jiffy (1 ms at HZ=1000). The rings are
++ * mapped uncached: the host writes card memory through the PCIe aperture,
++ * behind the card's caches, so a cached mapping would read stale data and
++ * the core has no CLFLUSH to fix that per line (WBINVD would be the only
++ * tool). At SSH speeds an uncached copy per frame is nothing.
++ *
++ * Signalling by interrupt (host to card through an SBOX APICICR register,
++ * card to host through a doorbell delivered as MSI-X) is the next step
++ * once traffic justifies it.
++ */
++#include <linux/etherdevice.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++#include <linux/spinlock.h>
++#include <linux/workqueue.h>
++
++#include <asm/knc.h>
++#include <asm/knc_ring.h>
++
++#define KNC_NET_MAX_FRAME	1518	/* Ethernet with VLAN tag, no FCS */
++#define KNC_NET_POLL		1	/* jiffies between receive polls */
++#define KNC_NET_RX_BUDGET	64	/* frames per poll before yielding */
++
++struct knc_net {
++	struct net_device *dev;
++	void __iomem *region;
++	void __iomem *rx;	/* host-to-card ring */
++	void __iomem *tx;	/* card-to-host ring */
++	u32 rx_size;
++	u32 tx_size;
++	u32 rx_tail;		/* our consumer index, mirrored in the ring */
++	u32 tx_head;		/* our producer index, mirrored in the ring */
++	spinlock_t tx_lock;
++	struct delayed_work poll;
++};
++
++/* Copy len bytes out of a ring starting at free-running index pos. */
++static void knc_ring_read(void __iomem *ring, u32 size, u32 pos, void *buf, u32 len)
++{
++	u32 off = pos & (size - 1);
++	u32 first = min(len, size - off);
++
++	memcpy_fromio(buf, ring + RING_DATA + off, first);
++	if (len > first)
++		memcpy_fromio(buf + first, ring + RING_DATA, len - first);
++}
++
++/* Copy len bytes into a ring starting at free-running index pos. */
++static void knc_ring_write(void __iomem *ring, u32 size, u32 pos, const void *buf, u32 len)
++{
++	u32 off = pos & (size - 1);
++	u32 first = min(len, size - off);
++
++	memcpy_toio(ring + RING_DATA + off, buf, first);
++	if (len > first)
++		memcpy_toio(ring + RING_DATA, buf + first, len - first);
++}
++
++static void knc_net_poll(struct work_struct *work)
++{
++	struct knc_net *p = container_of(work, struct knc_net, poll.work);
++	struct net_device *dev = p->dev;
++	u32 tail = p->rx_tail;
++	u32 head = readl(p->rx + RING_HEAD);
++	int budget = KNC_NET_RX_BUDGET;
++
++	while (head - tail >= PHI_NET_HDR && budget--) {
++		u32 avail = head - tail;
++		struct sk_buff *skb;
++		u8 hdr[PHI_NET_HDR];
++		u32 len, rec;
++
++		knc_ring_read(p->rx, p->rx_size, tail, hdr, PHI_NET_HDR);
++		len = hdr[0] | hdr[1] << 8;
++		rec = ALIGN(PHI_NET_HDR + len, PHI_NET_ALIGN);
++		if (!len || len > KNC_NET_MAX_FRAME || rec > avail) {
++			/*
++			 * Not a record the host would have published whole:
++			 * count it and resynchronise with the producer.
++			 */
++			dev->stats.rx_errors++;
++			tail = head;
++			break;
++		}
++		skb = netdev_alloc_skb_ip_align(dev, len);
++		if (skb) {
++			knc_ring_read(p->rx, p->rx_size, tail + PHI_NET_HDR, skb_put(skb, len), len);
++			skb->protocol = eth_type_trans(skb, dev);
++			dev->stats.rx_packets++;
++			dev->stats.rx_bytes += len;
++			netif_rx(skb);
++		} else {
++			dev->stats.rx_dropped++;
++		}
++		tail += rec;
++	}
++	if (tail != p->rx_tail) {
++		p->rx_tail = tail;
++		wmb();	/* frames consumed before the host may overwrite them */
++		writel(tail, p->rx + RING_TAIL);
++	}
++	schedule_delayed_work(&p->poll, KNC_NET_POLL);
++}
++
++static netdev_tx_t knc_net_xmit(struct sk_buff *skb, struct net_device *dev)
++{
++	struct knc_net *p = netdev_priv(dev);
++	u32 len = skb->len;
++	u32 rec = ALIGN(PHI_NET_HDR + len, PHI_NET_ALIGN);
++	u8 hdr[PHI_NET_HDR] = { len & 0xff, len >> 8 };
++	unsigned long flags;
++	u32 head, tail;
++
++	if (len > KNC_NET_MAX_FRAME || (skb_is_nonlinear(skb) && skb_linearize(skb))) {
++		dev->stats.tx_dropped++;
++		dev_kfree_skb_any(skb);
++		return NETDEV_TX_OK;
++	}
++	spin_lock_irqsave(&p->tx_lock, flags);
++	head = p->tx_head;
++	tail = readl(p->tx + RING_TAIL);
++	if (p->tx_size - (head - tail) < rec) {
++		/* The host has not drained the ring; drop like a full NIC queue. */
++		spin_unlock_irqrestore(&p->tx_lock, flags);
++		dev->stats.tx_dropped++;
++		dev_kfree_skb_any(skb);
++		return NETDEV_TX_OK;
++	}
++	knc_ring_write(p->tx, p->tx_size, head, hdr, PHI_NET_HDR);
++	knc_ring_write(p->tx, p->tx_size, head + PHI_NET_HDR, skb->data, len);
++	head += rec;
++	p->tx_head = head;
++	wmb();	/* record bytes before the head that publishes them */
++	writel(head, p->tx + RING_HEAD);
++	spin_unlock_irqrestore(&p->tx_lock, flags);
++
++	dev->stats.tx_packets++;
++	dev->stats.tx_bytes += len;
++	dev_kfree_skb_any(skb);
++	return NETDEV_TX_OK;
++}
++
++static int knc_net_open(struct net_device *dev)
++{
++	struct knc_net *p = netdev_priv(dev);
++
++	schedule_delayed_work(&p->poll, KNC_NET_POLL);
++	netif_carrier_on(dev);
++	netif_start_queue(dev);
++	return 0;
++}
++
++static int knc_net_stop(struct net_device *dev)
++{
++	struct knc_net *p = netdev_priv(dev);
++
++	netif_stop_queue(dev);
++	netif_carrier_off(dev);
++	cancel_delayed_work_sync(&p->poll);
++	return 0;
++}
++
++static const struct net_device_ops knc_net_ops = {
++	.ndo_open	= knc_net_open,
++	.ndo_stop	= knc_net_stop,
++	.ndo_start_xmit	= knc_net_xmit,
++	.ndo_validate_addr = eth_validate_addr,
++};
++
++/* A ring is usable when its header agrees with the descriptor. */
++static bool knc_ring_valid(void __iomem *ring, u32 size)
++{
++	return size && !(size & (size - 1)) && readl(ring + RING_MAGIC) == PHI_RING_MAGIC &&
++	       readl(ring + RING_SIZE) == size;
++}
++
++static int __init knc_net_init(void)
++{
++	static const u8 mac[ETH_ALEN] = { 0x02, 0x50, 0x48, 0x49, 0x00, 0x02 };
++	void __iomem *region;
++	struct net_device *dev;
++	struct knc_net *p;
++	u64 base, size;
++	u32 count, i, h2c_off = 0, h2c_size = 0, c2h_off = 0, c2h_size = 0;
++	int err;
++
++	if (!knc_ring_params(&base, &size))
++		return -ENODEV;
++	region = ioremap(base, size);
++	if (!region)
++		return -ENOMEM;
++	if (readl(region + REGION_MAGIC) != PHI_REGION_MAGIC) {
++		err = -ENODEV;
++		goto out_unmap;
++	}
++	count = min_t(u32, readl(region + REGION_CHANNEL_COUNT), 8);
++	for (i = 0; i < count; i++) {
++		void __iomem *desc = region + REGION_DESC(i);
++
++		if (readl(desc + DESC_KIND) != PHI_CHANNEL_NETWORK)
++			continue;
++		h2c_off = readl(desc + DESC_H2C_OFFSET);
++		h2c_size = readl(desc + DESC_H2C_SIZE);
++		c2h_off = readl(desc + DESC_C2H_OFFSET);
++		c2h_size = readl(desc + DESC_C2H_SIZE);
++		break;
++	}
++	if (!h2c_size || !c2h_size ||
++	    (u64)h2c_off + RING_DATA + h2c_size > size ||
++	    (u64)c2h_off + RING_DATA + c2h_size > size ||
++	    !knc_ring_valid(region + h2c_off, h2c_size) ||
++	    !knc_ring_valid(region + c2h_off, c2h_size)) {
++		pr_info("KNC: net: no usable network channel in the ring region\n");
++		err = -ENODEV;
++		goto out_unmap;
++	}
++
++	dev = alloc_etherdev(sizeof(*p));
++	if (!dev) {
++		err = -ENOMEM;
++		goto out_unmap;
++	}
++	strscpy(dev->name, "phi%d", sizeof(dev->name));
++	dev->netdev_ops = &knc_net_ops;
++	dev->min_mtu = ETH_MIN_MTU;
++	dev->max_mtu = ETH_DATA_LEN;
++	eth_hw_addr_set(dev, mac);
++
++	p = netdev_priv(dev);
++	p->dev = dev;
++	p->region = region;
++	p->rx = region + h2c_off;
++	p->rx_size = h2c_size;
++	p->tx = region + c2h_off;
++	p->tx_size = c2h_size;
++	p->rx_tail = readl(p->rx + RING_TAIL);
++	p->tx_head = readl(p->tx + RING_HEAD);
++	spin_lock_init(&p->tx_lock);
++	INIT_DELAYED_WORK(&p->poll, knc_net_poll);
++
++	err = register_netdev(dev);
++	if (err) {
++		free_netdev(dev);
++		goto out_unmap;
++	}
++	pr_info("KNC: net: %s on the ring, rx %u bytes, tx %u bytes, polling every %d ms\n",
++		dev->name, h2c_size, c2h_size, jiffies_to_msecs(KNC_NET_POLL));
++	return 0;
++
++out_unmap:
++	iounmap(region);
++	return err;
++}
++device_initcall(knc_net_init);

@@ -60,3 +60,13 @@ that waits for the card to accept the chunk. `--chunk` and
 `--no-readback` reproduce other patterns. Added 2026-09-14 after a
 1 MiB unpaced burst reset the host three times while single 8-byte
 writes did not.
+
+## Network bridge (`--net`)
+
+`phictl boot --net phi0` and `phictl console --net phi0` run the TAP bridge
+of `net.rs` on a second thread next to the console loop: the host gets a
+`phi0` interface (address from `--net-addr`, default `10.9.0.1/24`) whose
+frames travel through the ring region's network channel to the card's
+`phi0` (kernel patch 0021). The card's init script assigns `10.9.0.2/24`
+and starts dropbear, so `ssh root@10.9.0.2` works as soon as the banner
+shows. See `net.md`.
