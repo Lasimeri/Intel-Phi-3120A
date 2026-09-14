@@ -25,14 +25,18 @@ Two more sites on the boot path:
   exception handler exists: on the card that #GP was a triple fault
   (measured 2026-09-14, the boot stopped between the bss clear and the
   early IDT). A CR3 reload does the flush without global pages.
+- fpu__init_cpu() sets CR4.OSFXSR when FXSR is present; that write
+  faults on the card as well (measured: 0x30 to 0x230, #GP). The bit
+  only gates SSE, which the core lacks; FXSAVE works without it.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
- arch/x86/Kconfig.cpufeatures | 8 ++++----
- arch/x86/kernel/head64.c     | 9 ++++++++-
- arch/x86/kernel/head_64.S    | 5 ++++-
- arch/x86/kernel/verify_cpu.S | 6 ++++++
- 4 files changed, 22 insertions(+), 6 deletions(-)
+ arch/x86/Kconfig.cpufeatures |  8 ++++----
+ arch/x86/kernel/fpu/init.c   | 10 ++++++++--
+ arch/x86/kernel/head64.c     |  9 ++++++++-
+ arch/x86/kernel/head_64.S    |  5 ++++-
+ arch/x86/kernel/verify_cpu.S |  6 ++++++
+ 5 files changed, 30 insertions(+), 8 deletions(-)
 
 diff --git a/arch/x86/Kconfig.cpufeatures b/arch/x86/Kconfig.cpufeatures
 index 09833c88f..83861977a 100644
@@ -70,6 +74,28 @@ index 09833c88f..83861977a 100644
  
  config X86_REQUIRED_FEATURE_LM
  	def_bool y
+diff --git a/arch/x86/kernel/fpu/init.c b/arch/x86/kernel/fpu/init.c
+index 0d33c217b..971d39c11 100644
+--- a/arch/x86/kernel/fpu/init.c
++++ b/arch/x86/kernel/fpu/init.c
+@@ -22,9 +22,15 @@ static void fpu__init_cpu_generic(void)
+ 	unsigned long cr0;
+ 	unsigned long cr4_mask = 0;
+ 
+-	if (boot_cpu_has(X86_FEATURE_FXSR))
++	/*
++	 * Knights Corner: writing CR4.OSFXSR raises #GP (measured 2026-09-14,
++	 * CR4 0x30 -> 0x230 faulted in fpu__init_cpu). The bit only gates SSE
++	 * instructions and XMM state, neither of which exists on the core;
++	 * FXSAVE/FXRSTOR handle the x87 state without it.
++	 */
++	if (boot_cpu_has(X86_FEATURE_FXSR) && !IS_ENABLED(CONFIG_X86_KNC))
+ 		cr4_mask |= X86_CR4_OSFXSR;
+-	if (boot_cpu_has(X86_FEATURE_XMM))
++	if (boot_cpu_has(X86_FEATURE_XMM) && !IS_ENABLED(CONFIG_X86_KNC))
+ 		cr4_mask |= X86_CR4_OSXMMEXCPT;
+ 	if (cr4_mask)
+ 		cr4_set_bits(cr4_mask);
 diff --git a/arch/x86/kernel/head64.c b/arch/x86/kernel/head64.c
 index fd28b53db..595ebcb34 100644
 --- a/arch/x86/kernel/head64.c
