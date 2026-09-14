@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 11:22:11 -0500
+Subject: [PATCH] x86/fpu: Knights Corner needs MXCSR.DUE (bit 21) in every
+ FXRSTOR image
+
+FXRSTOR on the card takes a #GP when bit 21 of the MXCSR image is
+clear. Intel's k1om tree calls it a KNC erratum ("MXCSR.DUE (bit 21)
+must be 1", i387.h fxrstor_checking): it forces the bit on before every
+FXRSTOR, loads MXCSR = 1 << 21 on every CPU at FPU init, starts every
+task with that image instead of 0x1f80 (the card has no SSE, so the SSE
+exception masks stay clear), and adds the bit to the MXCSR feature mask
+so that signal frames and ptrace may carry it.
+
+On mainline the first user task dies before it runs a single
+instruction: fpregs_restore_userregs -> restore_fpregs_from_fpstate ->
+fxrstor64 #GP -> ex_handler_fprestore, whose recovery FXRSTORs
+init_fpstate, which holds the same 0x1f80 image and faults again, until
+the task stack guard page is hit ("Bad FPU state detected at
+restore_fpregs_from_fpstate", then "BUG: TASK stack guard page was
+hit"; first initramfs boot, 2026-09-14).
+
+Under CONFIG_X86_KNC: MXCSR_DEFAULT is 0x200000; fxrstor() and
+fxrstor_safe() set the bit when an image lacks it (the read-only
+init_fpstate already has it, so it is never written);
+fpu__init_cpu_generic loads the default MXCSR on every CPU;
+fpu__init_system_mxcsr adds the bit to mxcsr_feature_mask and logs the
+live MXCSR and the FXSAVE mask once. The SIMD exception decoder's MXCSR
+local becomes u32 so the constant fits (that path needs
+X86_FEATURE_XMM and never runs on the card).
+
+User space consequence: an MXCSR image without DUE loaded by LDMXCSR is
+expected to fault the same way (musl's fesetenv(FE_DFL_ENV) loads
+0x1f80); the card libc needs the DUE default.
+---
+ arch/x86/include/asm/fpu/types.h | 12 ++++++++++++
+ arch/x86/kernel/fpu/core.c       |  2 +-
+ arch/x86/kernel/fpu/init.c       | 24 ++++++++++++++++++++++++
+ arch/x86/kernel/fpu/legacy.h     |  8 ++++++++
+ 4 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/include/asm/fpu/types.h b/arch/x86/include/asm/fpu/types.h
+index 93e99d258..e03e049d9 100644
+--- a/arch/x86/include/asm/fpu/types.h
++++ b/arch/x86/include/asm/fpu/types.h
+@@ -68,8 +68,20 @@ struct fxregs_state {
+ 
+ } __attribute__((aligned(16)));
+ 
++/*
++ * Knights Corner: bit 21 of MXCSR (DUE, "disable unmasked exceptions") must
++ * be set in every image that FXRSTOR loads, or the instruction takes a #GP
++ * (Intel's k1om tree calls it a KNC erratum). The card has no SSE, so its
++ * default image carries only that bit, as in Intel's tree.
++ */
++#define MXCSR_KNC_DUE		0x00200000
++
+ /* Default value for fxregs_state.mxcsr: */
++#ifdef CONFIG_X86_KNC
++#define MXCSR_DEFAULT		MXCSR_KNC_DUE
++#else
+ #define MXCSR_DEFAULT		0x1f80
++#endif
+ 
+ /* Copy both mxcsr & mxcsr_flags with a single u64 memcpy: */
+ #define MXCSR_AND_FLAGS_SIZE sizeof(u64)
+diff --git a/arch/x86/kernel/fpu/core.c b/arch/x86/kernel/fpu/core.c
+index 584fb9913..30435ae0f 100644
+--- a/arch/x86/kernel/fpu/core.c
++++ b/arch/x86/kernel/fpu/core.c
+@@ -962,7 +962,7 @@ int fpu__exception_code(struct fpu *fpu, int trap_nr)
+ 		 * unmasked exception was caught we must mask the exception mask bits
+ 		 * at 0x1f80, and then use these to mask the exception bits at 0x3f.
+ 		 */
+-		unsigned short mxcsr = MXCSR_DEFAULT;
++		u32 mxcsr = MXCSR_DEFAULT;
+ 
+ 		if (boot_cpu_has(X86_FEATURE_XMM))
+ 			mxcsr = fpu->fpstate->regs.fxsave.mxcsr;
+diff --git a/arch/x86/kernel/fpu/init.c b/arch/x86/kernel/fpu/init.c
+index 971d39c11..a82825467 100644
+--- a/arch/x86/kernel/fpu/init.c
++++ b/arch/x86/kernel/fpu/init.c
+@@ -43,6 +43,17 @@ static void fpu__init_cpu_generic(void)
+ 
+ 	/* Flush out any pending x87 state: */
+ 	asm volatile ("fninit");
++	/*
++	 * Knights Corner: start every CPU with the DUE default so that FXSAVE
++	 * images taken before the first FXRSTOR carry the bit (Intel's k1om
++	 * tree does the same in mxcsr_feature_mask_init).
++	 */
++	if (IS_ENABLED(CONFIG_X86_KNC)) {
++		u32 mxcsr = MXCSR_DEFAULT;
++
++		asm volatile("ldmxcsr %0" : : "m" (mxcsr));
++	}
++
+ }
+ 
+ /*
+@@ -119,6 +130,19 @@ static void __init fpu__init_system_mxcsr(void)
+ 		if (mask == 0)
+ 			mask = 0x0000ffbf;
+ 	}
++
++	/*
++	 * Knights Corner: user images must be allowed to carry MXCSR.DUE
++	 * (signal frames and ptrace); log what the card reports, once.
++	 */
++	if (IS_ENABLED(CONFIG_X86_KNC)) {
++		u32 live;
++
++		asm volatile("stmxcsr %0" : "=m" (live));
++		pr_info("x86/fpu: KNC: MXCSR 0x%x at boot, FXSAVE MXCSR mask 0x%x, DUE forced on\n",
++			live, mask);
++		mask |= MXCSR_KNC_DUE;
++	}
+ 	mxcsr_feature_mask &= mask;
+ }
+ 
+diff --git a/arch/x86/kernel/fpu/legacy.h b/arch/x86/kernel/fpu/legacy.h
+index 098f367bb..f61ccdf3d 100644
+--- a/arch/x86/kernel/fpu/legacy.h
++++ b/arch/x86/kernel/fpu/legacy.h
+@@ -63,6 +63,10 @@ static inline int fxsave_to_user_sigframe(struct fxregs_state __user *fx)
+ 
+ static inline void fxrstor(struct fxregs_state *fx)
+ {
++	/* KNC erratum: FXRSTOR faults without MXCSR.DUE (see MXCSR_DEFAULT). */
++	if (IS_ENABLED(CONFIG_X86_KNC) && !(fx->mxcsr & MXCSR_KNC_DUE))
++		fx->mxcsr |= MXCSR_KNC_DUE;
++
+ 	if (IS_ENABLED(CONFIG_X86_32))
+ 		kernel_insn(fxrstor %[fx], "=m" (*fx), [fx] "m" (*fx));
+ 	else
+@@ -71,6 +75,10 @@ static inline void fxrstor(struct fxregs_state *fx)
+ 
+ static inline int fxrstor_safe(struct fxregs_state *fx)
+ {
++	/* KNC erratum: FXRSTOR faults without MXCSR.DUE (see MXCSR_DEFAULT). */
++	if (IS_ENABLED(CONFIG_X86_KNC) && !(fx->mxcsr & MXCSR_KNC_DUE))
++		fx->mxcsr |= MXCSR_KNC_DUE;
++
+ 	if (IS_ENABLED(CONFIG_X86_32))
+ 		return kernel_insn_err(fxrstor %[fx], "=m" (*fx), [fx] "m" (*fx));
+ 	else
