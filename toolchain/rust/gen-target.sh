@@ -5,12 +5,22 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out="$here/x86_64-knc-linux-musl.json"
-# Every feature on the Knights Corner deletion list (docs/research/isa-deletions.md),
-# plus nopl (multi-byte NOP, unverified on KNC) and cx16; x87 stays on.
-features="-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-sse4a,-avx,-avx2,-fma,-f16c,-cmov,-nopl,-movbe,-popcnt,-lzcnt,-bmi,-bmi2,-xsave,-cx16,-prfchw,-clflushopt,-rdrnd,-rdseed,-adx,-fsgsbase,-pclmul,-aes,-sha,+x87"
+# The Knights Corner deletion list (docs/research/isa-deletions.md) in Rust
+# feature names (rustc maps bmi1/cmpxchg16b/rdrand/pclmulqdq to LLVM's
+# bmi/cx16/rdrnd/pclmul; names rustc does not know, such as cmov, nopl and
+# mmx, pass through to LLVM unchanged). x87 stays on.
+#
+# The SSE tree is switched off with the single entry "-sse". rustc derives
+# "-sse2 ... -avx512*" from it by reverse implication. Listing "-sse2"
+# literally is rejected by the target spec consistency check (the x86-64
+# hard-float ABI requires sse2 in rustc's model); the check only inspects
+# names written in this string, so the derived form passes. rustc 1.98 then
+# warns once per crate that sse2 "must be enabled", a future-incompatibility
+# notice (rust-lang/rust#116344). See x86_64-knc-linux-musl.md and ADR 0007.
+features="-sse,-mmx,-cmov,-nopl,-movbe,-popcnt,-lzcnt,-bmi1,-bmi2,-xsave,-cmpxchg16b,-prfchw,-clflushopt,-rdrand,-rdseed,-adx,-fsgsbase,-pclmulqdq,-aes,-sha,+x87"
 RUSTC_BOOTSTRAP=1 rustc -Zunstable-options --print target-spec-json --target x86_64-unknown-linux-musl \
-    | jq --arg f "$features" '.vendor = "knc" | .features = $f | .cpu = "x86-64" | ."max-atomic-width" = 64 | ."crt-static-default" = true' \
+    | jq --arg f "$features" '.vendor = "knc" | .features = $f | .cpu = "x86-64" | ."max-atomic-width" = 64 | ."crt-static-default" = true | ."panic-strategy" = "abort"' \
     > "$out.tmp"
 mv "$out.tmp" "$out"
 echo "wrote $out from $(rustc --version)"
-grep -E '"(vendor|features|cpu|max-atomic-width|target-pointer-width)"' "$out"
+grep -E '"(vendor|features|cpu|max-atomic-width|target-pointer-width|panic-strategy)"' "$out"

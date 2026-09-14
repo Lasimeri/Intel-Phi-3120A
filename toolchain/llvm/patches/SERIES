@@ -6,3 +6,4 @@
 0005-x86-cmov-gr64-pseudo-for-64-bit-select-without-cmov.patch
 0006-x86-rep-bsf-only-with-bmi.patch
 0007-compiler-rt-option-to-build-x86-builtins-without-sse.patch
+0008-x86-pause-intrinsic-is-nop-without-sse2.patch

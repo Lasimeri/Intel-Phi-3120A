@@ -46,8 +46,10 @@ The phased plan with exit criteria: [`docs/plan.md`](docs/plan.md).
 ## Status
 
 See [`docs/plan.md`](docs/plan.md) for the phase table. Short version: research
-is complete, the host-side bring-up code exists and compiles, nothing has been
-run against the card yet. Every claim about hardware behavior in this repository
+is complete; the card answers over VFIO and survives a traced reset (P1); the
+card toolchain (patched LLVM, musl, compiler-rt, libunwind, Rust `std`) builds
+and its exit check passes on the host (P2); the kernel port (P3) is next.
+Nothing has booted on the card yet. Every claim about hardware behavior in this repository
 is labeled with its source: a document, a source tree, or a measurement on this
 machine.
 

@@ -1,0 +1,33 @@
+diff --git a/llvm/lib/Target/X86/X86InstrPredicates.td b/llvm/lib/Target/X86/X86InstrPredicates.td
+index 21e6bacba..24921883c 100644
+--- a/llvm/lib/Target/X86/X86InstrPredicates.td
++++ b/llvm/lib/Target/X86/X86InstrPredicates.td
+@@ -59,6 +59,7 @@ def HasSSE1      : Predicate<"Subtarget->hasSSE1()">;
+ def UseSSE1      : Predicate<"Subtarget->hasSSE1() && !Subtarget->hasAVX()">;
+ def HasSSE2      : Predicate<"Subtarget->hasSSE2()">;
+ def UseSSE2      : Predicate<"Subtarget->hasSSE2() && !Subtarget->hasAVX()">;
++def NoSSE2       : Predicate<"!Subtarget->hasSSE2()">;
+ def HasSSE3      : Predicate<"Subtarget->hasSSE3()">;
+ def UseSSE3      : Predicate<"Subtarget->hasSSE3() && !Subtarget->hasAVX()">;
+ def HasSSSE3     : Predicate<"Subtarget->hasSSSE3()">;
+diff --git a/llvm/lib/Target/X86/X86InstrSSE.td b/llvm/lib/Target/X86/X86InstrSSE.td
+index 6c6e8386e..c1b25c9f8 100644
+--- a/llvm/lib/Target/X86/X86InstrSSE.td
++++ b/llvm/lib/Target/X86/X86InstrSSE.td
+@@ -3258,7 +3258,15 @@ let SchedRW = [WriteNop] in {
+ // Pause. This "instruction" is encoded as "rep; nop", so even though it
+ // was introduced with SSE2, it's backward compatible.
+ def PAUSE : I<0x90, RawFrm, (outs), (ins),
+-              "pause", [(int_x86_sse2_pause)]>, XS;
++              "pause", [(int_x86_sse2_pause)]>, XS, Requires<[HasSSE2]>;
++// Intel Phi 3120A project: Knights Corner raises #UD on PAUSE (ISA reference
++// 327364, Appendix B), so without SSE2 the intrinsic lowers to the plain
++// one-byte NOP that PAUSE is architecturally defined to behave as on CPUs
++// without it. Codegen only: the "pause" mnemonic itself stays assemblable
++// for inline assembly that knows its target, and "nop" keeps one encoding.
++let isCodeGenOnly = 1 in
++def PAUSE_NOSSE2 : I<0x90, RawFrm, (outs), (ins),
++                     "nop", [(int_x86_sse2_pause)]>, Requires<[NoSSE2]>;
+ }
+ 
+ let SchedRW = [WriteFence] in {

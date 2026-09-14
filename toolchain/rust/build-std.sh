@@ -20,9 +20,18 @@ cd "$root/toolchain/check/hello_rs"
 export LD_LIBRARY_PATH="$DYLIB/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export RUSTC_BOOTSTRAP=1
 echo "== rustc will load: $(ldd "$(rustc --print sysroot)"/lib/librustc_driver-*.so | grep libLLVM)"
+# Always a clean build: cargo fingerprints do not include the LLVM dylib
+# that rustc loads, so a rebuilt libLLVM would otherwise leave stale objects
+# (the whole build takes well under a minute).
+cargo clean
 # rustc 1.98 gates JSON target specs; RUSTC_BOOTSTRAP=1 (above) makes the stable compiler accept -Z flags.
 cargo -Zjson-target-spec build --release
 lib="target/x86_64-knc-linux-musl/release/libhello_rs.a"
 ls -l "$lib"
-echo "== audit"
-"$root/host/target/debug/phi-isa-audit" "$lib"
+echo "== audit (staticlib: everything in std, linked or not)"
+# XSAVE is the single `xgetbv` inside std_detect (core::arch::_xgetbv, reached
+# only after CPUID reports OSXSAVE, which Knights Corner never does) and it
+# is dropped from any linked program that does not call
+# is_x86_feature_detected!. The linked binary is audited without exceptions
+# by toolchain/check/run.sh.
+"$root/host/target/debug/phi-isa-audit" --ignore XSAVE "$lib"

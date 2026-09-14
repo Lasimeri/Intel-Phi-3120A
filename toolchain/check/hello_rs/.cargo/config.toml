@@ -2,12 +2,17 @@
 # directories up; build-std is required because no prebuilt std exists for
 # a custom target. RUSTC_BOOTSTRAP=1 is set by build-std.sh so the distro
 # stable rustc accepts -Z flags.
+#
+# The target spec says panic-strategy = abort, so panic_abort is the panic
+# runtime; std still builds with its default feature set (panic-unwind is
+# compiled but not linked under an abort strategy). The old
+# panic_immediate_abort cargo feature is gone in Rust 1.98 (it is now
+# `-Cpanic=immediate-abort`, unstable) and is not used here.
 [build]
 target = "../../rust/x86_64-knc-linux-musl.json"
 
 [unstable]
 build-std = ["core", "alloc", "std", "panic_abort"]
-build-std-features = ["panic_immediate_abort"]
 
 [target.x86_64-knc-linux-musl]
 linker = "../../clang/knc-cc"

@@ -76,10 +76,11 @@ build depends on `vendor/`.
 
 ## 6. Card-side toolchain and kernel
 
-Documented in `toolchain/README.md` and `card/README.md`. These steps are
-long-running builds (LLVM, musl, the kernel) and are scripted under
-`toolchain/` and `card/` as they are implemented; the plan in `docs/plan.md`
-marks which are implemented.
+The card toolchain is scripted and ordered in `toolchain/README.md` (eight
+steps, about two hours of machine time, everything under
+`~/.cache/intel-phi-3120a-build/`); `toolchain/check/run.sh` is its exit
+test and prints `phase P2 check: PASS`. The kernel steps live under `card/`
+and are marked in `docs/plan.md` as they are implemented.
 
 ## Recording results
 

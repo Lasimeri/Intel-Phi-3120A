@@ -23,3 +23,6 @@
 .idea/
 *.swp
 .DS_Store
+
+# Card-target build products of the P2 check crate
+toolchain/check/hello_rs/target

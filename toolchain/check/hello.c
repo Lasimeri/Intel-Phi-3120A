@@ -37,9 +37,15 @@ static void *worker(void *arg)
 	return NULL;
 }
 
-/* Provided by hello_rs.rs when the Rust half is linked in; weak so the
- * C-only build still links. */
+/* Provided by hello_rs (src/lib.rs) when run.sh links the Rust half and
+ * defines HAVE_RUST. Otherwise a weak stub keeps the C-only build linking.
+ * (A weak definition here would win over an archive member, so the real
+ * declaration must not be weak.) */
+#ifdef HAVE_RUST
+double rust_hypot(double a, double b);
+#else
 __attribute__((weak)) double rust_hypot(double a, double b) { return -1.0; }
+#endif
 
 int main(void)
 {
@@ -58,7 +64,8 @@ int main(void)
 
 	printf("scale=%g halve=%g bigsum=%Lg va=%g pick=%ld sqrt=%g %s thread=%ld\n",
 	       d, (double)f, l, v, p, sqrt(2.0), buf, tv);
-	printf("rust_hypot=%g\n", rust_hypot(3.0, 4.0));
+	double h = rust_hypot(3.0, 4.0);
+	printf("rust_hypot=%g\n", h);
 	free(buf);
 
 	/* Expected values, checked so the exit status is the verdict. */
@@ -66,5 +73,9 @@ int main(void)
 		return 1;
 	if (fabs(sqrt(2.0) - 1.4142135623730951) > 1e-15)
 		return 2;
+#ifdef HAVE_RUST
+	if (h != 5.0)
+		return 3;
+#endif
 	return 0;
 }

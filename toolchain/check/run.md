@@ -11,5 +11,9 @@ Phase P2's exit criterion as a script. Three verdicts, all mechanical:
 3. **Visible x87 return.** The disassembly of `scale` ends in `fstp`/`ret`
    with the result on the x87 stack, not `movsd %xmm0`.
 
-Later phases extend this with the Rust half (`hello_rs.rs` linked into the
-same binary once the custom Rust target builds `std`).
+When `toolchain/rust/build-std.sh` has produced `libhello_rs.a`, the script
+links it in (with `-DHAVE_RUST` so `hello.c` uses the real symbol, and
+`-lunwind` from `toolchain/libunwind/build.sh` because Rust's `std` on static
+musl references the unwinder for backtraces). The audit then covers the Rust
+code paths that survived `--gc-sections`, and the exit status includes the
+`rust_hypot(3, 4) == 5` check.

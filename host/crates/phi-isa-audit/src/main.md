@@ -6,7 +6,14 @@ Command-line front end for the audit engine.
 phi-isa-audit vmlinux                 # summary: one line per reason
 phi-isa-audit --list --max 50 a.out   # every hit with address and symbol
 phi-isa-audit --allow-suspect libc.so # do not fail on multi-byte NOPs
+phi-isa-audit --ignore XSAVE libstd.a  # report XSAVE hits, do not count them
 ```
+
+`--ignore REASON` (repeatable, case-insensitive, matched against the
+reason column) is for documented false positives in archives that bundle
+code no program links, such as `xgetbv` in Rust's `std_detect`. Ignored
+hits are still printed, prefixed `IGNORED`, and the result line gains an
+`ignored` count. Linked executables are audited without it.
 
 Exit status is the contract for build scripts: 0 clean, 1 hits, 2 error.
 `make audit BIN=path` wraps it.

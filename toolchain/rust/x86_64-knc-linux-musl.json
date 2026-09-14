@@ -111,5 +111,6 @@
   ],
   "target-pointer-width": 64,
   "vendor": "knc",
-  "features": "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-sse4a,-avx,-avx2,-fma,-f16c,-cmov,-nopl,-movbe,-popcnt,-lzcnt,-bmi,-bmi2,-xsave,-cx16,-prfchw,-clflushopt,-rdrnd,-rdseed,-adx,-fsgsbase,-pclmul,-aes,-sha,+x87"
+  "features": "-sse,-mmx,-cmov,-nopl,-movbe,-popcnt,-lzcnt,-bmi1,-bmi2,-xsave,-cmpxchg16b,-prfchw,-clflushopt,-rdrand,-rdseed,-adx,-fsgsbase,-pclmulqdq,-aes,-sha,+x87",
+  "panic-strategy": "abort"
 }
