@@ -147,6 +147,7 @@ struct Conn {
     stream: TcpStream,
     handle: SocketHandle,
     host_eof: bool,
+    card_eof: bool,
 }
 
 /// Parse `HOSTPORT:CARDPORT` (or `HOSTPORT`, card port 22).
@@ -220,6 +221,7 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, host_port: u16, card_por
                     stream,
                     handle,
                     host_eof: false,
+                    card_eof: false,
                 });
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
@@ -261,11 +263,17 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, host_port: u16, card_por
                     }
                 }
             }
-            // The card finished sending: pass the end of stream on.
-            if !socket.may_recv() && !socket.can_recv() && socket.is_open() && !conn.host_eof {
+            // The card closed its side (FIN received, state CLOSE-WAIT): once its
+            // last bytes are out, pass the end of stream on and close ours.
+            if socket.state() == tcp::State::CloseWait && !socket.can_recv() && !conn.card_eof {
+                conn.card_eof = true;
                 let _ = conn.stream.shutdown(Shutdown::Write);
+                socket.close();
             }
             if !socket.is_open() && !socket.can_recv() {
+                if !conn.card_eof && !conn.host_eof {
+                    eprintln!("[phictl] forward: connection to the card ended in state {:?}", socket.state());
+                }
                 let _ = conn.stream.shutdown(Shutdown::Both);
                 sockets.remove(conn.handle);
                 return false;
