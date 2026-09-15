@@ -20,8 +20,8 @@ if [ "${1:-}" = "--toolchain" ]; then toolchain=1; shift; fi
 [ -x "$P" ] || { echo "phi-up.sh: build the host tools first (cd host && cargo build)" >&2; exit 1; }
 [ -s "$kernel" ] && [ -s "$initrd" ] || { echo "phi-up.sh: kernel or initramfs missing" >&2; exit 1; }
 id -nG | tr ' ' '\n' | grep -qx phi || { echo "phi-up.sh: not in group phi (sudo scripts/setup-arch.sh, then log in again)" >&2; exit 1; }
-if pgrep -f "phictl boot" > /dev/null; then
-    echo "phi-up.sh: a phictl boot is already running (pid $(pgrep -f 'phictl boot' | head -1)); scripts/phi-down.sh first" >&2
+if pgrep -f "^(sudo )?\S*phictl boot " > /dev/null; then
+    echo "phi-up.sh: a phictl boot is already running (pid $(pgrep -f "^(sudo )?\S*phictl boot " | head -1)); scripts/phi-down.sh first" >&2
     exit 1
 fi
 mkdir -p "$dir"; chmod 700 "$dir"

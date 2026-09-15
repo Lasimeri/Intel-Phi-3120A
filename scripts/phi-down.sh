@@ -19,5 +19,5 @@ if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     kill -9 "$(cat "$pidfile")" 2>/dev/null || true
 fi
 rm -f "$pidfile" "$sock"
-pgrep -f "phictl boot" > /dev/null && echo "phi-down.sh: another phictl boot (not ours) is still running" >&2
+pgrep -f "^(sudo )?\S*phictl boot " > /dev/null && echo "phi-down.sh: another phictl boot (not ours) is still running" >&2
 echo "phi-down.sh: card released"

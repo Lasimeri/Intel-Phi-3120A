@@ -21,3 +21,8 @@ instead; the client commands find that daemon's socket automatically.
 
 Companion scripts: `phi-down.sh` halts and releases the card,
 `phi-run.sh CMD` runs a command on it.
+
+The running-boot check matches command lines that start with the phictl
+binary (optionally behind `sudo`): a plain `pgrep -f "phictl boot"` also
+matched the shell that ran the script when that shell's own command line
+mentioned the pattern.

@@ -54,3 +54,15 @@ in-order at 1.1 GHz and libc++ headers are large; the C compile is quick.
   for binutils. gcc and tcc are phase P8, CPython and QuickJS phase P9.
 - The toolchain is loaded per boot; a persistent store on the card does
   not exist.
+
+## Addendum: the card from an unprivileged shell (2026-09-14, commit d878110)
+
+`scripts/phi-up.sh --toolchain` from the assistant's own shell (no sudo;
+the `phi` group owns the VFIO node, the socket lives in
+`$XDG_RUNTIME_DIR/phictl/`): boot, agent up, native clang loaded and a
+probe compiled, 39 s in all. `scripts/phi-run.sh nproc` printed 228 and a
+C program written, compiled and run on the card came back through the
+tool. The console log, pid file and socket sit in the runtime directory
+with owner-only permissions. `scripts/phi-down.sh` halts the card (POST
+`KH`) and releases it. Only the network bridge (a TAP device) still needs
+root, so unattended sessions have no SSH; everything else is available.
