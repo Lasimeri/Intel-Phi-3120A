@@ -29,3 +29,44 @@ on the host: it is CPython's build system, not project tooling.)
 `python3 -m test test_math test_float test_ctypes test_json test_threading`
 on the card, and a `multiprocessing.Pool(228)` map to prove all threads
 are usable from Python.
+
+## Build (2026-09-14)
+
+`cpython.sh` cross-builds CPython 3.14.7 (the version must equal the
+host's `python3`, which runs the build's own scripts through
+`--with-build-python`) as a single static interpreter: configure is given `MODULE_BUILDTYPE=static`
+(the variable behind the `*shared*` marker of `Modules/Setup.stdlib`) so every module configure
+detects (zlib, curses on the sysroot's ncursesw, sockets, json, hashes,
+decimal, expat, and the rest) is linked in, because static musl has no
+`dlopen`. `PHI_PYTHON_SETUP` appends a `Setup` fragment for extra built-in
+modules and `PHI_PYTHON_EXTRA_SRC` copies their sources into `Modules/`;
+`glances-phi` uses this for psutil. The interpreter is audited and run on
+the host before packaging; the package installs under `/opt/phi`
+(`bin/python3.14`, `lib/python3.14`), tests, idle, tkinter and turtledemo
+removed. `_hmac` is left out (its HACL* sources duplicate the hash
+modules' in a static link; `hmac` falls back to Python). No ctypes (libffi's x86-64 code assumes SSE for floating-point
+arguments; a knc64-x87 port is future work), no ssl (no OpenSSL for the
+card yet), no sqlite3, no bz2/lzma.
+
+Cross-build gotcha: configure asks pkg-config about lzma, bzip2, zstd,
+openssl and sqlite; left alone it finds the host's copies and the build
+then fails compiling `_lzma`, `_bz2` and `_zstd` against headers the
+sysroot does not have. The script sets `PKG_CONFIG_LIBDIR` to the sysroot's
+(empty) pkgconfig directory; zlib and curses are found by header and
+library probes.
+
+`PHI_PYTHON_INCREMENTAL=1` keeps a configured tree and only refreshes the
+extra module sources, rewrites `Setup.local` and reruns `make`: seconds
+instead of minutes when iterating on a fragment.
+
+HACL*'s Blake2 SIMD variants: configure compile-tests `-msse4.1` and
+`-mavx2`, builds `Hacl_Hash_Blake2*_Simd*.c` with those flags (per-file
+flags win over the wrapper's `-mno-sse`) and dispatches on CPUID. The
+card would never execute them, but they fail the audit (1918
+instructions on the first static link), so the script answers both
+compile tests with `no` through their cache variables.
+
+mimalloc: CPython's bundled allocator spins with an inline-assembly
+`pause` (14 sites), which the card lacks and the compiler-level fix
+cannot reach. It is only required for the free-threaded build, so the
+script configures `--without-mimalloc` (pymalloc is used).

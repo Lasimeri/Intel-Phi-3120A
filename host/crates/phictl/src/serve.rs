@@ -46,7 +46,9 @@ pub fn default_socket(for_bind: bool) -> PathBuf {
     }
     // SAFETY: geteuid has no preconditions.
     let root = unsafe { libc::geteuid() } == 0;
-    if root || (!for_bind && Path::new(ROOT_SOCKET).exists()) {
+    if root || (!for_bind && std::os::unix::net::UnixStream::connect(ROOT_SOCKET).is_ok()) {
+        // A root daemon answers there; a stale socket file from an ended one
+        // does not, and the user path is tried instead.
         return PathBuf::from(ROOT_SOCKET);
     }
     let dir = std::env::var("XDG_RUNTIME_DIR")
