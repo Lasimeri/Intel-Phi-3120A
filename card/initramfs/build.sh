@@ -69,7 +69,7 @@ if [ -x "$dropbear/dropbearmulti" ]; then
 	chmod 600 "$root/etc/dropbear"/*
 	auth="$root/root/.ssh/authorized_keys"
 	: > "$auth"
-	for k in ${PHI_SSH_PUBKEYS:-"$HOME"/.ssh/id_ed25519.pub "$HOME"/.ssh/id_ecdsa.pub "$HOME"/.ssh/id_rsa.pub}; do
+	for k in ${PHI_SSH_PUBKEYS:-"$HOME"/.ssh/phi_ed25519.pub "$HOME"/.ssh/id_ed25519.pub "$HOME"/.ssh/id_ecdsa.pub "$HOME"/.ssh/id_rsa.pub}; do
 		[ -r "$k" ] && cat "$k" >> "$auth"
 	done
 	chmod 700 "$root/root" "$root/root/.ssh"; chmod 600 "$auth"
