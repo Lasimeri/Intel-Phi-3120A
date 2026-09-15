@@ -63,6 +63,13 @@ cat > /etc/modules-load.d/phi-vfio.conf <<'MOD'
 vfio-pci
 vfio_iommu_type1
 MOD
+# Let vfio-pci claim the card itself when it loads at boot (no host driver
+# exists for the Xeon Phi on this kernel), so nobody has to run
+# bind-vfio.sh after a reboot; the VFIO group node then gets the phi group
+# from the udev rule above.
+cat > /etc/modprobe.d/phi-vfio.conf <<'OPT'
+options vfio-pci ids=8086:225d
+OPT
 modprobe vfio-pci
 modprobe vfio_iommu_type1
 

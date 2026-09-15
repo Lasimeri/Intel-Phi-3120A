@@ -21,7 +21,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -31,13 +31,39 @@ use phi_hw::Card;
 use phi_ring::{ChannelKind, Region};
 use phi_rpc::{Decoder, Msg};
 
-/// Default control socket path.
-pub const DEFAULT_SOCKET: &str = "/run/phictl/control.sock";
+/// Control socket path when the daemon runs as root.
+pub const ROOT_SOCKET: &str = "/run/phictl/control.sock";
+
+/// Where the control socket lives when nothing says otherwise: the
+/// `PHICTL_SOCKET` variable, else the root path when running as root (or, for
+/// a client, when a root daemon has one), else `/phictl/control.sock`
+/// (`/tmp/phictl-UID` without a runtime directory). The user path is what an
+/// unprivileged `phictl boot --serve` uses: the `phi` group grants the VFIO
+/// device, so no root is needed to run the card without a network bridge.
+pub fn default_socket(for_bind: bool) -> PathBuf {
+    if let Ok(p) = std::env::var("PHICTL_SOCKET") {
+        return PathBuf::from(p);
+    }
+    // SAFETY: geteuid has no preconditions.
+    let root = unsafe { libc::geteuid() } == 0;
+    if root || (!for_bind && Path::new(ROOT_SOCKET).exists()) {
+        return PathBuf::from(ROOT_SOCKET);
+    }
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        // SAFETY: getuid has no preconditions.
+        .unwrap_or_else(|_| PathBuf::from(format!("/tmp/phictl-{}", unsafe { libc::getuid() })));
+    dir.join("phictl").join("control.sock")
+}
 
 /// The uid that may use the socket when none is given: the user behind
-/// `sudo`, or root.
+/// `sudo`, else the daemon's own uid.
 pub fn default_owner() -> u32 {
-    std::env::var("SUDO_UID").ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+    std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        // SAFETY: geteuid has no preconditions.
+        .unwrap_or_else(|| unsafe { libc::geteuid() })
 }
 
 /// Uid of the process at the other end of a Unix socket.

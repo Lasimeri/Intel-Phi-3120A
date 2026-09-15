@@ -41,3 +41,21 @@ client at a time; a second client waits for the socket to be free.
 - Transport: ring channel kind 3 (`docs/spec/ring-protocol.md`), polled
   at 1 kHz on both sides; throughput of a few MB/s, enough for sources,
   objects and binaries.
+
+## Unattended: no sudo, no console (2026-09-14)
+
+With the `phi` group (from `sudo scripts/setup-arch.sh`, once) the whole
+cycle runs from a normal shell, which is how the assistant works the card
+on its own:
+
+```
+scripts/phi-up.sh --toolchain        # boot in the background, wait for the agent, load clang
+scripts/phi-run.sh nproc             # any command; stdin, stdout, stderr, exit status relayed
+scripts/phi-run.sh sh -c 'cd /tmp && cc -O2 -o x x.c && ./x'
+scripts/phi-down.sh                  # halt and release the card
+```
+
+The console log is in `$XDG_RUNTIME_DIR/phictl/console.log`. Only the
+network bridge needs root (a TAP device), so an unattended session has no
+SSH; everything else is available. `setup-arch.sh` also makes vfio-pci
+claim the card at host boot, so no binding step survives a reboot either.

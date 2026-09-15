@@ -27,3 +27,10 @@ ls -l /dev/vfio/            # after bind-vfio.sh: a numbered node owned by phi
 ulimit -l                   # unlimited in a fresh login shell
 id                          # contains phi
 ```
+
+2026-09-14: the script also writes `/etc/modprobe.d/phi-vfio.conf`
+(`options vfio-pci ids=8086:225d`) so that vfio-pci claims the card when
+it loads at boot and `bind-vfio.sh` is never needed after a host reboot.
+With that and the `phi` group, the card can be booted and used without
+root (`scripts/phi-up.sh`); only the optional network bridge (`--net`,
+a TAP device) still needs root.

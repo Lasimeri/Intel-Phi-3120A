@@ -98,10 +98,10 @@ enum Cmd {
         /// IPv4 address with prefix length assigned to the TAP device.
         #[arg(long, default_value = "10.9.0.1/24")]
         net_addr: String,
-        /// Also serve the local control socket at this path (default
-        /// /run/phictl/control.sock) so that exec, put, get and status can
-        /// drive the card from an unprivileged shell of the owner.
-        #[arg(long, num_args = 0..=1, default_missing_value = serve::DEFAULT_SOCKET)]
+        /// Also serve the local control socket (at PATH, else
+        /// /run/phictl/control.sock as root or /phictl/control.sock
+        /// otherwise) so that exec, put, get and status can drive the card.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
         serve: Option<PathBuf>,
         /// Uid allowed to use the control socket (default: SUDO_UID, else root).
         #[arg(long)]
@@ -164,9 +164,10 @@ enum Cmd {
     /// Run a command on the card through the control socket; stdin, stdout,
     /// stderr and the exit status are relayed.
     Exec {
-        /// Control socket of a running `phictl boot --serve`.
-        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
-        socket: PathBuf,
+        /// Control socket of a running `phictl boot --serve` (default: PHICTL_SOCKET,
+        /// else /run/phictl/control.sock if present, else the user runtime directory).
+        #[arg(long)]
+        socket: Option<PathBuf>,
         /// Working directory on the card.
         #[arg(long)]
         cwd: Option<String>,
@@ -176,8 +177,8 @@ enum Cmd {
     },
     /// Copy a local file to the card.
     Put {
-        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
-        socket: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
         /// Local file.
         src: PathBuf,
         /// Destination path on the card.
@@ -188,8 +189,8 @@ enum Cmd {
     },
     /// Copy a file from the card.
     Get {
-        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
-        socket: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
         /// Path on the card.
         src: String,
         /// Local destination file.
@@ -197,8 +198,8 @@ enum Cmd {
     },
     /// Check that the card agent answers on the control socket.
     Status {
-        #[arg(long, default_value = serve::DEFAULT_SOCKET)]
-        socket: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 }
 
@@ -260,7 +261,10 @@ fn main() -> Result<()> {
             load_only,
             watch,
             net.map(|n| (n, net_addr)),
-            serve.map(|p| (p, owner.unwrap_or_else(serve::default_owner))),
+            serve.map(|p| {
+                let p = if p.as_os_str().is_empty() { serve::default_socket(true) } else { p };
+                (p, owner.unwrap_or_else(serve::default_owner))
+            }),
         ),
         Cmd::Peek { addr, len } => {
             let card = open(cli.bdf.as_deref())?;
@@ -309,12 +313,12 @@ fn main() -> Result<()> {
             console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)))
         }
         Cmd::Exec { socket, cwd, argv } => {
-            let code = client::exec(&socket, cwd, argv)?;
+            let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false)), cwd, argv)?;
             std::process::exit(code);
         }
-        Cmd::Put { socket, src, dst, mode } => client::put(&socket, &src, dst, mode),
-        Cmd::Get { socket, src, dst } => client::get(&socket, src, &dst),
-        Cmd::Status { socket } => client::status(&socket),
+        Cmd::Put { socket, src, dst, mode } => client::put(&socket.unwrap_or_else(|| serve::default_socket(false)), &src, dst, mode),
+        Cmd::Get { socket, src, dst } => client::get(&socket.unwrap_or_else(|| serve::default_socket(false)), src, &dst),
+        Cmd::Status { socket } => client::status(&socket.unwrap_or_else(|| serve::default_socket(false))),
     }
 }
 
