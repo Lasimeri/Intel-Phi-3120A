@@ -85,3 +85,23 @@ The deflate stage handles 760 pieces, 99.5 MB to 7.6 MB. Notes:
 The 8K image is not in the repository (7.6 MB); it is reproduced by the
 command in `card/examples/mandel.md` and was saved on the host as
 `~/phi-mandelbrot-8k.png`.
+
+## Load verification (were all cores busy?)
+
+Measured on the card with `/proc/stat` snapshots around the 8K render
+(`grep "^cpu[0-9]" /proc/stat` before and after, busy = user + nice +
+system + irq + softirq + steal over the elapsed ticks per CPU) and
+busybox `time`:
+
+| run | wall | user CPU | CPU-equivalents | per-CPU utilisation |
+| --- | --- | --- | --- | --- |
+| 228 threads | 9.34 s | 2024 s (33m44s) | 216.7 | all 228 CPUs between 0.93 and 0.97, mean 0.95 |
+| 57 threads | 15.17 s | 855 s (14m15s) | 56.4 | 56 CPUs at 0.95 or more, one thread split 0.70/0.29 across two CPUs, 170 CPUs below 0.05 |
+
+The 5 percent left idle with 228 threads is the PNG stage (0.41 s), the
+thread start-up and the end-of-run tail. In the 57-thread run the busy
+CPUs map to 57 distinct `core_id` values (0 shared cores), and the one
+migrating thread moved between cpu158 and cpu160, siblings on core 39:
+the kernel knows the 4-thread topology (`thread_siblings_list` reads
+`0,225-227` for CPU 0 and `5-8` for CPU 5) and spreads one thread per
+core before doubling up.
