@@ -131,6 +131,7 @@ configure() {
             -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_INCLUDE_DOCS=OFF \
             -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_DISABLE_ASSEMBLY_FILES=ON \
             -DLLVM_PARALLEL_LINK_JOBS=2 \
             -DCLANG_ENABLE_ARCMT=OFF \
             -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
@@ -206,10 +207,10 @@ check() {
     if [ "$VARIANT" = card ]; then
         # The card binaries run on the host (same instruction subset): audit
         # clang itself, then compile a probe with it against the sysroot.
-        "$phi_root/host/target/debug/phi-isa-audit" "$BUILD/bin/clang-22" | tail -1
+        "$phi_root/host/target/debug/phi-isa-audit" --ignore XSAVE "$BUILD/bin/clang-22" | tail -1
         local tmp; tmp=$(mktemp -d)
         printf '#include <stdio.h>\nint main(void){double d=2.5;printf("%%g %%d\\n",d*d,__LINE__);return 0;}\n' > "$tmp/h.c"
-        "$BUILD/bin/clang" --config "$phi_root/card/userland/components/clang.cfg" --sysroot="$PHI_SYSROOT" -o "$tmp/h" "$tmp/h.c"
+        "$BUILD/bin/clang" --config "$phi_root/card/userland/components/clang.cfg" --sysroot="$PHI_SYSROOT" -resource-dir "$PHI_LLVM/lib/clang/22" -o "$tmp/h" "$tmp/h.c"
         "$phi_root/host/target/debug/phi-isa-audit" "$tmp/h" | tail -1
         "$tmp/h"
         rm -rf "$tmp"

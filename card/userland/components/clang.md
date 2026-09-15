@@ -36,3 +36,11 @@ separate squashfs image loaded on demand rather than in the base initramfs.
 
 The tarball is loaded per boot (the card has no persistent storage);
 a few hundred MB through the rpc channel take well under a minute.
+
+Audit notes: the first card build carried 10002 illegal instructions, all
+but seven in LLVM's BLAKE3 assembly (SSE2 to AVX-512 kernels selected at
+run time); the card variant now configures with
+`LLVM_DISABLE_ASSEMBLY_FILES=ON` (portable C BLAKE3). The remaining seven
+are `xgetbv` in `llvm::sys::getHostCPUName`, executed only when CPUID
+reports OSXSAVE, which the card never does; the package audit ignores
+XSAVE for that reason and nothing else.

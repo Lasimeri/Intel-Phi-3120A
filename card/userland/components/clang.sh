@@ -14,7 +14,7 @@ AUDIT="$root/host/target/debug/phi-isa-audit"
 HOST_RES="$PHI_LLVM/lib/clang/22"
 [ -x "$BUILD/bin/clang-22" ] || { echo "clang.sh: $BUILD/bin/clang-22 missing; run PHI_LLVM_VARIANT=card toolchain/llvm/build.sh configure build" >&2; exit 1; }
 rm -rf "$OUT/root"
-mkdir -p "$PKG/bin" "$PKG/lib/clang/22/lib/linux" "$PKG/etc"
+mkdir -p "$PKG/bin" "$PKG/usr" "$PKG/lib/clang/22/lib/linux"
 # Tools: clang (one binary, driver modes by name), lld (one binary), and the
 # binutils-style tools. Symlinks keep the tarball small.
 cp "$BUILD/bin/clang-22" "$PKG/bin/clang-22"
@@ -29,14 +29,20 @@ done
 # The same defaults for every driver name (clang looks for <name>.cfg next
 # to the binary).
 for n in clang clang++ cc c++; do cp "$here/clang.cfg" "$PKG/bin/$n.cfg"; done
-# Sysroot: musl headers and libraries, libc++, the compiler's own headers
-# and compiler-rt in the resource directory clang expects (../lib/clang/22).
-cp -a "$PHI_SYSROOT/usr/include" "$PKG/include"
-cp -a "$PHI_SYSROOT/usr/lib" "$PKG/lib"
+# Sysroot: musl headers and libraries and libc++ under usr/ (clang's driver
+# searches <sysroot>/usr/include and <sysroot>/usr/lib), the compiler's own
+# headers and compiler-rt in the resource directory it expects
+# (../lib/clang/22 relative to the binary).
+cp -a "$PHI_SYSROOT/usr/include" "$PKG/usr/include"
+cp -a "$PHI_SYSROOT/usr/lib" "$PKG/usr/lib"
 cp -a "$HOST_RES/include" "$PKG/lib/clang/22/include"
-cp "$HOST_RES/lib/linux/libclang_rt.builtins-x86_64.a" "$PKG/lib/clang/22/lib/linux/"
+cp "$HOST_RES"/lib/linux/libclang_rt.builtins-x86_64.a "$HOST_RES"/lib/linux/clang_rt.crt*-x86_64.o "$PKG/lib/clang/22/lib/linux/"
+# XSAVE: llvm::sys::getHostCPUName executes xgetbv only after CPUID reports
+# OSXSAVE, which the card never does; the instruction is present, not
+# reachable. Everything else must be clean (BLAKE3 is built without its
+# SSE/AVX assembly, LLVM_DISABLE_ASSEMBLY_FILES).
 echo "== audit"
-for b in clang-22 lld llvm-ar; do "$AUDIT" "$PKG/bin/$b" | tail -1; done
+for b in clang-22 lld llvm-ar; do "$AUDIT" --ignore XSAVE "$PKG/bin/$b" | tail -1; done
 echo "== probe: the packaged clang runs on the host too"
 tmp=$(mktemp -d)
 printf '#include <stdio.h>\nint main(void){double d=2.5;printf("%%g\\n",d*d);return 0;}\n' > "$tmp/h.c"
