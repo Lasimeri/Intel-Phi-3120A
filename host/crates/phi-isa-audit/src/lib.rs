@@ -50,6 +50,8 @@ pub struct Report {
     pub sections: Vec<String>,
     /// Total instructions decoded.
     pub instructions: u64,
+    /// Knights Corner vector instructions (MVEX prefix), counted among `instructions`.
+    pub vector: u64,
     /// All hits, in address order.
     pub hits: Vec<Hit>,
 }
@@ -168,11 +170,56 @@ pub fn classify_feature(f: CpuidFeature) -> Option<Severity> {
     None
 }
 
-/// Instructions iced-x86 files under an SSE feature bit but which Knights
-/// Corner documents as supported: the MXCSR load/store pair (ISA reference
-/// App. B.3 LDMXCSR, B.6 STMXCSR) touches no XMM register.
+/// Instructions iced-x86 files under a feature bit but which Knights Corner
+/// documents as supported: the MXCSR load/store pair (ISA reference App.
+/// B.3 LDMXCSR, B.6 STMXCSR) touches no XMM register, and the vector mask
+/// register instructions (`kand`, `kandn`, `knot`, `kor`, `kxnor`, `kxor`,
+/// `kmov`, `kortest`; ISA reference chapter 6) use the VEX.128.0F.W0
+/// encodings that AVX-512 later took for its 16-bit mask forms, so the
+/// decoder names them `k...w` and files them under AVX512F.
 pub fn allowed_despite_feature(m: Mnemonic) -> bool {
-    matches!(m, Mnemonic::Ldmxcsr | Mnemonic::Stmxcsr)
+    use Mnemonic::*;
+    matches!(
+        m,
+        Ldmxcsr | Stmxcsr | Kandw | Kandnw | Knotw | Korw | Kxnorw | Kxorw | Kmovw | Kortestw
+    )
+}
+
+/// Length of a Knights Corner MVEX-encoded instruction starting at `b`, or
+/// `None` if `b` does not start one. In 64-bit mode 62H is always a
+/// four-byte vector prefix; bit 2 of its third byte is 0 for MVEX (ISA
+/// reference 327364-001, section 3.3, and Intel's k1om kernel macros) and
+/// 1 for EVEX, which iced-x86 would decode as AVX-512. The length is the
+/// prefix, the opcode, ModRM, an optional SIB and displacement as in every
+/// x86 instruction, and an immediate byte for the 0F3A map and for the
+/// compares (0F C2). The disp8*N compression changes no lengths.
+pub fn mvex_length(b: &[u8]) -> Option<usize> {
+    if b.len() < 6 || b[0] != 0x62 || b[2] & 0x04 != 0 {
+        return None;
+    }
+    let map = b[1] & 0x03;
+    if map == 0 {
+        return None;
+    }
+    let opcode = b[4];
+    let modrm = b[5];
+    let (m, rm) = (modrm >> 6, modrm & 7);
+    let mut len = 6;
+    if m != 3 {
+        if rm == 4 {
+            len += 1; // SIB
+        }
+        len += match m {
+            0 if rm == 5 => 4,
+            0 => 0,
+            1 => 1,
+            _ => 4,
+        };
+    }
+    if map == 3 || (map == 1 && opcode == 0xc2) {
+        len += 1;
+    }
+    (b.len() >= len).then_some(len)
 }
 
 /// Mnemonic rules for base-ISA instructions KNC deletes (ISA App. B.2).
@@ -190,12 +237,29 @@ pub fn classify_mnemonic(m: Mnemonic) -> Option<(Severity, &'static str)> {
 
 /// Decode `code` at `base` and push hits into `out`. Returns instruction count.
 pub fn scan_bytes(code: &[u8], base: u64, section: &str, symbols: &[(u64, u64, String)], out: &mut Vec<Hit>) -> u64 {
+    let (n, _) = scan_bytes_counting(code, base, section, symbols, out);
+    n
+}
+
+/// As `scan_bytes`, also returning how many of the instructions were
+/// Knights Corner vector instructions.
+pub fn scan_bytes_counting(code: &[u8], base: u64, section: &str, symbols: &[(u64, u64, String)], out: &mut Vec<Hit>) -> (u64, u64) {
     let mut decoder = Decoder::with_ip(64, code, base, DecoderOptions::NONE);
     let mut formatter = IntelFormatter::new();
     let mut instr = Instruction::default();
     let mut text = String::new();
     let mut count = 0u64;
+    let mut vector = 0u64;
     while decoder.can_decode() {
+        let pos = decoder.position();
+        if let Some(len) = mvex_length(&code[pos..]) {
+            // A KNC vector instruction: legal by definition, opaque to iced-x86.
+            count += 1;
+            vector += 1;
+            decoder.set_position(pos + len).expect("within the buffer");
+            decoder.set_ip(base + (pos + len) as u64);
+            continue;
+        }
         decoder.decode_out(&mut instr);
         count += 1;
         if instr.is_invalid() {
@@ -237,7 +301,7 @@ pub fn scan_bytes(code: &[u8], base: u64, section: &str, symbols: &[(u64, u64, S
             });
         }
     }
-    count
+    (count, vector)
 }
 
 /// Audit a file: an ELF object, executable, or shared object, or an `ar`
@@ -263,6 +327,7 @@ fn audit_archive(data: &[u8]) -> anyhow::Result<Report> {
         }
         let r = audit_one(bytes, &format!("{name}:"))?;
         report.instructions += r.instructions;
+        report.vector += r.vector;
         report.sections.extend(r.sections);
         report.hits.extend(r.hits);
     }
@@ -301,7 +366,9 @@ fn audit_one(data: &[u8], prefix: &str) -> anyhow::Result<Report> {
             Ok(d) if !d.is_empty() => d,
             _ => continue,
         };
-        report.instructions += scan_bytes(data, section.address(), &name, &symbols, &mut report.hits);
+        let (n, v) = scan_bytes_counting(data, section.address(), &name, &symbols, &mut report.hits);
+        report.instructions += n;
+        report.vector += v;
         report.sections.push(name);
     }
     report.hits.sort_by_key(|h| h.address);
@@ -342,5 +409,34 @@ mod tests {
         let mut clean = Vec::new();
         scan_bytes(&[0x90, 0xC3], 0, ".text", &[], &mut clean);
         assert!(clean.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod knc_vector_tests {
+    use super::*;
+
+    #[test]
+    fn mvex_instructions_are_legal_and_sized() {
+        // vmovaps [rax+64], zmm1 (Intel k1om macro form) ; kmovw ecx,k1 ; vcmppd k1{k1},zmm10,zmm8,1 ; ret
+        let code: Vec<u8> = vec![
+            0x62, 0xf1, 0x78, 0x08, 0x29, 0x88, 0x40, 0x00, 0x00, 0x00, // vmovaps store, disp32
+            0xc5, 0xf8, 0x93, 0xc9, // kmovw ecx, k1
+            0x62, 0xd1, 0xa9, 0x09, 0xc2, 0xc8, 0x01, // vcmppd with imm8
+            0x62, 0xf1, 0xf9, 0x08, 0x58, 0xd1, // vaddpd zmm2{k1}, zmm0, zmm1
+            0xc3, // ret
+        ];
+        assert_eq!(mvex_length(&code), Some(10));
+        assert_eq!(mvex_length(&code[14..]), Some(7));
+        assert_eq!(mvex_length(&code[21..]), Some(6));
+        assert_eq!(
+            mvex_length(&[0x62, 0xf1, 0x7d, 0x48, 0x28, 0x07]),
+            None,
+            "EVEX (bit 2 set) is not MVEX"
+        );
+        let mut hits = Vec::new();
+        let (n, v) = scan_bytes_counting(&code, 0, ".text", &[], &mut hits);
+        assert_eq!((n, v), (5, 3));
+        assert!(hits.is_empty(), "{hits:?}");
     }
 }

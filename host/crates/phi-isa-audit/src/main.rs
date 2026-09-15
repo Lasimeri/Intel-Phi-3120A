@@ -110,9 +110,13 @@ fn main() -> ExitCode {
     let illegal = report.count(Severity::Illegal);
     let suspect = report.count(Severity::Suspect);
     if ignored.is_empty() {
-        println!("result: {illegal} illegal, {suspect} suspect");
+        println!("result: {illegal} illegal, {suspect} suspect, {} KNC vector", report.vector);
     } else {
-        println!("result: {illegal} illegal, {suspect} suspect, {} ignored", ignored.len());
+        println!(
+            "result: {illegal} illegal, {suspect} suspect, {} ignored, {} KNC vector",
+            ignored.len(),
+            report.vector
+        );
     }
     if illegal > 0 || (suspect > 0 && !args.allow_suspect) {
         ExitCode::from(1)

@@ -19,6 +19,10 @@ and must pass `phi-isa-audit`.
 
 ## Vector unit
 
-Nothing above uses the 512-bit VPU. Using it means inline assembly or a
-compiler that knows the KNC vector ISA (only Intel's dead gcc fork and ICC
-did). It is out of scope for the SSH-and-run-C goal and noted as future work.
+None of the runtimes above use the 512-bit VPU: no compiler in the stack
+knows the KNC vector ISA (only Intel's dead gcc fork and ICC did). Since
+2026-09-15 the project has its own encoder for a subset of it
+(`host/crates/knc-mvex`), kernel support for the vector state (patch
+0024) and one hand-vectorised kernel, the Mandelbrot loop in
+`card/examples/mandel_vpu.S`; see `docs/results/2026-09-15-vpu.md`.
+A compiler backend remains out of scope.

@@ -10,6 +10,7 @@ members = [
     "crates/phi-rpc",
     "crates/phictl",
     "crates/phi-isa-audit",
+    "crates/knc-mvex",
 ]
 
 [workspace.package]

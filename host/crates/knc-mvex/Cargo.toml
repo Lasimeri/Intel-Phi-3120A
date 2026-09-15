@@ -1,0 +1,13 @@
+[package]
+name = "knc-mvex"
+description = "Encoder for a subset of the Knights Corner vector ISA (MVEX prefix) and a generator for the project's hand-vectorised kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "knc-mvex-gen"
+path = "src/main.rs"
+
+[dependencies]
