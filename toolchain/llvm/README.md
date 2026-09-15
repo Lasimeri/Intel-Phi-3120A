@@ -20,6 +20,16 @@ inspection, versus the design notes written before the tree was cloned:
 Nothing in clang's frontend diagnoses float returns; the message seen in
 the research came from the backend with the function's location attached.
 
+## Card variant (P7)
+
+`PHI_LLVM_VARIANT=card` builds clang, lld and the binutils-style tools for
+the card itself: a Canadian cross with `knc-cc`/`knc-c++`, the host
+variant's tablegen, static on musl and libc++ (`toolchain/libcxx/build.sh`
+first), X86 only, no zlib/zstd/libxml2/terminfo. `build` compiles only the
+tools; `install` is a no-op (`card/userland/components/clang.sh` packages
+the binaries); `check` audits the card clang and compiles a probe with it
+on the host.
+
 ## Build recipe
 
 `build.sh` (see `build.md`). Summary:

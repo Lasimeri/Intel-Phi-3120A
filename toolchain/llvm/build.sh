@@ -8,6 +8,10 @@
 # PHI_LLVM_VARIANT=clang (default): static X86-only clang+lld, the card C
 #   compiler, installed to toolchain/build/llvm.
 # PHI_LLVM_VARIANT=dylib: libLLVM.so mirroring the options of Arch's llvm-libs
+# PHI_LLVM_VARIANT=card: clang, lld and the binutils-style tools built FOR
+#   the card with knc-cc/knc-c++ (a Canadian cross), static on musl and
+#   libc++, X86 only, with the host build's tablegen; not installed, the
+#   package script copies the binaries (card/userland/components/clang.sh).
 #   package (all targets, RTTI, FFI) so the distro rustc can load the patched
 #   backend through LD_LIBRARY_PATH; no clang, no lld; installed to
 #   toolchain/build/llvm-dylib.
@@ -30,6 +34,10 @@ VARIANT="${PHI_LLVM_VARIANT:-clang}"
 if [ "$VARIANT" = dylib ]; then
     BUILD="${PHI_LLVM_BUILD:-$phi_build/toolchain/llvm-build-dylib}"
     PREFIX="${PHI_LLVM_DYLIB:-$phi_build/toolchain/llvm-dylib}"
+elif [ "$VARIANT" = card ]; then
+    BUILD="${PHI_LLVM_BUILD:-$phi_build/toolchain/llvm-build-card}"
+    PREFIX="${PHI_LLVM_CARD:-$phi_build/toolchain/llvm-card}"
+    HOST_BUILD="$phi_build/toolchain/llvm-build"
 else
     BUILD="${PHI_LLVM_BUILD:-$phi_build/toolchain/llvm-build}"
     PREFIX="$PHI_LLVM"
@@ -81,6 +89,58 @@ configure() {
     echo "== configuring ($gen, variant $VARIANT) into $BUILD, install to $PREFIX"
     local -a opts
     mapfile -t opts < <(common_opts)
+    if [ "$VARIANT" = card ]; then
+        [ -x "$HOST_BUILD/bin/llvm-tblgen" ] || { echo "card variant needs the host clang variant build in $HOST_BUILD (tablegen)" >&2; exit 1; }
+        [ -f "$PHI_SYSROOT/usr/lib/libc++.a" ] || { echo "card variant needs libc++ in the sysroot: toolchain/libcxx/build.sh" >&2; exit 1; }
+        cmake -S "$SRC/llvm" -B "$BUILD" -G "$gen" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+            -DCMAKE_C_COMPILER="$phi_root/toolchain/clang/knc-cc" \
+            -DCMAKE_CXX_COMPILER="$phi_root/toolchain/clang/knc-c++" \
+            -DCMAKE_ASM_COMPILER="$phi_root/toolchain/clang/knc-cc" \
+            -DCMAKE_SYSROOT="$PHI_SYSROOT" \
+            -DCMAKE_AR="$PHI_LLVM/bin/llvm-ar" \
+            -DCMAKE_RANLIB="$PHI_LLVM/bin/llvm-ranlib" \
+            -DCMAKE_NM="$PHI_LLVM/bin/llvm-nm" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static" \
+            -DLLVM_HOST_TRIPLE=x86_64-unknown-linux-musl \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-musl \
+            -DLLVM_NATIVE_TOOL_DIR="$HOST_BUILD/bin" \
+            -DLLVM_TABLEGEN="$HOST_BUILD/bin/llvm-tblgen" \
+            -DCLANG_TABLEGEN="$HOST_BUILD/bin/clang-tblgen" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_BUILD_STATIC=ON \
+            -DLLVM_ENABLE_PIC=OFF \
+            -DLLVM_ENABLE_LIBCXX=ON \
+            -DLLVM_STATIC_LINK_CXX_STDLIB=ON \
+            -DLLVM_ENABLE_THREADS=ON \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_LIBPFM=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_ENABLE_OCAMLDOC=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_PARALLEL_LINK_JOBS=2 \
+            -DCLANG_ENABLE_ARCMT=OFF \
+            -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
+            -DCLANG_DEFAULT_LINKER=lld \
+            -DCLANG_DEFAULT_RTLIB=compiler-rt \
+            -DCLANG_DEFAULT_CXX_STDLIB=libc++ \
+            -DCLANG_DEFAULT_UNWINDLIB=libunwind
+        return
+    fi
+    mapfile -t opts < <(common_opts)
     if [ "$VARIANT" = dylib ]; then
         cmake -S "$SRC/llvm" -B "$BUILD" -G "$gen" "${opts[@]}" \
             -DLLVM_ENABLE_PROJECTS="" \
@@ -110,6 +170,10 @@ configure() {
 
 build() {
     echo "== building with $JOBS jobs (variant $VARIANT)"
+    if [ "$VARIANT" = card ]; then
+        cmake --build "$BUILD" -j "$JOBS" --target clang lld llvm-ar llvm-ranlib llvm-nm llvm-objdump llvm-strip llvm-readelf llvm-objcopy
+        return
+    fi
     if [ "$VARIANT" = dylib ]; then
         cmake --build "$BUILD" -j "$JOBS" --target LLVM
     else
@@ -119,6 +183,11 @@ build() {
 
 install() {
     echo "== installing to $PREFIX"
+    if [ "$VARIANT" = card ]; then
+        echo "== card variant: not installed; card/userland/components/clang.sh packages $BUILD/bin"
+        ls -l "$BUILD/bin/clang-"* "$BUILD/bin/lld" 2>/dev/null | head -3
+        return
+    fi
     if [ "$VARIANT" = dylib ]; then
         # Only the shared library is wanted; a full install would build every tool.
         mkdir -p "$PREFIX/lib"
@@ -134,6 +203,18 @@ install() {
 # with the wrapper and audit the result. The dylib variant ships no clang;
 # its check is that rustc loads it, done by toolchain/rust/build-std.sh.
 check() {
+    if [ "$VARIANT" = card ]; then
+        # The card binaries run on the host (same instruction subset): audit
+        # clang itself, then compile a probe with it against the sysroot.
+        "$phi_root/host/target/debug/phi-isa-audit" "$BUILD/bin/clang-22" | tail -1
+        local tmp; tmp=$(mktemp -d)
+        printf '#include <stdio.h>\nint main(void){double d=2.5;printf("%%g %%d\\n",d*d,__LINE__);return 0;}\n' > "$tmp/h.c"
+        "$BUILD/bin/clang" --config "$phi_root/card/userland/components/clang.cfg" --sysroot="$PHI_SYSROOT" -o "$tmp/h" "$tmp/h.c"
+        "$phi_root/host/target/debug/phi-isa-audit" "$tmp/h" | tail -1
+        "$tmp/h"
+        rm -rf "$tmp"
+        return
+    fi
     if [ "$VARIANT" = dylib ]; then
         echo "== check: dylib variant has no clang; verified by toolchain/rust/build-std.sh"
         return
