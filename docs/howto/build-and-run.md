@@ -50,3 +50,22 @@ while `phictl boot` runs.
 - Floating point: the kernel starts every task with MXCSR `0x200000`
   (DUE set) and `LDMXCSR` of an image without bit 21 faults; musl's
   `fesetenv(FE_DFL_ENV)` is the known caller (`docs/plan.md` risk table).
+
+## 4. Compile on the card itself (phase P7)
+
+With `phictl boot --serve` running (`docs/howto/direct-access.md`), load
+the native toolchain once per boot and use it through `phictl exec`:
+
+```
+card/userland/components/clang-push.sh                     # 84 MB, about 25 s
+host/target/debug/phictl put prog.c /tmp/prog.c
+host/target/debug/phictl exec -- sh -c 'cd /tmp && cc -O2 -o prog prog.c && ./prog'
+host/target/debug/phictl get /tmp/prog ./prog.card          # optional: audit on the host
+```
+
+`cc`, `c++`, `ld`, `ar`, `nm`, `objdump`, `strip` live in `/opt/phi/bin`
+(clang 22 with lld and the LLVM tools, musl and libc++ in `/opt/phi/usr`);
+their defaults come from `clang.cfg` next to the binaries, so no flags are
+needed for card-correct code. C compiles are quick; C++ with libc++ takes
+tens of seconds per file on these cores. The same works over SSH once
+logged in.

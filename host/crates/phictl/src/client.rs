@@ -16,7 +16,7 @@ use phi_rpc::{Decoder, Msg};
 
 /// Environment given to every command on the card.
 const CARD_ENV: [(&str, &str); 3] = [
-    ("PATH", "/bin:/sbin:/usr/bin:/usr/sbin:/opt/bin"),
+    ("PATH", "/opt/phi/bin:/bin:/sbin:/usr/bin:/usr/sbin"),
     ("HOME", "/root"),
     ("TERM", "dumb"),
 ];
