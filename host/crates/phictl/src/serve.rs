@@ -88,6 +88,10 @@ fn ends_session(m: &Msg) -> bool {
 /// Relay frames between one local client at a time and the card's rpc
 /// channel until the process ends.
 pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, owner: u32) -> Result<()> {
+    if !wait_for_init(card, Duration::from_secs(120)) {
+        eprintln!("[phictl] serve: the card did not reach init; not relaying");
+        return Ok(());
+    }
     let mut mem = ApertureRegion::new(card.aperture(), ring_base as usize, ring_size as usize);
     let (producer, consumer) = loop {
         if let Ok(region) = Region::open(&mem) {
@@ -196,4 +200,20 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, 
             thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// Block until the card's kernel reports that init has started (POST "K7"),
+/// or until `limit` passes: neither the bridge nor the relay may read or
+/// write card memory during early boot, when the kernel is still setting up
+/// its memory map, caches and MTRRs.
+pub fn wait_for_init(card: &Card, limit: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < limit {
+        let text = card.postcode().text();
+        if text == "K7" || text == "KH" || text == "KP" {
+            return text == "K7";
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
 }

@@ -21,3 +21,4 @@
 0020-x86-knc-serial-AP-bring-up-on-Knights-Corner.patch
 0021-x86-knc-Ethernet-over-the-host-card-ring-phi0.patch
 0022-x86-knc-dev-phirpc-a-byte-stream-to-the-host-tool-ov.patch
+0023-x86-knc-leave-the-SBOX-I-O-APIC-unregistered-for-now.patch

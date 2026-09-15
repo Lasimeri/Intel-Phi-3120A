@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 20:09:48 -0500
+Subject: [PATCH] x86/knc: leave the SBOX I/O APIC unregistered for now
+
+Nothing routes through it yet (the ring devices poll, IPIs use the
+LAPIC), its version register reads back 0 through the standard
+index/data window, and a boot on 2026-09-14 stopped exactly at that
+register read, right after the CPU topology lines. Keep the SFI entries
+parsed and skip mp_register_ioapic until the SBOX window is understood;
+the registration stays behind CONFIG_KNC_SBOX_IOAPIC, which nothing
+defines.
+---
+ arch/x86/kernel/knc.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
+index b230ba38f..fd54133e3 100644
+--- a/arch/x86/kernel/knc.c
++++ b/arch/x86/kernel/knc.c
+@@ -140,6 +140,14 @@ static void __init knc_parse_smp_config(void)
+ 	 * SSDG 4.2.5: the I/O APIC pins are SBOX interrupt sources (DMA,
+ 	 * thermal, doorbells), not ISA IRQs, so no legacy identity mapping.
+ 	 */
++	/*
++	 * The SBOX I/O APIC is not registered yet: nothing routes through it
++	 * (the ring devices poll, IPIs go through the LAPIC), its version
++	 * register reads back 0 through the standard index/data window, and a
++	 * boot on 2026-09-14 stopped exactly at that register read. It comes
++	 * back once its window is understood; the SFI entries stay parsed.
++	 */
++	if (IS_ENABLED(CONFIG_KNC_SBOX_IOAPIC))
+ 	for (i = 0; i < knc_sfi.num_ioapics; i++)
+ 		mp_register_ioapic(i, knc_sfi.ioapic_phys[i], gsi_top, &ioapic_cfg);
+ 

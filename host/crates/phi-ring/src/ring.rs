@@ -101,11 +101,18 @@ impl Consumer {
         })
     }
 
-    /// Bytes available to pop.
+    /// Bytes available to pop. More than the ring holds means the indices
+    /// are inconsistent (the producer reset, or the header was overwritten);
+    /// reported as nothing available, and `pop` resynchronises.
     pub fn available<M: RingMemory>(&self, mem: &M) -> u32 {
         let head = mem.read_u32(self.base + ring_hdr::HEAD);
         let tail = mem.read_u32(self.base + ring_hdr::TAIL);
-        head.wrapping_sub(tail)
+        let avail = head.wrapping_sub(tail);
+        if avail > self.size {
+            0
+        } else {
+            avail
+        }
     }
 
     /// Pop up to `buf.len()` bytes; returns the number popped.
@@ -113,6 +120,14 @@ impl Consumer {
         let head = mem.read_u32(self.base + ring_hdr::HEAD);
         let tail = mem.read_u32(self.base + ring_hdr::TAIL);
         let avail = head.wrapping_sub(tail);
+        if avail > self.size {
+            // Inconsistent indices: drop whatever is there and start again
+            // from the producer's head rather than reading the whole ring in
+            // a loop.
+            mem.write_u32(self.base + ring_hdr::TAIL, head);
+            mem.fence();
+            return 0;
+        }
         let n = buf.len().min(avail as usize);
         if n == 0 {
             return 0;
@@ -189,5 +204,31 @@ mod tests {
         let mut mem = VecMemory::new(ring_hdr::DATA + 16);
         assert_eq!(Producer::attach(&mem, 0).err(), Some(Error::BadMagic(0, RING_MAGIC)));
         assert_eq!(format_ring(&mut mem, 0, 12).err(), Some(Error::BadRingSize(12)));
+    }
+}
+
+#[cfg(test)]
+mod resync_tests {
+    use super::*;
+    use crate::memory::VecMemory;
+
+    #[test]
+    fn inconsistent_indices_resync_instead_of_flooding() {
+        let mut mem = VecMemory::new(ring_hdr::DATA + 64);
+        format_ring(&mut mem, 0, 64).unwrap();
+        let p = Producer::attach(&mem, 0).unwrap();
+        let c = Consumer::attach(&mem, 0).unwrap();
+        assert_eq!(p.push(&mut mem, b"hello"), 5);
+        let mut buf = [0u8; 16];
+        assert_eq!(c.pop(&mut mem, &mut buf), 5);
+        // The producer's head goes backwards (a reset on the other side).
+        mem.write_u32(ring_hdr::HEAD, 0);
+        assert_eq!(c.available(&mem), 0);
+        assert_eq!(c.pop(&mut mem, &mut buf), 0);
+        assert_eq!(mem.read_u32(ring_hdr::TAIL), 0);
+        // Normal service resumes from there.
+        assert_eq!(p.push(&mut mem, b"again"), 5);
+        assert_eq!(c.pop(&mut mem, &mut buf), 5);
+        assert_eq!(&buf[..5], b"again");
     }
 }

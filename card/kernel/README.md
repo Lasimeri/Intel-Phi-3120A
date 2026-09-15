@@ -1,13 +1,13 @@
 # card/kernel
 
-A mainline Linux kernel for Knights Corner: a twenty-two-patch series against
+A mainline Linux kernel for Knights Corner: a twenty-three-patch series against
 a pinned stable tag (`patches/SERIES`), a Kconfig fragment
 (`config/knc.config`), and `build.sh`, which fetches, patches, configures,
 builds with the project's patched clang and audits the result.
 
 ## The series (v7.2.3)
 
-Twenty-two patches. Each patch is a reviewable commit whose message cites the SSDG section
+Twenty-three patches. Each patch is a reviewable commit whose message cites the SSDG section
 (`docs/research/os-limitations.md`), the ISA reference appendix
 (`docs/research/isa-deletions.md`), Intel's card kernel, or a measurement.
 
@@ -35,6 +35,7 @@ Twenty-two patches. Each patch is a reviewable commit whose message cites the SS
 | 0020 | `x86/knc: serial AP bring-up on Knights Corner` | `kernel/knc.c` | the platform layer clears `x86_cpuinit.parallel_bringup`: 227 APs kicked at once starve on the trampoline lock (no PAUSE, in-order cores); serial takes about a second |
 | 0021 | `x86/knc: Ethernet over the host/card ring (phi0)` | `kernel/knc_net.c`, `include/asm/knc_ring.h`, `kernel/knc_earlycon.c` | `phi0` on the kind-2 channel: u16-framed records, 1 ms polling, uncached mapping; ring layout shared through `asm/knc_ring.h` |
 | 0022 | `x86/knc: /dev/phirpc, a byte stream to the host tool over ring channel 3` | `kernel/knc_rpc.c`, `include/asm/knc_ring.h`, `kernel/knc_net.c` | misc device over the kind-3 rings for the card agent: read/write/poll, one opener, 1 ms polling; shared ring helpers |
+| 0023 | `x86/knc: leave the SBOX I/O APIC unregistered for now` | `kernel/knc.c` | its version reads 0 and a boot stopped at that read; nothing routes through it yet |
 
 Not in the series, deliberately: SMP bring-up. Intel's card kernel used
 the standard INIT/SIPI sequence (`arch/x86/kernel/smpboot.c` in the k1om

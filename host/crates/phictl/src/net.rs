@@ -90,6 +90,10 @@ fn readable(file: &File, timeout: Duration) -> bool {
 /// written before the kernel starts, but this thread may run first, so it
 /// waits for a valid header.
 pub fn bridge(card: &Card, ring_base: u64, ring_size: u64, name: &str, addr: &str) -> Result<()> {
+    if !crate::serve::wait_for_init(card, Duration::from_secs(120)) {
+        eprintln!("[phictl] net: the card did not reach init; not bridging");
+        return Ok(());
+    }
     let mut tap = open_tap(name)?;
     configure(name, addr)?;
     let mut mem = ApertureRegion::new(card.aperture(), ring_base as usize, ring_size as usize);
