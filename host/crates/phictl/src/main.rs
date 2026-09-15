@@ -20,6 +20,7 @@ use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
 
 mod client;
+mod forward;
 mod net;
 mod serve;
 
@@ -98,8 +99,12 @@ enum Cmd {
         /// IPv4 address with prefix length assigned to the TAP device.
         #[arg(long, default_value = "10.9.0.1/24")]
         net_addr: String,
+        /// Forward 127.0.0.1:HOSTPORT to the card's CARDPORT through a userspace
+        /// network stack on the ring (no root; "2222:22", or "2222" for port 22).
+        #[arg(long, conflicts_with = "net")]
+        forward: Option<String>,
         /// Also serve the local control socket (at PATH, else
-        /// /run/phictl/control.sock as root or /phictl/control.sock
+        /// /run/phictl/control.sock as root, else phictl/control.sock in the user runtime directory
         /// otherwise) so that exec, put, get and status can drive the card.
         #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         serve: Option<PathBuf>,
@@ -160,6 +165,10 @@ enum Cmd {
         /// IPv4 address with prefix length assigned to the TAP device.
         #[arg(long, default_value = "10.9.0.1/24")]
         net_addr: String,
+        /// Forward 127.0.0.1:HOSTPORT to the card's CARDPORT through a userspace
+        /// network stack on the ring (no root; "2222:22", or "2222" for port 22).
+        #[arg(long, conflicts_with = "net")]
+        forward: Option<String>,
     },
     /// Run a command on the card through the control socket; stdin, stdout,
     /// stderr and the exit status are relayed.
@@ -247,6 +256,7 @@ fn main() -> Result<()> {
             watch,
             net,
             net_addr,
+            forward,
             serve,
             owner,
         } => cmd_boot(
@@ -261,6 +271,7 @@ fn main() -> Result<()> {
             load_only,
             watch,
             net.map(|n| (n, net_addr)),
+            forward,
             serve.map(|p| {
                 let p = if p.as_os_str() == "auto" { serve::default_socket(true) } else { p };
                 (p, owner.unwrap_or_else(serve::default_owner))
@@ -308,9 +319,10 @@ fn main() -> Result<()> {
             watch,
             net,
             net_addr,
+            forward,
         } => {
             let card = open(cli.bdf.as_deref())?;
-            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)))
+            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)), forward)
         }
         Cmd::Exec { socket, cwd, argv } => {
             let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false)), cwd, argv)?;
@@ -494,6 +506,7 @@ fn cmd_boot(
     load_only: bool,
     watch: Option<u64>,
     net: Option<(String, String)>,
+    forward: Option<String>,
     serve: Option<(PathBuf, u32)>,
 ) -> Result<()> {
     let card = open(bdf)?;
@@ -542,7 +555,7 @@ fn cmd_boot(
                     }
                 });
             }
-            console(&card, ring_base, ring_size, watch, net)
+            console(&card, ring_base, ring_size, watch, net, forward)
         })
     } else {
         Ok(())
@@ -551,8 +564,23 @@ fn cmd_boot(
 
 /// Tail the console ring and, when asked, bridge the network channel to a
 /// TAP device from a second thread; both run until Ctrl-C.
-fn console(card: &Card, ring_base: u64, ring_size: u64, watch: Option<u64>, net: Option<(String, String)>) -> Result<()> {
+fn console(
+    card: &Card,
+    ring_base: u64,
+    ring_size: u64,
+    watch: Option<u64>,
+    net: Option<(String, String)>,
+    forward: Option<String>,
+) -> Result<()> {
     thread::scope(|s| {
+        if let Some(spec) = &forward {
+            let (host_port, card_port) = forward::parse_ports(spec)?;
+            s.spawn(move || {
+                if let Err(e) = forward::run(card, ring_base, ring_size, host_port, card_port) {
+                    eprintln!("[phictl] forward: {e:#}");
+                }
+            });
+        }
         if let Some((name, addr)) = &net {
             s.spawn(move || {
                 if let Err(e) = net::bridge(card, ring_base, ring_size, name, addr) {

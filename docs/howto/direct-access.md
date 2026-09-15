@@ -59,3 +59,9 @@ The console log is in `$XDG_RUNTIME_DIR/phictl/console.log`. Only the
 network bridge needs root (a TAP device), so an unattended session has no
 SSH; everything else is available. `setup-arch.sh` also makes vfio-pci
 claim the card at host boot, so no binding step survives a reboot either.
+
+SSH without root (2026-09-14): `scripts/phi-up.sh --ssh` forwards
+`127.0.0.1:2222` to the card's dropbear through a userspace network stack
+inside phictl (`--forward 2222:22`), so `ssh -p 2222 root@localhost` and
+`scp -P 2222` work from an unprivileged boot. The TAP bridge (`--net`) is
+only needed when the card must be a real interface on the host.

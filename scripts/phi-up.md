@@ -16,8 +16,9 @@ background with a control socket, so that `phictl exec`, `put`, `get` and
 - Refuses to start when another `phictl boot` holds the card.
 
 The network bridge (`--net`) is not started: creating a TAP device needs
-root. When SSH is wanted, boot with sudo as in `docs/howto/direct-access.md`
-instead; the client commands find that daemon's socket automatically.
+root. For SSH, `--ssh` forwards a host port through a userspace stack
+instead (`ssh -p 2222 root@localhost`); a sudo boot with `--net` remains
+the way to give the card a real interface on the host.
 
 Companion scripts: `phi-down.sh` halts and releases the card,
 `phi-run.sh CMD` runs a command on it.
@@ -26,3 +27,9 @@ The running-boot check matches command lines that start with the phictl
 binary (optionally behind `sudo`): a plain `pgrep -f "phictl boot"` also
 matched the shell that ran the script when that shell's own command line
 mentioned the pattern.
+
+`--ssh` (2026-09-14) adds `--forward 2222:22`: phictl runs a userspace
+network stack on the ring (`host/crates/phictl/src/forward.md`) and
+forwards `127.0.0.1:2222` to the card's dropbear, so
+`ssh -p 2222 root@localhost` works from an unprivileged boot; the TAP
+bridge is no longer the only way in.

@@ -70,3 +70,10 @@ frames travel through the ring region's network channel to the card's
 `phi0` (kernel patch 0021). The card's init script assigns `10.9.0.2/24`
 and starts dropbear, so `ssh root@10.9.0.2` works as soon as the banner
 shows. See `net.md`.
+
+## Port forwarding without root (`--forward`)
+
+`phictl boot --forward 2222:22` (also on `console`, exclusive with `--net`)
+runs a smoltcp interface on the ring network channel inside phictl and
+forwards a host port to the card, so SSH works from an unprivileged boot:
+`ssh -p 2222 root@localhost`. See `forward.md`.
