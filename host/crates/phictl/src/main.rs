@@ -101,7 +101,7 @@ enum Cmd {
         /// Also serve the local control socket (at PATH, else
         /// /run/phictl/control.sock as root or /phictl/control.sock
         /// otherwise) so that exec, put, get and status can drive the card.
-        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         serve: Option<PathBuf>,
         /// Uid allowed to use the control socket (default: SUDO_UID, else root).
         #[arg(long)]
@@ -262,7 +262,7 @@ fn main() -> Result<()> {
             watch,
             net.map(|n| (n, net_addr)),
             serve.map(|p| {
-                let p = if p.as_os_str().is_empty() { serve::default_socket(true) } else { p };
+                let p = if p.as_os_str() == "auto" { serve::default_socket(true) } else { p };
                 (p, owner.unwrap_or_else(serve::default_owner))
             }),
         ),
