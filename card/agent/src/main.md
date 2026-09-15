@@ -9,7 +9,10 @@ stream) and serves rpc frames (`host/crates/phi-rpc`) one session at a time:
   into `Stdout`/`Stderr` frames (written whole under a lock so frames never
   interleave); the main thread feeds `Stdin` frames to the child until
   `StdinEof` or the child ends, then sends `Exit` (exit status, or 128 plus
-  the signal).
+  the signal). The pumps get 300 ms after the exit to drain the pipes and
+  are then abandoned: a process the command left in the background (a
+  daemon) may keep the pipes open, and its later output is discarded rather
+  than holding the session open.
 - `PutOpen`/`PutData`/`PutClose`: write the file with the requested mode,
   `fsync`, answer `Exit(0)` or `Error`.
 - `Get`: stream the file as `GetData` frames, then `GetEnd { size }`.

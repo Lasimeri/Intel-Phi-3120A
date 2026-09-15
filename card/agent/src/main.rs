@@ -12,8 +12,10 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use phi_rpc::{Decoder, Msg};
 
@@ -33,15 +35,17 @@ impl Link {
     }
 }
 
-/// Copy a child's stream to the host as frames until EOF.
-fn pump(mut src: impl Read + Send + 'static, link: Link, wrap: fn(Vec<u8>) -> Msg) -> thread::JoinHandle<()> {
+/// Copy a child's stream to the host as frames until EOF, or until the
+/// session is abandoned (a daemonised grandchild keeping the pipe open must
+/// not keep the session open too; its later output is discarded).
+fn pump(mut src: impl Read + Send + 'static, link: Link, wrap: fn(Vec<u8>) -> Msg, abandoned: Arc<AtomicBool>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut buf = vec![0u8; CHUNK];
         loop {
             match src.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if link.send(&wrap(buf[..n].to_vec())).is_err() {
+                    if abandoned.load(Ordering::Acquire) || link.send(&wrap(buf[..n].to_vec())).is_err() {
                         break;
                     }
                 }
@@ -49,6 +53,9 @@ fn pump(mut src: impl Read + Send + 'static, link: Link, wrap: fn(Vec<u8>) -> Ms
         }
     })
 }
+
+/// How long output pumps may run on after the command itself has exited.
+const OUTPUT_GRACE: Duration = Duration::from_millis(300);
 
 fn exit_code(child: &mut Child) -> i32 {
     match child.wait() {
@@ -77,8 +84,9 @@ fn run_exec(reader: &mut Reader, link: &Link, argv: Vec<String>, env: Vec<(Strin
         Ok(c) => c,
         Err(e) => return link.send(&Msg::Error(format!("{program}: {e}"))),
     };
-    let out = pump(child.stdout.take().expect("piped"), link.clone(), Msg::Stdout);
-    let err = pump(child.stderr.take().expect("piped"), link.clone(), Msg::Stderr);
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let out = pump(child.stdout.take().expect("piped"), link.clone(), Msg::Stdout, abandoned.clone());
+    let err = pump(child.stderr.take().expect("piped"), link.clone(), Msg::Stderr, abandoned.clone());
     let mut stdin = child.stdin.take();
     // Feed input while the command runs. A command that exits with input
     // still pending simply stops reading; the host learns from Exit.
@@ -106,8 +114,15 @@ fn run_exec(reader: &mut Reader, link: &Link, argv: Vec<String>, env: Vec<(Strin
     }
     drop(stdin);
     let code = exit_code(&mut child);
-    let _ = out.join();
-    let _ = err.join();
+    // Let the pumps drain what the command left in its pipes, then give up
+    // on them: a background process it started may hold the pipes open.
+    let deadline = Instant::now() + OUTPUT_GRACE;
+    for h in [out, err] {
+        while !h.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    abandoned.store(true, Ordering::Release);
     link.send(&Msg::Exit(code))
 }
 

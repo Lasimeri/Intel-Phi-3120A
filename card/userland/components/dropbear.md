@@ -29,5 +29,6 @@ fault on. The compiler is not involved: the same file compiled with
 The initramfs build (`card/initramfs/build.sh`) installs the binary, the
 applet links, the host keys under `/etc/dropbear` and the user's public
 keys (`~/.ssh/id_ed25519.pub`, `id_ecdsa.pub`, `id_rsa.pub`, or
-`PHI_SSH_PUBKEYS`) as root's `authorized_keys`; init starts `dropbear -s -E`
-(public keys only, log to the console).
+`PHI_SSH_PUBKEYS`) as root's `authorized_keys`; init starts `dropbear -s -p 22`
+(public keys only; this build has no syslog, so it logs to stderr, kept
+on the console).

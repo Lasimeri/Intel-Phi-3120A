@@ -25,9 +25,9 @@ else
 	net="no phi0 device"
 fi
 if [ -x /bin/dropbear ]; then
-	# -s: public keys only (root has no password); -R would create keys the
-	# image lacks; -E: log to the console; keys live in /etc/dropbear.
-	/bin/dropbear -s -E -p 22 2>/dev/null
+	# -s: public keys only (root has no password); keys live in /etc/dropbear.
+	# Without syslog support it logs to stderr, kept on the console.
+	/bin/dropbear -s -p 22 2>/dev/console
 	sshd="dropbear on port 22"
 else
 	sshd="no SSH server in this image"

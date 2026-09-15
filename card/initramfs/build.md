@@ -13,7 +13,7 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
   halt, and respawns the shell when one exits.
 - `init` also brings up `lo` and `phi0` (`10.9.0.2/24`, or `PHI_CARD_ADDR`),
   mounts devpts for SSH sessions, and starts dropbear when the image has it
-  (`dropbear -s -E`: public-key logins only; root has no password).
+  (`dropbear -s -p 22`: public-key logins only; root has no password).
 - dropbear, when `card/userland/components/dropbear.sh` has built it: the
   static multi-call binary and its links (`dropbear`, `dropbearkey`,
   `dbclient`, `scp`, `ssh`), host keys under `/etc/dropbear`, and the
