@@ -20,6 +20,7 @@ use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
 
 mod client;
+mod disk;
 mod forward;
 mod net;
 mod serve;
@@ -76,7 +77,7 @@ enum Cmd {
         #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
         ring_base: u64,
         /// Size of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x200000")]
+        #[arg(long, value_parser = parse_u64, default_value = "0x1000000")]
         ring_size: u64,
         /// Use the command line exactly as given (no memmap/phi.ring parameters).
         #[arg(long)]
@@ -108,6 +109,10 @@ enum Cmd {
         /// otherwise) so that exec, put, get and status can drive the card.
         #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         serve: Option<PathBuf>,
+        /// Serve this disk image to the card as /dev/phiblk0 through the ring's
+        /// block channel (no root; the card mounts it on /data, see disk.md).
+        #[arg(long)]
+        disk: Option<PathBuf>,
         /// Uid allowed to use the control socket (default: SUDO_UID, else root).
         #[arg(long)]
         owner: Option<u32>,
@@ -154,7 +159,7 @@ enum Cmd {
         #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
         ring_base: u64,
         /// Size of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x200000")]
+        #[arg(long, value_parser = parse_u64, default_value = "0x1000000")]
         ring_size: u64,
         /// Also watch a 32-bit word in card memory and print changes.
         #[arg(long, value_parser = parse_u64)]
@@ -257,6 +262,7 @@ fn main() -> Result<()> {
             net,
             net_addr,
             forward,
+            disk,
             serve,
             owner,
         } => cmd_boot(
@@ -272,6 +278,7 @@ fn main() -> Result<()> {
             watch,
             net.map(|n| (n, net_addr)),
             forward,
+            disk,
             serve.map(|p| {
                 let p = if p.as_os_str() == "auto" { serve::default_socket(true) } else { p };
                 (p, owner.unwrap_or_else(serve::default_owner))
@@ -322,7 +329,7 @@ fn main() -> Result<()> {
             forward,
         } => {
             let card = open(cli.bdf.as_deref())?;
-            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)), forward)
+            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)), forward, None)
         }
         Cmd::Exec { socket, cwd, argv } => {
             let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false)), cwd, argv)?;
@@ -507,6 +514,7 @@ fn cmd_boot(
     watch: Option<u64>,
     net: Option<(String, String)>,
     forward: Option<String>,
+    disk: Option<PathBuf>,
     serve: Option<(PathBuf, u32)>,
 ) -> Result<()> {
     let card = open(bdf)?;
@@ -555,7 +563,7 @@ fn cmd_boot(
                     }
                 });
             }
-            console(&card, ring_base, ring_size, watch, net, forward)
+            console(&card, ring_base, ring_size, watch, net, forward, disk)
         })
     } else {
         Ok(())
@@ -571,6 +579,7 @@ fn console(
     watch: Option<u64>,
     net: Option<(String, String)>,
     forward: Option<String>,
+    disk: Option<PathBuf>,
 ) -> Result<()> {
     thread::scope(|s| {
         if let Some(spec) = &forward {
@@ -578,6 +587,13 @@ fn console(
             s.spawn(move || {
                 if let Err(e) = forward::run(card, ring_base, ring_size, host_port, card_port) {
                     eprintln!("[phictl] forward: {e:#}");
+                }
+            });
+        }
+        if let Some(path) = &disk {
+            s.spawn(move || {
+                if let Err(e) = disk::run(card, ring_base, ring_size, path) {
+                    eprintln!("[phictl] disk: {e:#}");
                 }
             });
         }

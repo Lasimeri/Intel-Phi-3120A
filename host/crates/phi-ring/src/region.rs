@@ -14,6 +14,9 @@ pub struct ChannelPlan {
     pub h2c_size: u32,
     /// Card-to-host data bytes (power of two).
     pub c2h_size: u32,
+    /// Bytes of data area after the rings (0 for none). The block channel
+    /// uses it for bounce slots.
+    pub data_size: u32,
 }
 
 /// A channel as found in a formatted region.
@@ -25,6 +28,10 @@ pub struct ChannelView {
     pub h2c_offset: usize,
     /// Region offset of the card-to-host ring header.
     pub c2h_offset: usize,
+    /// Region offset of the data area (0 = none).
+    pub data_offset: usize,
+    /// Size of the data area.
+    pub data_size: u32,
 }
 
 /// A validated region.
@@ -62,7 +69,17 @@ impl Region {
                 kind: p.kind,
                 h2c_offset: h2c,
                 c2h_offset: c2h,
+                data_offset: 0,
+                data_size: p.data_size,
             });
+        }
+        // Data areas after every ring, page aligned.
+        for v in views.iter_mut() {
+            if v.data_size > 0 {
+                cursor = align_up(cursor, 4096);
+                v.data_offset = cursor;
+                cursor = align_up(cursor + v.data_size as usize, 4096);
+            }
         }
         if cursor > region_size {
             return Err(Error::DoesNotFit(cursor, region_size));
@@ -83,6 +100,8 @@ impl Region {
             mem.write_u32(d + channel_desc::H2C_SIZE, p.h2c_size);
             mem.write_u32(d + channel_desc::C2H_OFFSET, v.c2h_offset as u32);
             mem.write_u32(d + channel_desc::C2H_SIZE, p.c2h_size);
+            mem.write_u32(d + channel_desc::DATA_OFFSET, v.data_offset as u32);
+            mem.write_u32(d + channel_desc::DATA_SIZE, v.data_size);
         }
         mem.write_u32(region_hdr::VERSION, VERSION);
         mem.write_u32(region_hdr::REGION_SIZE, region_size as u32);
@@ -121,6 +140,8 @@ impl Region {
                     kind,
                     h2c_offset,
                     c2h_offset,
+                    data_offset: mem.read_u32(d + channel_desc::DATA_OFFSET) as usize,
+                    data_size: mem.read_u32(d + channel_desc::DATA_SIZE),
                 });
             }
         }
@@ -165,11 +186,13 @@ mod tests {
             kind: ChannelKind::Console,
             h2c_size: 4096,
             c2h_size: 65536,
+            data_size: 0,
         },
         ChannelPlan {
             kind: ChannelKind::Network,
             h2c_size: 262_144,
             c2h_size: 262_144,
+            data_size: 0,
         },
     ];
 

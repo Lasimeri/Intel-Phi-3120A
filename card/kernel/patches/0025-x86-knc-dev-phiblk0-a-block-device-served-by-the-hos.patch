@@ -1,0 +1,473 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ian Haapanen <ian.haapanen@gmail.com>
+Date: Wed, 16 Sep 2026 12:56:36 -0500
+Subject: [PATCH] x86/knc: /dev/phiblk0, a block device served by the host over
+ ring channel 4
+
+The host tool serves a disk image to the card through a fourth ring
+channel: the card posts 32-byte request records (tag, operation, byte
+length, sector, card physical address of a bounce slot) and the host
+answers with 8-byte completions; an identify record returns the capacity.
+A blk-mq driver with one hardware queue turns the channel into
+/dev/phiblk0; a kernel thread polls the completion ring, spinning briefly
+after activity and sleeping 200 us at a time when idle, and registers the
+disk from a workqueue once identify is answered (add_disk reads the
+device, so it cannot run on the poller).
+
+Data goes through 512 KiB bounce slots in the channel's data area, part of
+the ring region and mapped uncached. Handing page-cache pages to the host
+directly does not work: host writes through the PCIe aperture are not seen
+by the cores' caches (measured 2026-09-16, a page the card had just
+written kept its old contents after the host wrote it, in both memory
+zones). One slot per in-flight request makes the request tag the slot
+number; the queue depth is the slot count (16 for an 8 MiB area).
+
+The poller resynchronises on an impossible byte count, the same guard the
+other channels carry: the host's index writes went out byte by byte until
+fixed in the host tool, and a torn head produced floods of zero
+completions.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/knc_ring.h |   3 +
+ arch/x86/kernel/Makefile        |   2 +-
+ arch/x86/kernel/knc_blk.c       | 396 ++++++++++++++++++++++++++++++++
+ 3 files changed, 400 insertions(+), 1 deletion(-)
+ create mode 100644 arch/x86/kernel/knc_blk.c
+
+diff --git a/arch/x86/include/asm/knc_ring.h b/arch/x86/include/asm/knc_ring.h
+index f9be57011..1881ae9e2 100644
+--- a/arch/x86/include/asm/knc_ring.h
++++ b/arch/x86/include/asm/knc_ring.h
+@@ -17,6 +17,7 @@
+ #define PHI_CHANNEL_CONSOLE	1
+ #define PHI_CHANNEL_NETWORK	2
+ #define PHI_CHANNEL_RPC		3	/* command and file transport for the host tool */
++#define PHI_CHANNEL_BLOCK	4	/* block device requests and completions */
+ 
+ /* Region header at offset 0. */
+ #define REGION_MAGIC		0
+@@ -34,6 +35,8 @@
+ #define DESC_H2C_SIZE		12	/* data bytes, power of two */
+ #define DESC_C2H_OFFSET		16	/* card-to-host ring */
+ #define DESC_C2H_SIZE		20
++#define DESC_DATA_OFFSET	24	/* data area (block bounce slots), 0 = none */
++#define DESC_DATA_SIZE		28
+ 
+ /* One ring per direction: header, then `size` data bytes at RING_DATA. */
+ #define RING_MAGIC		0
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 7be738c6e..06e614355 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_blk.c b/arch/x86/kernel/knc_blk.c
+new file mode 100644
+index 000000000..c609f22eb
+--- /dev/null
++++ b/arch/x86/kernel/knc_blk.c
+@@ -0,0 +1,396 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * knc_blk.c - /dev/phiblk0: a block device whose storage is a file on the
++ * host, served by phictl boot --disk over the ring region's kind-4 channel
++ * (asm/knc_ring.h, docs/spec/ring-protocol.md in the project tree).
++ *
++ * Every request is one 32-byte record in the card-to-host ring: tag,
++ * operation, byte length, start sector and the card physical address of a
++ * bounce slot in the channel's data area, a part of the ring region the
++ * card maps uncached. The host copies between its image file and the
++ * slot; this driver copies between the slot and the request's pages. The
++ * bounce exists because host writes through the PCIe aperture are not
++ * seen by the cores' caches (measured 2026-09-16: a page the card had
++ * just written kept its old contents after the host wrote it, in both
++ * memory zones), so page-cache pages cannot be handed to the host
++ * directly; uncached memory, like the rings themselves, is safe. The DMA
++ * engine is the way past the copy.
++ *
++ * Slots are 512 KiB and there is one per in-flight request, so the tag is
++ * the slot number and the queue depth is the slot count. A kernel thread
++ * polls the completion ring (a spin after activity, 200 us sleeps when
++ * idle), copies read data out of the slot and completes the request.
++ * Capacity comes from an identify record posted at init; the disk is
++ * registered from a workqueue when the host answers it (add_disk reads
++ * the device, so not from the poller).
++ */
++#include <linux/bio.h>
++#include <linux/blk-mq.h>
++#include <linux/blkdev.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/kthread.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/unaligned.h>
++#include <linux/workqueue.h>
++
++#include <asm/knc.h>
++#include <asm/knc_ring.h>
++
++#define KNC_BLK_REQ_SIZE	32
++#define KNC_BLK_CPL_SIZE	8
++#define KNC_BLK_OP_READ		0
++#define KNC_BLK_OP_WRITE	1
++#define KNC_BLK_OP_FLUSH	2
++#define KNC_BLK_OP_IDENT	3
++#define KNC_BLK_SLOT		SZ_512K	/* bytes per request */
++#define KNC_BLK_MAX_SLOTS	32
++#define KNC_BLK_IDENT_TAG	0xffffffffu
++#define KNC_BLK_SPIN		2000	/* idle polls before sleeping */
++
++struct knc_blk_cmd {
++	blk_status_t status;
++};
++
++struct knc_blk {
++	void __iomem *region;
++	void __iomem *tx;		/* card-to-host: requests */
++	void __iomem *rx;		/* host-to-card: completions */
++	u32 tx_size, rx_size;
++	u32 tx_head, rx_tail;
++	void __iomem *data;		/* the bounce slots */
++	u64 data_phys;
++	u32 slots;
++	spinlock_t lock;		/* tx_head and reqs[] */
++	struct request *reqs[KNC_BLK_MAX_SLOTS];
++	u64 capacity;			/* sectors */
++	struct blk_mq_tag_set set;
++	struct gendisk *disk;
++	struct task_struct *poller;
++	struct work_struct register_work;
++	u32 ident_sectors;
++	int major;
++};
++
++static struct knc_blk *knc_blk;
++
++static void __iomem *knc_blk_slot(struct knc_blk *b, u32 tag)
++{
++	return b->data + (size_t)tag * KNC_BLK_SLOT;
++}
++
++/* Copy a request's data between its pages and its slot, in request order. */
++static void knc_blk_copy(struct request *rq, void __iomem *slot, bool to_slot)
++{
++	struct req_iterator iter;
++	struct bio_vec bv;
++	u32 off = 0;
++
++	rq_for_each_segment(bv, rq, iter) {
++		void *p = page_address(bv.bv_page) + bv.bv_offset;
++
++		if (to_slot)
++			memcpy_toio(slot + off, p, bv.bv_len);
++		else
++			memcpy_fromio(p, slot + off, bv.bv_len);
++		off += bv.bv_len;
++	}
++}
++
++/* Append one request record; the caller holds the lock and publishes. */
++static void knc_blk_post(struct knc_blk *b, u32 tag, u32 op, u32 len, u64 sector, u64 phys)
++{
++	u8 rec[KNC_BLK_REQ_SIZE];
++
++	put_unaligned_le32(tag, rec);
++	put_unaligned_le32(op, rec + 4);
++	put_unaligned_le32(len, rec + 8);
++	put_unaligned_le32(0, rec + 12);
++	put_unaligned_le64(sector, rec + 16);
++	put_unaligned_le64(phys, rec + 24);
++	knc_ring_write(b->tx, b->tx_size, b->tx_head, rec, KNC_BLK_REQ_SIZE);
++	b->tx_head += KNC_BLK_REQ_SIZE;
++}
++
++static void knc_blk_publish(struct knc_blk *b)
++{
++	wmb();	/* records before the head that publishes them */
++	writel(b->tx_head, b->tx + RING_HEAD);
++}
++
++static u32 knc_blk_tx_free(struct knc_blk *b)
++{
++	return b->tx_size - (b->tx_head - readl(b->tx + RING_TAIL));
++}
++
++static blk_status_t knc_blk_queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data *bd)
++{
++	struct request *rq = bd->rq;
++	struct knc_blk *b = hctx->queue->queuedata;
++	struct knc_blk_cmd *cmd = blk_mq_rq_to_pdu(rq);
++	u32 tag = rq->tag, len = 0, op;
++	unsigned long flags;
++
++	switch (req_op(rq)) {
++	case REQ_OP_READ:
++		op = KNC_BLK_OP_READ;
++		len = blk_rq_bytes(rq);
++		break;
++	case REQ_OP_WRITE:
++		op = KNC_BLK_OP_WRITE;
++		len = blk_rq_bytes(rq);
++		break;
++	case REQ_OP_FLUSH:
++		op = KNC_BLK_OP_FLUSH;
++		break;
++	default:
++		return BLK_STS_NOTSUPP;
++	}
++	if (tag >= b->slots || len > KNC_BLK_SLOT)
++		return BLK_STS_IOERR;
++	if (op == KNC_BLK_OP_WRITE)
++		knc_blk_copy(rq, knc_blk_slot(b, tag), true);
++	spin_lock_irqsave(&b->lock, flags);
++	if (knc_blk_tx_free(b) < KNC_BLK_REQ_SIZE) {
++		spin_unlock_irqrestore(&b->lock, flags);
++		return BLK_STS_DEV_RESOURCE;
++	}
++	blk_mq_start_request(rq);
++	cmd->status = BLK_STS_OK;
++	b->reqs[tag] = rq;
++	knc_blk_post(b, tag, op, len, blk_rq_pos(rq), b->data_phys + (u64)tag * KNC_BLK_SLOT);
++	knc_blk_publish(b);
++	spin_unlock_irqrestore(&b->lock, flags);
++	return BLK_STS_OK;
++}
++
++static void knc_blk_complete(struct request *rq)
++{
++	struct knc_blk_cmd *cmd = blk_mq_rq_to_pdu(rq);
++
++	blk_mq_end_request(rq, cmd->status);
++}
++
++static const struct blk_mq_ops knc_blk_mq_ops = {
++	.queue_rq	= knc_blk_queue_rq,
++	.complete	= knc_blk_complete,
++};
++
++static const struct block_device_operations knc_blk_fops = {
++	.owner		= THIS_MODULE,
++};
++
++/*
++ * Register the disk once the host has answered identify. Runs from a
++ * workqueue: add_disk() scans the partition table, which needs the polling
++ * thread free to complete those reads.
++ */
++static void knc_blk_register(struct knc_blk *b, u32 sectors)
++{
++	struct queue_limits lim = {
++		.logical_block_size	= 512,
++		.physical_block_size	= 4096,
++		.max_hw_sectors		= KNC_BLK_SLOT >> 9,
++		.max_segments		= 128,
++		.max_segment_size	= KNC_BLK_SLOT,
++		.features		= BLK_FEAT_WRITE_CACHE,
++	};
++	int err;
++
++	b->capacity = sectors;
++	b->major = register_blkdev(0, "phiblk");
++	if (b->major < 0) {
++		pr_err("KNC: blk: register_blkdev: %d\n", b->major);
++		return;
++	}
++	memset(&b->set, 0, sizeof(b->set));
++	b->set.ops = &knc_blk_mq_ops;
++	b->set.nr_hw_queues = 1;
++	b->set.queue_depth = b->slots;
++	b->set.numa_node = NUMA_NO_NODE;
++	b->set.cmd_size = sizeof(struct knc_blk_cmd);
++	err = blk_mq_alloc_tag_set(&b->set);
++	if (err) {
++		pr_err("KNC: blk: blk_mq_alloc_tag_set: %d\n", err);
++		goto out_major;
++	}
++	b->disk = blk_mq_alloc_disk(&b->set, &lim, b);
++	if (IS_ERR(b->disk)) {
++		err = PTR_ERR(b->disk);
++		pr_err("KNC: blk: blk_mq_alloc_disk: %d\n", err);
++		goto out_set;
++	}
++	b->disk->major = b->major;
++	b->disk->first_minor = 0;
++	b->disk->minors = 16;
++	b->disk->fops = &knc_blk_fops;
++	b->disk->private_data = b;
++	strscpy(b->disk->disk_name, "phiblk0", sizeof(b->disk->disk_name));
++	set_capacity(b->disk, b->capacity);
++	err = add_disk(b->disk);
++	if (err) {
++		pr_err("KNC: blk: add_disk: %d\n", err);
++		put_disk(b->disk);
++		b->disk = NULL;
++		goto out_set;
++	}
++	pr_info("KNC: blk: /dev/phiblk0, %llu MiB served by the host, %u slots of %u KiB\n",
++		b->capacity >> 11, b->slots, KNC_BLK_SLOT >> 10);
++	return;
++
++out_set:
++	blk_mq_free_tag_set(&b->set);
++out_major:
++	unregister_blkdev(b->major, "phiblk");
++	b->major = 0;
++}
++
++static void knc_blk_register_work(struct work_struct *work)
++{
++	struct knc_blk *b = container_of(work, struct knc_blk, register_work);
++
++	knc_blk_register(b, b->ident_sectors);
++}
++
++static void knc_blk_complete_one(struct knc_blk *b, u32 tag, u32 status)
++{
++	struct request *rq;
++	struct knc_blk_cmd *cmd;
++	unsigned long flags;
++
++	if (tag == KNC_BLK_IDENT_TAG) {
++		if (b->disk || b->ident_sectors)
++			return;
++		if (status) {
++			b->ident_sectors = status;
++			schedule_work(&b->register_work);
++		} else {
++			pr_info("KNC: blk: the host serves no disk\n");
++		}
++		return;
++	}
++	if (tag >= b->slots) {
++		pr_warn_ratelimited("KNC: blk: completion for unknown tag %#x status %u\n", tag, status);
++		return;
++	}
++	spin_lock_irqsave(&b->lock, flags);
++	rq = b->reqs[tag];
++	b->reqs[tag] = NULL;
++	spin_unlock_irqrestore(&b->lock, flags);
++	if (!rq) {
++		pr_warn_ratelimited("KNC: blk: completion for idle tag %#x status %u\n", tag, status);
++		return;
++	}
++	cmd = blk_mq_rq_to_pdu(rq);
++	if (status)
++		cmd->status = BLK_STS_IOERR;
++	else if (req_op(rq) == REQ_OP_READ)
++		knc_blk_copy(rq, knc_blk_slot(b, tag), false);
++	blk_mq_complete_request(rq);
++}
++
++static int knc_blk_poll(void *data)
++{
++	struct knc_blk *b = data;
++	unsigned int idle = 0;
++
++	while (!kthread_should_stop()) {
++		u32 n = readl(b->rx + RING_HEAD) - b->rx_tail;
++
++		if (n > b->rx_size) {
++			/* An impossible count: the index was read torn or reset. Resynchronise. */
++			pr_warn_ratelimited("KNC: blk: completion ring indices inconsistent (%u bytes), resynchronising\n", n);
++			b->rx_tail += n;
++			writel(b->rx_tail, b->rx + RING_TAIL);
++			continue;
++		}
++		if (n < KNC_BLK_CPL_SIZE) {
++			if (++idle < KNC_BLK_SPIN)
++				cpu_relax();
++			else
++				usleep_range(200, 400);
++			continue;
++		}
++		idle = 0;
++		while (n >= KNC_BLK_CPL_SIZE) {
++			u8 rec[KNC_BLK_CPL_SIZE];
++
++			knc_ring_read(b->rx, b->rx_size, b->rx_tail, rec, KNC_BLK_CPL_SIZE);
++			b->rx_tail += KNC_BLK_CPL_SIZE;
++			n -= KNC_BLK_CPL_SIZE;
++			wmb();	/* record consumed before the host may overwrite it */
++			writel(b->rx_tail, b->rx + RING_TAIL);
++			knc_blk_complete_one(b, get_unaligned_le32(rec), get_unaligned_le32(rec + 4));
++		}
++	}
++	return 0;
++}
++
++static int __init knc_blk_init(void)
++{
++	struct knc_blk *b;
++	void __iomem *region, *desc;
++	u64 base, size;
++	u32 h2c_off, h2c_size, c2h_off, c2h_size, data_off, data_size, i;
++
++	if (!knc_ring_params(&base, &size))
++		return -ENODEV;
++	region = ioremap(base, size);
++	if (!region)
++		return -ENOMEM;
++	if (!knc_ring_find(region, size, PHI_CHANNEL_BLOCK, &h2c_off, &h2c_size, &c2h_off, &c2h_size)) {
++		pr_info("KNC: blk: no block channel in the ring region\n");
++		iounmap(region);
++		return -ENODEV;
++	}
++	data_off = data_size = 0;
++	for (i = 0; i < 8; i++) {
++		desc = region + REGION_DESC(i);
++		if (readl(desc + DESC_KIND) == PHI_CHANNEL_BLOCK) {
++			data_off = readl(desc + DESC_DATA_OFFSET);
++			data_size = readl(desc + DESC_DATA_SIZE);
++			break;
++		}
++	}
++	if (data_size < KNC_BLK_SLOT || (u64)data_off + data_size > size) {
++		pr_info("KNC: blk: block channel without a usable data area (%u bytes at %u)\n", data_size, data_off);
++		iounmap(region);
++		return -ENODEV;
++	}
++	b = kzalloc(sizeof(*b), GFP_KERNEL);
++	if (!b) {
++		iounmap(region);
++		return -ENOMEM;
++	}
++	b->region = region;
++	b->rx = region + h2c_off;
++	b->rx_size = h2c_size;
++	b->tx = region + c2h_off;
++	b->tx_size = c2h_size;
++	b->rx_tail = readl(b->rx + RING_TAIL);
++	b->tx_head = readl(b->tx + RING_HEAD);
++	b->data = region + data_off;
++	b->data_phys = base + data_off;
++	b->slots = min_t(u32, data_size / KNC_BLK_SLOT, KNC_BLK_MAX_SLOTS);
++	spin_lock_init(&b->lock);
++	INIT_WORK(&b->register_work, knc_blk_register_work);
++	knc_blk = b;
++	b->poller = kthread_run(knc_blk_poll, b, "phiblk-poll");
++	if (IS_ERR(b->poller)) {
++		int err = PTR_ERR(b->poller);
++
++		kfree(b);
++		knc_blk = NULL;
++		iounmap(region);
++		return err;
++	}
++	spin_lock_irq(&b->lock);
++	knc_blk_post(b, KNC_BLK_IDENT_TAG, KNC_BLK_OP_IDENT, 0, 0, 0);
++	knc_blk_publish(b);
++	spin_unlock_irq(&b->lock);
++	pr_info("KNC: blk: block channel found, %u bounce slots at %#llx, identify posted\n", b->slots, b->data_phys);
++	return 0;
++}
++device_initcall(knc_blk_init);

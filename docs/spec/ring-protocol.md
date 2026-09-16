@@ -114,3 +114,46 @@ On the card the channel is `/dev/phirpc` (kernel patch 0022); on the host
 `phictl boot --serve` reads and writes the rings through `phi-ring`. The
 default plan gives the channel 256 KiB per direction, which is why the
 region grew from 1 MiB to 2 MiB (`phictl --ring-size` default `0x200000`).
+
+## Block channel (kind 4)
+
+The card's `/dev/phiblk0` (kernel patch 0025, `arch/x86/kernel/knc_blk.c`)
+and the host's `phictl boot --disk PATH` (`host/crates/phictl/src/disk.rs`)
+carry fixed-size records instead of a byte stream, and the channel has a
+data area after its rings (descriptor fields `DATA_OFFSET` at 24 and
+`DATA_SIZE` at 28, 0 for channels without one) holding bounce slots of
+512 KiB. Card to host, one 32-byte record per block request,
+little-endian:
+
+| offset | field | meaning |
+| --- | --- | --- |
+| 0 | tag u32 | the request's tag, which is also its slot number; `0xffffffff` for identify |
+| 4 | op u32 | 0 read, 1 write, 2 flush, 3 identify |
+| 8 | len u32 | bytes, a multiple of 512, at most 524288; 0 for flush and identify |
+| 12 | reserved u32 | 0 |
+| 16 | sector u64 | first 512-byte sector |
+| 24 | phys u64 | card physical address of the request's slot |
+
+Host to card, 8 bytes per completion: tag u32, status u32 (0 ok, else an
+errno; the capacity in sectors for identify, 0 meaning no disk). For a
+write the card copies the request's pages into its slot before posting;
+for a read it copies the slot into the pages after the completion. The
+host copies between the slot and the image file through the aperture.
+
+Why a bounce rather than the page-cache pages themselves: host writes
+through the PCIe aperture are not seen by the cores' caches. Measured
+2026-09-16: a page the card had just written kept its old contents after
+the host had written it, for pages above and below 4 GiB alike, and data
+handed over that way corrupted the filesystem and neighbouring processes.
+The ring region is mapped uncached on the card, so its data area is safe,
+exactly like the rings. The DMA engine's transfers are expected to take
+the coherent path and to remove the copy.
+
+Sizes: 16 KiB host-to-card, 64 KiB card-to-host, 8 MiB data area (16
+slots, the queue depth); the default region grew from 2 to 16 MiB for it.
+Both ends poll: a spin of a few milliseconds after activity, then 200 us
+sleeps. The identify record is posted by the driver's initcall and
+answered once the host tool serves (after POST K7); `init` waits up to 5 s
+for the device. Indices are single 32-bit accesses on both sides: the
+host's byte-wise index writes were the cause of torn heads before
+2026-09-16.

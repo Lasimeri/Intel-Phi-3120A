@@ -37,6 +37,18 @@ impl RingMemory for ApertureRegion<'_> {
         assert!(off + data.len() <= self.len, "ring write outside region");
         self.aperture.write_bytes(self.base + off, data);
     }
+    // Ring indices must move as one 32-bit access: the generic byte copy
+    // would issue four byte writes and the card could read a torn index
+    // (measured 2026-09-16: completions for tag 0 with status 0 and a hung
+    // block device once the host published a head byte by byte).
+    fn read_u32(&self, off: usize) -> u32 {
+        assert!(off + 4 <= self.len, "ring read outside region");
+        self.aperture.read32(self.base + off)
+    }
+    fn write_u32(&mut self, off: usize, v: u32) {
+        assert!(off + 4 <= self.len, "ring write outside region");
+        self.aperture.write32(self.base + off, v);
+    }
     fn fence(&mut self) {
         // A PCIe read cannot complete before earlier posted writes from this
         // CPU reach the device: reading anything in the region drains them.

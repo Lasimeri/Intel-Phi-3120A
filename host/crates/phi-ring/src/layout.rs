@@ -49,6 +49,11 @@ pub mod channel_desc {
     pub const C2H_OFFSET: usize = 16;
     /// u32 data size of the card-to-host ring.
     pub const C2H_SIZE: usize = 20;
+    /// u32 region offset of the channel's data area (0 = none): bounce
+    /// slots for the block channel, 4096-byte aligned.
+    pub const DATA_OFFSET: usize = 24;
+    /// u32 size of the data area in bytes.
+    pub const DATA_SIZE: usize = 28;
 }
 
 /// Offsets inside `phi_ring`, relative to the ring's start.
@@ -75,6 +80,9 @@ pub enum ChannelKind {
     Network = 2,
     /// Framed rpc messages for the host tool (phi-rpc): commands and files.
     Rpc = 3,
+    /// Block device: 32-byte request records from the card, 8-byte
+    /// completions from the host (kernel patch 0025, phictl boot --disk).
+    Block = 4,
 }
 
 impl ChannelKind {
@@ -84,6 +92,7 @@ impl ChannelKind {
             1 => Some(Self::Console),
             2 => Some(Self::Network),
             3 => Some(Self::Rpc),
+            4 => Some(Self::Block),
             _ => None,
         }
     }

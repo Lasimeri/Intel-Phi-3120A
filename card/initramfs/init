@@ -14,6 +14,27 @@
 /bin/busybox mkdir -p /dev/pts
 /bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null
 /bin/busybox hostname phi
+# Persistent storage: /dev/phiblk0 is a disk image on the host served over
+# the ring (kernel patch 0025, phictl boot --disk). It appears once the host
+# answers the driver's identify request, shortly after init starts.
+disk="no disk"
+i=0
+while [ $i -lt 5 ] && [ ! -b /dev/phiblk0 ]; do /bin/busybox sleep 1; i=$((i+1)); done
+if [ -b /dev/phiblk0 ]; then
+	/bin/busybox mkdir -p /data
+	if /bin/busybox mount -t ext4 -o noatime /dev/phiblk0 /data 2>/dev/console; then
+		# /opt/phi, /root and /home live on the disk. Root's .ssh comes from
+		# the image on every boot, so a rebuilt image stays authoritative.
+		/bin/busybox mkdir -p /data/opt/phi /data/root /data/home /opt/phi /home
+		/bin/busybox cp -a /root/.ssh /data/root/
+		/bin/busybox mount --bind /data/opt/phi /opt/phi
+		/bin/busybox mount --bind /data/root /root
+		/bin/busybox mount --bind /data/home /home
+		disk="/dev/phiblk0 on /data, $(/bin/busybox df -h /data | /bin/busybox awk 'NR==2 {print $2" total, "$4" free"}')"
+	else
+		disk="/dev/phiblk0 present but not mounted"
+	fi
+fi
 # phi0 is the Ethernet device over the host/card ring (kernel patch 0021);
 # the host side is phictl boot --net phi0, 10.9.0.1/24 by default.
 /bin/busybox ip link set lo up
@@ -44,6 +65,7 @@ echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) 
 /bin/busybox grep -m1 "model name" /proc/cpuinfo
 /bin/busybox free -m | /bin/busybox head -2
 echo "network: $net; $sshd; $agent"
+echo "storage: $disk"
 echo "type 'poweroff' to halt the card"
 echo
 trap '/bin/busybox poweroff -f' USR1 USR2 TERM

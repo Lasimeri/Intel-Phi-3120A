@@ -37,3 +37,15 @@ archive at 128 MiB (Intel's slot) and patches the bzImage header. With
 `console=ttyPHI0` the kernel console moves from the boot console to the
 tty driver (patch 0016), which is what gives init a `/dev/console`; what
 you type into `phictl console` arrives on it.
+
+## Persistent storage (2026-09-16)
+
+`init` waits up to 5 s for `/dev/phiblk0`, the block device the host
+serves from a disk image (`phictl boot --disk`, kernel patch 0025), mounts
+it as ext4 on `/data` and bind-mounts `/data/opt/phi`, `/data/root` and
+`/data/home` over the image's `/opt/phi`, `/root` and `/home`. Root's
+`.ssh` directory is copied from the image into `/data/root` first on every
+boot, so the authorized keys baked into the initramfs stay authoritative.
+The toolchain pushed once with `clang-push.sh` then survives reboots.
+Without a disk the boot continues after the wait with everything in RAM as
+before.

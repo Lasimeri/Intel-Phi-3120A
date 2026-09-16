@@ -13,6 +13,10 @@ background with a control socket, so that `phictl exec`, `put`, `get` and
 - Waits up to 90 s for the agent (about 15 s from a cold open: 9.5 s of
   GDDR training, 4 s of kernel), then prints the status line.
 - `--toolchain` also loads the native clang (`clang-push.sh`, 25 s).
+- `--ssh` forwards 127.0.0.1:2222 to the card's SSH server through the ring.
+- `--disk PATH` (or `PHI_DISK`) serves a disk image as `/dev/phiblk0`; `init`
+  mounts it on `/data` and binds `/opt/phi`, `/root` and `/home` from it, so
+  `--toolchain` is needed once per image, not per boot.
 - Refuses to start when another `phictl boot` holds the card.
 
 The network bridge (`--net`) is not started: creating a TAP device needs

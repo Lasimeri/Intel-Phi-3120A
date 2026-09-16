@@ -23,3 +23,4 @@
 0022-x86-knc-dev-phirpc-a-byte-stream-to-the-host-tool-ov.patch
 0023-x86-knc-leave-the-SBOX-I-O-APIC-unregistered-for-now.patch
 0024-x86-knc-save-and-restore-the-vector-unit-state-on-co.patch
+0025-x86-knc-dev-phiblk0-a-block-device-served-by-the-hos.patch
