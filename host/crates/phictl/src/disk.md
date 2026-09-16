@@ -20,13 +20,18 @@ The host answers each record with an 8-byte completion in the
 host-to-card ring: tag u32, status u32 (0 ok, else an errno: 5 for an
 I/O error, 22 for a bad record, 95 for an unknown operation). For
 identify the status is the capacity in sectors; a capacity of 0 means no
-disk. Reads copy from the image file into the request's bounce slot in card
-memory through the aperture's paced write path (phi-hw,
-`write_card_memory`); writes copy out of the slot and into the file; flush
-is `fdatasync`. The slots live in the uncached ring region because host
+disk. Data moves with the DMA engine when `open_path` brings it up (channel 0,
+ring and a 512 KiB buffer pinned in host memory, `phi-hw/src/dma.rs`) and
+passes a self-test through card memory the card does not use (the last
+MiB of the ring region): a read is `pread` into the pinned buffer then one
+DMA descriptor into the card address the record names; a write is the
+reverse. The identify answer then carries tag `0xfffffffe`, and the card
+hands its pages over directly. Without the engine (`--no-dma`, or a
+failed self-test) the host copies through the aperture and answers with
+tag `0xffffffff`, and the card bounces through its uncached slots, since
 aperture writes are not seen by the card's caches (measured 2026-09-16,
-`docs/results/2026-09-16-storage.md`), so page-cache pages cannot be
-handed over directly.
+`docs/results/2026-09-16-storage.md`). Flush is `fdatasync`. Set
+`PHICTL_DISK_TRACE=1` to log the first 40 records.
 
 Records are served one at a time in order. The thread spins for 3 ms
 after the last record, then polls every 200 us; the same policy runs on

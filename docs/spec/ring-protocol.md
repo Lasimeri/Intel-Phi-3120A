@@ -135,19 +135,26 @@ little-endian:
 | 24 | phys u64 | card physical address of the request's slot |
 
 Host to card, 8 bytes per completion: tag u32, status u32 (0 ok, else an
-errno; the capacity in sectors for identify, 0 meaning no disk). For a
-write the card copies the request's pages into its slot before posting;
-for a read it copies the slot into the pages after the completion. The
-host copies between the slot and the image file through the aperture.
+errno; the capacity in sectors for identify, 0 meaning no disk).
 
-Why a bounce rather than the page-cache pages themselves: host writes
-through the PCIe aperture are not seen by the cores' caches. Measured
-2026-09-16: a page the card had just written kept its old contents after
-the host had written it, for pages above and below 4 GiB alike, and data
-handed over that way corrupted the filesystem and neighbouring processes.
-The ring region is mapped uncached on the card, so its data area is safe,
-exactly like the rings. The DMA engine's transfers are expected to take
-the coherent path and to remove the copy.
+Two data paths, chosen by the host through the tag of its identify
+answer:
+
+- `0xfffffffe`, direct: the host's path into card memory is coherent with
+  the cores' caches (the DMA engine, `host/crates/phi-hw/src/dma.rs`). The
+  card posts one record per physical segment of a request, tag = request
+  tag `<< 8` plus the segment index, `phys` = the segment's address, and no
+  data is copied on the card.
+- `0xffffffff`, bounce: the host writes through the PCIe aperture, which
+  the cores' caches do not see (measured 2026-09-16: a page the card had
+  just written kept its old contents after the host had written it, above
+  and below 4 GiB alike; data handed over that way corrupted the
+  filesystem and neighbouring processes). The card then uses one record
+  per request with `phys` = its 512 KiB slot in the data area (uncached,
+  like the rings), copying its pages in before posting a write and out
+  after a read completes.
+
+`knc_blk.direct=0` or `1` on the card's command line overrides the choice.
 
 Sizes: 16 KiB host-to-card, 64 KiB card-to-host, 8 MiB data area (16
 slots, the queue depth); the default region grew from 2 to 16 MiB for it.

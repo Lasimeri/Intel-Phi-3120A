@@ -10,6 +10,7 @@
 
 pub mod boot;
 pub mod card;
+pub mod dma;
 pub mod ringmem;
 
 pub use card::Card;

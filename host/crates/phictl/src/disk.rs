@@ -14,11 +14,11 @@
 //! crash the way a host filesystem's would.
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
-use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use phi_hw::dma::{DmaChannel, HostDmaBuffer};
 use phi_hw::ringmem::ApertureRegion;
 use phi_hw::Card;
 use phi_ring::{ChannelKind, Region};
@@ -34,10 +34,24 @@ pub const OP_READ: u32 = 0;
 pub const OP_WRITE: u32 = 1;
 pub const OP_FLUSH: u32 = 2;
 pub const OP_IDENT: u32 = 3;
+/// Tag of the identify record; the answer carries this tag when the host
+/// copies through the aperture (the card then bounces through its slots)...
+pub const IDENT_TAG: u32 = 0xffff_ffff;
+/// ...and this one when the host's path is coherent with the card's caches
+/// (the DMA engine), so the card hands its pages over directly.
+pub const IDENT_TAG_DIRECT: u32 = 0xffff_fffe;
 /// Bytes per sector.
 pub const SECTOR: u64 = 512;
 /// Largest data length in one record (the card driver's slot size).
 pub const MAX_LEN: usize = 524_288;
+
+/// IOMMU addresses of the DMA descriptor ring and the data buffer (any
+/// unused range below the first SMPT page will do).
+const DMA_RING_IOVA: u64 = 0x1000_0000;
+const DMA_DATA_IOVA: u64 = 0x1010_0000;
+/// Scratch card memory for the DMA self-test: the last MiB of the 16 MiB
+/// ring region, which no channel uses.
+const SELFTEST_OFFSET: u64 = 0xF0_0000;
 
 const EIO: u32 = 5;
 const EINVAL: u32 = 22;
@@ -88,7 +102,7 @@ pub struct Stats {
 }
 
 /// Serve one request against the image; returns the completion status.
-fn serve_one(card: &Card, file: &File, capacity: u64, r: &Request, buf: &mut [u8], stats: &mut Stats) -> u32 {
+fn serve_one(card: &Card, path: &mut Path<'_>, file: &File, capacity: u64, r: &Request, buf: &mut [u8], stats: &mut Stats) -> u32 {
     match r.op {
         OP_IDENT => capacity.min(u64::from(u32::MAX)) as u32,
         OP_FLUSH => {
@@ -105,18 +119,35 @@ fn serve_one(card: &Card, file: &File, capacity: u64, r: &Request, buf: &mut [u8
                 return EINVAL;
             }
             let off = r.sector * SECTOR;
-            let res = if r.op == OP_READ {
-                stats.reads += 1;
-                stats.bytes_read += len as u64;
-                file.read_exact_at(&mut buf[..len], off)
-                    .map_err(anyhow::Error::from)
-                    .and_then(|()| card.write_card_memory(r.phys, &buf[..len]).map_err(anyhow::Error::from))
-            } else {
-                stats.writes += 1;
-                stats.bytes_written += len as u64;
-                card.read_card_memory(r.phys, &mut buf[..len])
-                    .map_err(anyhow::Error::from)
-                    .and_then(|()| file.write_all_at(&buf[..len], off).map_err(anyhow::Error::from))
+            let res = match (r.op, path) {
+                (OP_READ, Path::Dma { chan, buf: dbuf }) => {
+                    stats.reads += 1;
+                    stats.bytes_read += len as u64;
+                    file.read_exact_at(&mut dbuf.as_mut_slice()[..len], off)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|()| chan.copy(dbuf.card_addr(), r.phys, len).map_err(anyhow::Error::from))
+                }
+                (OP_READ, Path::Aperture) => {
+                    stats.reads += 1;
+                    stats.bytes_read += len as u64;
+                    file.read_exact_at(&mut buf[..len], off)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|()| card.write_card_memory(r.phys, &buf[..len]).map_err(anyhow::Error::from))
+                }
+                (_, Path::Dma { chan, buf: dbuf }) => {
+                    stats.writes += 1;
+                    stats.bytes_written += len as u64;
+                    chan.copy(r.phys, dbuf.card_addr(), len)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|()| file.write_all_at(&dbuf.as_slice()[..len], off).map_err(anyhow::Error::from))
+                }
+                (_, Path::Aperture) => {
+                    stats.writes += 1;
+                    stats.bytes_written += len as u64;
+                    card.read_card_memory(r.phys, &mut buf[..len])
+                        .map_err(anyhow::Error::from)
+                        .and_then(|()| file.write_all_at(&buf[..len], off).map_err(anyhow::Error::from))
+                }
             };
             match res {
                 Ok(()) => 0,
@@ -137,7 +168,7 @@ fn serve_one(card: &Card, file: &File, capacity: u64, r: &Request, buf: &mut [u8
 }
 
 /// Serve `path` on the block channel until the process ends.
-pub fn run(card: &Card, ring_base: u64, ring_size: u64, path: &Path) -> Result<()> {
+pub fn run(card: &Card, ring_base: u64, ring_size: u64, path: &std::path::Path, dma: bool) -> Result<()> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -162,6 +193,7 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, path: &Path) -> Result<(
         path.display(),
         (capacity * SECTOR) >> 20
     );
+    let mut data_path = if dma { open_path(card, ring_base) } else { Path::Aperture };
     let mut buf = vec![0u8; MAX_LEN];
     let mut rec = [0u8; REQ_SIZE];
     let mut stats = Stats::default();
@@ -189,11 +221,88 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, path: &Path) -> Result<(
                 r.tag, r.op, r.len, r.sector, r.phys
             );
         }
-        let status = serve_one(card, &file, capacity, &r, &mut buf, &mut stats);
+        let status = serve_one(card, &mut data_path, &file, capacity, &r, &mut buf, &mut stats);
+        // The identify answer tells the card which path the host has.
+        let tag = if r.op == OP_IDENT {
+            if matches!(data_path, Path::Dma { .. }) {
+                IDENT_TAG_DIRECT
+            } else {
+                IDENT_TAG
+            }
+        } else {
+            r.tag
+        };
         while (producer.free(&mem) as usize) < CPL_SIZE {
             thread::sleep(Duration::from_millis(1));
         }
-        producer.push(&mut mem, &completion(r.tag, status));
+        producer.push(&mut mem, &completion(tag, status));
+    }
+}
+
+/// The data path: the DMA engine, or aperture copies when it is unusable.
+enum Path<'a> {
+    Dma { chan: DmaChannel<'a>, buf: HostDmaBuffer },
+    Aperture,
+}
+
+/// Bring up the DMA engine and prove it with a round trip through card
+/// memory the card does not use: pattern into the card by DMA, read back
+/// through the aperture; pattern into the card through the aperture, read
+/// back by DMA. Returns the aperture path with the reason when anything
+/// fails, so the disk still works.
+fn open_path(card: &Card, ring_base: u64) -> Path<'_> {
+    let mut chan = match DmaChannel::new(card, 0, DMA_RING_IOVA) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[phictl] disk: DMA channel unusable ({e}); copying through the aperture");
+            return Path::Aperture;
+        }
+    };
+    let mut buf = match HostDmaBuffer::new(card, DMA_DATA_IOVA, MAX_LEN) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[phictl] disk: DMA buffer unusable ({e}); copying through the aperture");
+            return Path::Aperture;
+        }
+    };
+    let scratch = ring_base + SELFTEST_OFFSET;
+    let n = 65536;
+    let pattern: Vec<u8> = (0..n).map(|i| (i as u32).wrapping_mul(2654435761) as u8 ^ (i >> 8) as u8).collect();
+    let mut back = vec![0u8; n];
+    let test = (|| -> Result<f64> {
+        buf.as_mut_slice()[..n].copy_from_slice(&pattern);
+        chan.copy(buf.card_addr(), scratch, n)?;
+        card.read_card_memory(scratch, &mut back)?;
+        if back != pattern {
+            anyhow::bail!("host to card DMA delivered wrong data");
+        }
+        let other: Vec<u8> = pattern.iter().map(|b| !b).collect();
+        card.write_card_memory(scratch + n as u64, &other)?;
+        buf.as_mut_slice()[..n].fill(0);
+        chan.copy(scratch + n as u64, buf.card_addr(), n)?;
+        if buf.as_slice()[..n] != other[..] {
+            anyhow::bail!("card to host DMA delivered wrong data");
+        }
+        // Throughput of 16 round trips of MAX_LEN through the scratch area.
+        let t = Instant::now();
+        for _ in 0..16 {
+            chan.copy(buf.card_addr(), scratch, MAX_LEN)?;
+            chan.copy(scratch, buf.card_addr(), MAX_LEN)?;
+        }
+        Ok(32.0 * MAX_LEN as f64 / t.elapsed().as_secs_f64() / 1e6)
+    })();
+    match test {
+        Ok(rate) => {
+            eprintln!(
+                "[phictl] disk: DMA engine channel {} verified, {rate:.0} MB/s in the self-test",
+                chan.channel()
+            );
+            Path::Dma { chan, buf }
+        }
+        Err(e) => {
+            eprintln!("[phictl] disk: DMA self-test failed ({e:#}); copying through the aperture");
+            Path::Aperture
+        }
     }
 }
 

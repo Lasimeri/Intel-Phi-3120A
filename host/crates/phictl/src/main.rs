@@ -113,6 +113,9 @@ enum Cmd {
         /// block channel (no root; the card mounts it on /data, see disk.md).
         #[arg(long)]
         disk: Option<PathBuf>,
+        /// Serve the disk through aperture copies instead of the DMA engine.
+        #[arg(long)]
+        no_dma: bool,
         /// Uid allowed to use the control socket (default: SUDO_UID, else root).
         #[arg(long)]
         owner: Option<u32>,
@@ -263,6 +266,7 @@ fn main() -> Result<()> {
             net_addr,
             forward,
             disk,
+            no_dma,
             serve,
             owner,
         } => cmd_boot(
@@ -279,6 +283,7 @@ fn main() -> Result<()> {
             net.map(|n| (n, net_addr)),
             forward,
             disk,
+            no_dma,
             serve.map(|p| {
                 let p = if p.as_os_str() == "auto" { serve::default_socket(true) } else { p };
                 (p, owner.unwrap_or_else(serve::default_owner))
@@ -329,7 +334,7 @@ fn main() -> Result<()> {
             forward,
         } => {
             let card = open(cli.bdf.as_deref())?;
-            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)), forward, None)
+            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)), forward, None, false)
         }
         Cmd::Exec { socket, cwd, argv } => {
             let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false)), cwd, argv)?;
@@ -515,6 +520,7 @@ fn cmd_boot(
     net: Option<(String, String)>,
     forward: Option<String>,
     disk: Option<PathBuf>,
+    no_dma: bool,
     serve: Option<(PathBuf, u32)>,
 ) -> Result<()> {
     let card = open(bdf)?;
@@ -563,7 +569,7 @@ fn cmd_boot(
                     }
                 });
             }
-            console(&card, ring_base, ring_size, watch, net, forward, disk)
+            console(&card, ring_base, ring_size, watch, net, forward, disk, !no_dma)
         })
     } else {
         Ok(())
@@ -572,6 +578,7 @@ fn cmd_boot(
 
 /// Tail the console ring and, when asked, bridge the network channel to a
 /// TAP device from a second thread; both run until Ctrl-C.
+#[allow(clippy::too_many_arguments)]
 fn console(
     card: &Card,
     ring_base: u64,
@@ -580,6 +587,7 @@ fn console(
     net: Option<(String, String)>,
     forward: Option<String>,
     disk: Option<PathBuf>,
+    dma: bool,
 ) -> Result<()> {
     thread::scope(|s| {
         if let Some(spec) = &forward {
@@ -592,7 +600,7 @@ fn console(
         }
         if let Some(path) = &disk {
             s.spawn(move || {
-                if let Err(e) = disk::run(card, ring_base, ring_size, path) {
+                if let Err(e) = disk::run(card, ring_base, ring_size, path, dma) {
                     eprintln!("[phictl] disk: {e:#}");
                 }
             });

@@ -286,3 +286,74 @@ mod platform_tests {
         assert_eq!(r.core_mhz(p), 1100);
     }
 }
+
+/// DMA configuration register: two bits per channel, bit `2n` = owner
+/// (1 host, 0 card), bit `2n+1` = enable (`SBOX_DCR`, `md_mic_dma_enable_chan`
+/// and `chan_to_dcr_mask` in MPSS `dma/mic_dma_md.c`).
+pub const DCR: u32 = 0xA280;
+/// Base of the per-channel DMA register blocks (`SBOX_DCAR_0`); channel `n`
+/// is at `DMA_CHAN_BASE + DMA_CHAN_STRIDE * n`.
+pub const DMA_CHAN_BASE: u32 = 0xA000;
+/// Distance between channel blocks (`SBOX_DCAR_1 - SBOX_DCAR_0`).
+pub const DMA_CHAN_STRIDE: u32 = 0x40;
+/// Number of DMA channels (SSDG 2.1.8.2.1).
+pub const DMA_CHAN_COUNT: u32 = 8;
+/// Channel attribute register: interrupt masks and status (`SBOX_DCAR_n`).
+pub const DCAR: u32 = 0x00;
+/// Head pointer index, written by software (`SBOX_DHPR_n`, SSDG figure 2-11).
+pub const DHPR: u32 = 0x04;
+/// Tail pointer index, advanced by the engine (`SBOX_DTPR_n`).
+pub const DTPR: u32 = 0x08;
+/// Descriptor ring attributes, low 32 bits of the ring address (`SBOX_DRAR_LO_n`).
+pub const DRAR_LO: u32 = 0x14;
+/// Descriptor ring attributes, high part: bits 3:0 address bits 35:32,
+/// bits 20:4 size in descriptors, bits 25:21 SMPT page, bit 26 SYS
+/// (`SBOX_DRAR_HI_n`; `size_to_drar_hi_size`, `addr_to_drar_hi_smpt_bits`,
+/// `SBOX_DRARHI_SYS_MASK` in `mic_dma_md.c`).
+pub const DRAR_HI: u32 = 0x18;
+/// Channel status (`SBOX_DSTAT_n`; completion count in bits 15:0).
+pub const DSTAT: u32 = 0x20;
+/// Channel error register (`SBOX_DCHERR_n`).
+pub const DCHERR: u32 = 0x2C;
+/// Channel error mask (`SBOX_DCHERRMSK_n`).
+pub const DCHERRMSK: u32 = 0x30;
+/// DCAR: mask the APIC (card) interrupt (`SBOX_DCAR_IM0`).
+pub const DCAR_IM0: u32 = 1 << 24;
+/// DCAR: mask the MSI-X (host) interrupt (`SBOX_DCAR_IM1`).
+pub const DCAR_IM1: u32 = 1 << 25;
+/// DRAR_HI: the ring lives in system (host) memory (`SBOX_DRARHI_SYS_MASK`).
+pub const DRAR_HI_SYS: u32 = 1 << 26;
+
+/// SBOX offset of register `reg` (one of the `D*` offsets above) of DMA channel `n`.
+pub const fn dma_reg(n: u32, reg: u32) -> u32 {
+    assert!(n < DMA_CHAN_COUNT);
+    DMA_CHAN_BASE + DMA_CHAN_STRIDE * n + reg
+}
+
+/// Encode a memcpy descriptor (`md_mic_dma_memcpy_desc`, `union
+/// md_mic_dma_desc` in MPSS `include/mic/mic_dma_md.h`): quadword 0 holds
+/// the 40-bit source address and the length in 64-byte lines in bits 59:46;
+/// quadword 1 the 40-bit destination and type 1 in bits 63:60. Addresses
+/// and length must be multiples of 64; the length at most 2^14 - 1 lines.
+pub const fn dma_memcpy_desc(src: u64, dst: u64, len: u64) -> (u64, u64) {
+    assert!(src.is_multiple_of(64) && dst.is_multiple_of(64) && len.is_multiple_of(64) && len > 0 && len < (1 << 20));
+    let mask40 = (1u64 << 40) - 1;
+    ((src & mask40) | ((len / 64) << 46), (dst & mask40) | (1u64 << 60))
+}
+
+#[cfg(test)]
+mod dma_tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_layout() {
+        // 512 KiB from card 0x10126000 to host page 0 at IOVA 0x10100000.
+        let (q0, q1) = dma_memcpy_desc(0x1012_6000, 0x80_1010_0000, 512 * 1024);
+        assert_eq!(q0 & ((1 << 40) - 1), 0x1012_6000);
+        assert_eq!((q0 >> 46) & 0x3fff, 8192);
+        assert_eq!(q1 & ((1 << 40) - 1), 0x80_1010_0000);
+        assert_eq!(q1 >> 60, 1);
+        assert_eq!(dma_reg(0, DTPR), 0xA008);
+        assert_eq!(dma_reg(1, DCAR), 0xA040);
+    }
+}

@@ -7,6 +7,7 @@
 #   --ssh         forward 127.0.0.1:2222 to the card's SSH server through the ring
 #   --disk PATH   serve PATH as the card's persistent disk (/dev/phiblk0, mounted on /data);
 #                 default $PHI_DISK when that file exists
+# PHI_CMDLINE_EXTRA is appended to the kernel command line (e.g. knc_blk.direct=1).
 # Console output goes to $XDG_RUNTIME_DIR/phictl/console.log. See phi-up.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -43,7 +44,7 @@ fi
 mkdir -p "$dir"; chmod 700 "$dir"
 : > "$log"
 PHICTL_SOCKET="$sock" setsid nohup "$P" boot --kernel "$kernel" --initrd "$initrd" \
-    --cmdline "earlyprintk=phiring console=ttyPHI0" --serve "$sock" "${forward[@]}" "${diskarg[@]}" "$@" < /dev/null > "$log" 2>&1 &
+    --cmdline "earlyprintk=phiring console=ttyPHI0${PHI_CMDLINE_EXTRA:+ $PHI_CMDLINE_EXTRA}" --serve "$sock" "${forward[@]}" "${diskarg[@]}" "$@" < /dev/null > "$log" 2>&1 &
 echo $! > "$pidfile"
 echo "phi-up.sh: booting (pid $(cat "$pidfile")), console in $log"
 # The agent answers once init has started: about 15 s from a cold open.

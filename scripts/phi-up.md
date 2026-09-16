@@ -17,6 +17,9 @@ background with a control socket, so that `phictl exec`, `put`, `get` and
 - `--disk PATH` (or `PHI_DISK`) serves a disk image as `/dev/phiblk0`; `init`
   mounts it on `/data` and binds `/opt/phi`, `/root` and `/home` from it, so
   `--toolchain` is needed once per image, not per boot.
+- `PHI_CMDLINE_EXTRA` is appended to the kernel command line (for example
+  `knc_blk.direct=0`); extra arguments after the options go to `phictl boot`
+  (for example `--no-dma`).
 - Refuses to start when another `phictl boot` holds the card.
 
 The network bridge (`--net`) is not started: creating a TAP device needs

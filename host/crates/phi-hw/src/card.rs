@@ -80,6 +80,16 @@ impl Card {
         &self.aperture
     }
 
+    /// Pin `len` bytes at `vaddr` and map them for the card at IOMMU address
+    /// `iova` (VFIO type1). See [`crate::dma::HostDmaBuffer`].
+    ///
+    /// # Safety
+    /// `vaddr..vaddr+len` must be a page-aligned mapping owned by the caller
+    /// that outlives the DMA mapping; the card may write to it.
+    pub unsafe fn map_dma(&self, vaddr: *mut u8, iova: u64, len: u64) -> Result<()> {
+        Ok(self.vfio.container().map_dma(vaddr, iova, len)?)
+    }
+
     /// Read an SBOX register (offset relative to the SBOX base).
     pub fn sbox_read(&self, off: u32) -> u32 {
         self.mmio.read32((sbox::SBOX_BASE + off) as usize)

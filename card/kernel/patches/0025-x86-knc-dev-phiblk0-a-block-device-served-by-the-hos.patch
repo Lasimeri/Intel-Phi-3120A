@@ -6,23 +6,26 @@ Subject: [PATCH] x86/knc: /dev/phiblk0, a block device served by the host over
 
 The host tool serves a disk image to the card through a fourth ring
 channel: the card posts 32-byte request records (tag, operation, byte
-length, sector, card physical address of a bounce slot) and the host
-answers with 8-byte completions; an identify record returns the capacity.
-A blk-mq driver with one hardware queue turns the channel into
-/dev/phiblk0; a kernel thread polls the completion ring, spinning briefly
-after activity and sleeping 200 us at a time when idle, and registers the
-disk from a workqueue once identify is answered (add_disk reads the
-device, so it cannot run on the poller).
+length, sector, card physical address) and the host answers with 8-byte
+completions; an identify record returns the capacity. A blk-mq driver
+with one hardware queue turns the channel into /dev/phiblk0; a kernel
+thread polls the completion ring, spinning briefly after activity and
+sleeping 200 us at a time when idle, and registers the disk from a
+workqueue once identify is answered (add_disk reads the device, so it
+cannot run on the poller).
 
-Data goes through 512 KiB bounce slots in the channel's data area, part of
-the ring region and mapped uncached. Handing page-cache pages to the host
-directly does not work: host writes through the PCIe aperture are not seen
-by the cores' caches (measured 2026-09-16, a page the card had just
-written kept its old contents after the host wrote it, in both memory
-zones). One slot per in-flight request makes the request tag the slot
-number; the queue depth is the slot count (16 for an 8 MiB area).
+Two data paths. In direct mode the request's pages are handed to the
+host, one record per physical segment, with no copy on the card. In
+bounce mode data goes through 512 KiB uncached slots in the channel's
+data area, part of the ring region, with one record per request and the
+request tag as the slot number. The host chooses through the tag of its
+identify answer: 0xfffffffe when its path into card memory is coherent
+with the cores' caches (the DMA engine), 0xffffffff when it is not (writes
+through the PCIe aperture, which a page the card had just written did not
+see; measured 2026-09-16, both memory zones). knc_blk.direct=0 or 1
+overrides the choice.
 
-The poller resynchronises on an impossible byte count, the same guard the
+The poller resynchronises on an impossible byte count, the guard the
 other channels carry: the host's index writes went out byte by byte until
 fixed in the host tool, and a torn head produced floods of zero
 completions.
@@ -31,8 +34,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
  arch/x86/include/asm/knc_ring.h |   3 +
  arch/x86/kernel/Makefile        |   2 +-
- arch/x86/kernel/knc_blk.c       | 396 ++++++++++++++++++++++++++++++++
- 3 files changed, 400 insertions(+), 1 deletion(-)
+ arch/x86/kernel/knc_blk.c       | 448 ++++++++++++++++++++++++++++++++
+ 3 files changed, 452 insertions(+), 1 deletion(-)
  create mode 100644 arch/x86/kernel/knc_blk.c
 
 diff --git a/arch/x86/include/asm/knc_ring.h b/arch/x86/include/asm/knc_ring.h
@@ -71,10 +74,10 @@ index 7be738c6e..06e614355 100644
  obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
 diff --git a/arch/x86/kernel/knc_blk.c b/arch/x86/kernel/knc_blk.c
 new file mode 100644
-index 000000000..c609f22eb
+index 000000000..dd2e37e61
 --- /dev/null
 +++ b/arch/x86/kernel/knc_blk.c
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,448 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * knc_blk.c - /dev/phiblk0: a block device whose storage is a file on the
@@ -108,6 +111,7 @@ index 000000000..c609f22eb
 +#include <linux/io.h>
 +#include <linux/kthread.h>
 +#include <linux/module.h>
++#include <linux/scatterlist.h>
 +#include <linux/slab.h>
 +#include <linux/spinlock.h>
 +#include <linux/unaligned.h>
@@ -124,11 +128,29 @@ index 000000000..c609f22eb
 +#define KNC_BLK_OP_IDENT	3
 +#define KNC_BLK_SLOT		SZ_512K	/* bytes per request */
 +#define KNC_BLK_MAX_SLOTS	32
-+#define KNC_BLK_IDENT_TAG	0xffffffffu
++#define KNC_BLK_IDENT_TAG	0xffffffffu	/* identify; the host answers with this tag when it copies through the aperture */
++#define KNC_BLK_IDENT_DIRECT	0xfffffffeu	/* the host answers with this tag when its path is coherent (DMA engine) */
 +#define KNC_BLK_SPIN		2000	/* idle polls before sleeping */
++#define KNC_BLK_MAX_SEGS	64	/* direct mode: records per request; depth * segs * 32 fits the ring */
++
++/*
++ * Direct mode posts the request's pages themselves (one record per physical
++ * segment) instead of copying through a bounce slot. Only correct if the
++ * host's writes into card memory are coherent with the cores' caches, which
++ * holds for the DMA engine and not for aperture writes (measured
++ * 2026-09-16, docs/results/2026-09-16-dma.md). The host says which path it
++ * uses through the tag of its identify answer; knc_blk.direct=0 or 1
++ * overrides that.
++ */
++static int direct_param = -1;
++module_param_named(direct, direct_param, int, 0444);
++MODULE_PARM_DESC(direct, "-1 as the host says (default), 0 always bounce, 1 always hand pages to the host");
++static bool direct;
 +
 +struct knc_blk_cmd {
 +	blk_status_t status;
++	atomic_t pending;		/* direct mode: records not yet completed */
++	struct scatterlist sgl[KNC_BLK_MAX_SEGS];
 +};
 +
 +struct knc_blk {
@@ -227,6 +249,32 @@ index 000000000..c609f22eb
 +	}
 +	if (tag >= b->slots || len > KNC_BLK_SLOT)
 +		return BLK_STS_IOERR;
++	if (direct && len) {
++		struct scatterlist *sg;
++		u64 sector = blk_rq_pos(rq);
++		int nsegs, i;
++
++		sg_init_table(cmd->sgl, KNC_BLK_MAX_SEGS);
++		nsegs = blk_rq_map_sg(rq, cmd->sgl);
++		if (nsegs <= 0)
++			return BLK_STS_IOERR;
++		spin_lock_irqsave(&b->lock, flags);
++		if (knc_blk_tx_free(b) < nsegs * KNC_BLK_REQ_SIZE) {
++			spin_unlock_irqrestore(&b->lock, flags);
++			return BLK_STS_DEV_RESOURCE;
++		}
++		blk_mq_start_request(rq);
++		cmd->status = BLK_STS_OK;
++		atomic_set(&cmd->pending, nsegs);
++		b->reqs[tag] = rq;
++		for_each_sg(cmd->sgl, sg, nsegs, i) {
++			knc_blk_post(b, tag << 8 | i, op, sg->length, sector, sg_phys(sg));
++			sector += sg->length >> 9;
++		}
++		knc_blk_publish(b);
++		spin_unlock_irqrestore(&b->lock, flags);
++		return BLK_STS_OK;
++	}
 +	if (op == KNC_BLK_OP_WRITE)
 +		knc_blk_copy(rq, knc_blk_slot(b, tag), true);
 +	spin_lock_irqsave(&b->lock, flags);
@@ -236,8 +284,9 @@ index 000000000..c609f22eb
 +	}
 +	blk_mq_start_request(rq);
 +	cmd->status = BLK_STS_OK;
++	atomic_set(&cmd->pending, 1);
 +	b->reqs[tag] = rq;
-+	knc_blk_post(b, tag, op, len, blk_rq_pos(rq), b->data_phys + (u64)tag * KNC_BLK_SLOT);
++	knc_blk_post(b, tag << 8, op, len, blk_rq_pos(rq), b->data_phys + (u64)tag * KNC_BLK_SLOT);
 +	knc_blk_publish(b);
 +	spin_unlock_irqrestore(&b->lock, flags);
 +	return BLK_STS_OK;
@@ -270,8 +319,9 @@ index 000000000..c609f22eb
 +		.logical_block_size	= 512,
 +		.physical_block_size	= 4096,
 +		.max_hw_sectors		= KNC_BLK_SLOT >> 9,
-+		.max_segments		= 128,
++		.max_segments		= KNC_BLK_MAX_SEGS,
 +		.max_segment_size	= KNC_BLK_SLOT,
++		.dma_alignment		= 63,
 +		.features		= BLK_FEAT_WRITE_CACHE,
 +	};
 +	int err;
@@ -313,8 +363,8 @@ index 000000000..c609f22eb
 +		b->disk = NULL;
 +		goto out_set;
 +	}
-+	pr_info("KNC: blk: /dev/phiblk0, %llu MiB served by the host, %u slots of %u KiB\n",
-+		b->capacity >> 11, b->slots, KNC_BLK_SLOT >> 10);
++	pr_info("KNC: blk: /dev/phiblk0, %llu MiB served by the host, %u slots of %u KiB, %s\n",
++		b->capacity >> 11, b->slots, KNC_BLK_SLOT >> 10, direct ? "direct (pages handed to the host)" : "bounced");
 +	return;
 +
 +out_set:
@@ -337,10 +387,11 @@ index 000000000..c609f22eb
 +	struct knc_blk_cmd *cmd;
 +	unsigned long flags;
 +
-+	if (tag == KNC_BLK_IDENT_TAG) {
++	if (tag == KNC_BLK_IDENT_TAG || tag == KNC_BLK_IDENT_DIRECT) {
 +		if (b->disk || b->ident_sectors)
 +			return;
 +		if (status) {
++			direct = direct_param < 0 ? tag == KNC_BLK_IDENT_DIRECT : direct_param > 0;
 +			b->ident_sectors = status;
 +			schedule_work(&b->register_work);
 +		} else {
@@ -348,13 +399,12 @@ index 000000000..c609f22eb
 +		}
 +		return;
 +	}
-+	if (tag >= b->slots) {
++	if ((tag >> 8) >= b->slots) {
 +		pr_warn_ratelimited("KNC: blk: completion for unknown tag %#x status %u\n", tag, status);
 +		return;
 +	}
 +	spin_lock_irqsave(&b->lock, flags);
-+	rq = b->reqs[tag];
-+	b->reqs[tag] = NULL;
++	rq = b->reqs[tag >> 8];
 +	spin_unlock_irqrestore(&b->lock, flags);
 +	if (!rq) {
 +		pr_warn_ratelimited("KNC: blk: completion for idle tag %#x status %u\n", tag, status);
@@ -363,8 +413,13 @@ index 000000000..c609f22eb
 +	cmd = blk_mq_rq_to_pdu(rq);
 +	if (status)
 +		cmd->status = BLK_STS_IOERR;
-+	else if (req_op(rq) == REQ_OP_READ)
-+		knc_blk_copy(rq, knc_blk_slot(b, tag), false);
++	if (!atomic_dec_and_test(&cmd->pending))
++		return;
++	spin_lock_irqsave(&b->lock, flags);
++	b->reqs[tag >> 8] = NULL;
++	spin_unlock_irqrestore(&b->lock, flags);
++	if (cmd->status == BLK_STS_OK && !direct && req_op(rq) == REQ_OP_READ)
++		knc_blk_copy(rq, knc_blk_slot(b, tag >> 8), false);
 +	blk_mq_complete_request(rq);
 +}
 +
