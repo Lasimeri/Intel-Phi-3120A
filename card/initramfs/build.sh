@@ -80,6 +80,10 @@ fi
 
 # newc cpio, root-owned, gzip: the kernel config enables RD_GZIP.
 (cd "$root" && bsdtar --format newc --uid 0 --gid 0 -cf - .) | gzip -9 > "$out"
+# The image holds the card's SSH host private keys and root's authorized keys.
+chmod 600 "$out"
+# The image holds the card's SSH host private keys and root's authorized keys.
+chmod 600 "$out"
 ls -l "$out"
 echo "applets: $(find "$root/bin" -type l | wc -l); boot with:"
 echo "  phictl boot --kernel card/kernel/build/out/arch/x86/boot/bzImage --initrd $out --cmdline 'earlyprintk=phiring console=ttyPHI0'"
