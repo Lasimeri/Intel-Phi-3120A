@@ -2,6 +2,7 @@
 # check-docs.sh: enforce repository documentation rules.
 #   1. Every code file has a sibling Markdown file with the same stem.
 #   2. No em dash (U+2014) or en dash (U+2013) anywhere in tracked text.
+#   3. Every relative link in a Markdown file points at a file that exists.
 # Exit code 1 on any violation. See check-docs.md.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -33,6 +34,18 @@ if [ -n "$files" ]; then
         fail=1
     fi
 fi
+
+# Rule 3: every relative Markdown link points at a file that exists. Targets
+# come from `](target)` and `](target#fragment)`; URLs are skipped.
+for f in $(echo "$files" | grep '\.md$'); do
+    dir=$(dirname "$f")
+    for target in $(grep -oP '\]\(\K[^)#[:space:]]+(?=[#)])' "$f" 2>/dev/null | grep -vE '^[a-z]+:' || true); do
+        if [ ! -e "$dir/$target" ]; then
+            echo "broken link in $f: $target"
+            fail=1
+        fi
+    done
+done
 
 if [ $fail -eq 0 ]; then echo "check-docs.sh: ok"; fi
 exit $fail

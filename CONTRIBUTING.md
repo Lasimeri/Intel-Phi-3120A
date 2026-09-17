@@ -30,7 +30,9 @@ install can reproduce every result here without asking anyone.
   or a measurement made on this machine with the command shown.
 - No em dash characters anywhere in the repository. Use commas, colons,
   parentheses, or `--`.
-- `scripts/check-docs.sh` enforces the sibling rule and the em dash rule.
+- Relative links between Markdown files must resolve; `scripts/check-docs.sh`
+  enforces the sibling rule, the em dash rule and the link rule (`make
+  docs-check`, the first step of `make check`).
   `make check` runs it together with `cargo fmt --check`, `cargo clippy`,
   and `cargo test`.
 

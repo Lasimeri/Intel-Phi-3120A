@@ -8,7 +8,7 @@ and 0021 (`arch/x86/kernel/knc_net.c`, network), sharing
 
 ## Placement
 
-A contiguous region of card GDDR, `PHI_RING_REGION_SIZE` bytes (1 MiB in v1),
+A contiguous region of card GDDR, `PHI_RING_REGION_SIZE` bytes (16 MiB by default since 2026-09-16, `phi_regs::memory::RING_REGION_BYTES`; 1 MiB when v1 was first cut, see the history below),
 at card physical address `PHI_RING_REGION_BASE`. v1 uses `0x10000000`
 (256 MiB), above the 64 MiB download address and the 128 MiB initramfs slot
 that Intel's loader used. (v1 first placed it at 32 MiB, below the download
