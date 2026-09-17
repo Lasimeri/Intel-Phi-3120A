@@ -140,19 +140,17 @@ errno; the capacity in sectors for identify, 0 meaning no disk).
 Two data paths, chosen by the host through the tag of its identify
 answer:
 
-- `0xfffffffe`, direct: the host's path into card memory is coherent with
-  the cores' caches (the DMA engine, `host/crates/phi-hw/src/dma.rs`). The
-  card posts one record per physical segment of a request, tag = request
-  tag `<< 8` plus the segment index, `phys` = the segment's address, and no
-  data is copied on the card.
-- `0xffffffff`, bounce: the host writes through the PCIe aperture, which
-  the cores' caches do not see (measured 2026-09-16: a page the card had
-  just written kept its old contents after the host had written it, above
-  and below 4 GiB alike; data handed over that way corrupted the
-  filesystem and neighbouring processes). The card then uses one record
-  per request with `phys` = its 512 KiB slot in the data area (uncached,
-  like the rings), copying its pages in before posting a write and out
-  after a read completes.
+- `0xfffffffe`, direct (the default): the card posts one record per
+  physical segment of a request, tag = request tag `<< 8` plus the segment
+  index, `phys` = the segment's address, and no data is copied on the card.
+- `0xffffffff`, bounce: the card uses one record per request with `phys`
+  = its 512 KiB slot in the data area (uncached, like the rings), copying
+  its pages in before posting a write and out after a read completes. Kept
+  for experiments (`PHICTL_DISK_BOUNCE=1` on the host): both host paths,
+  aperture and DMA engine, proved coherent with the card's caches on
+  2026-09-16, and the corruption that motivated the bounce came from torn
+  ring indices and from the DMA engine's tail pointer running ahead of its
+  writes (`docs/results/2026-09-16-dma.md`).
 
 `knc_blk.direct=0` or `1` on the card's command line overrides the choice.
 
@@ -164,3 +162,24 @@ answered once the host tool serves (after POST K7); `init` waits up to 5 s
 for the device. Indices are single 32-bit accesses on both sides: the
 host's byte-wise index writes were the cause of torn heads before
 2026-09-16.
+
+## Host memory (header fields and channel kind 5)
+
+`phictl boot --host-mem SIZE` pins a shared file (`/dev/shm/phi-hostmem`,
+mode 0600) for the card at IOMMU address 4 GiB and announces it in two
+region header fields: `HOSTMEM_ADDR` (u64 at 32, the card address
+`0x80_0000_0000 + IOMMU address`, reachable through the SMPT whose first
+pages the host maps identity) and `HOSTMEM_SIZE` (u64 at 40, 0 when there
+is none). Two consumers on the card (kernel patch 0026):
+
+- Channel kind 5 carries the block records of kind 4 for a second device,
+  `/dev/phiblk1`, backed by that memory. The host serves it with the DMA
+  engine straight between the window and the card's pages (no staging),
+  and `init` runs `mkswap` and `swapon` on it at every boot: host RAM as
+  the card's swap, sized by `--host-mem`. Without the engine the channel
+  has no bounce slots and no device appears.
+- `/dev/phihost` (`knc_hostmem.c`) maps the same bytes uncached: `read`,
+  `write`, `llseek` (the size is the end) and `mmap`. A card program and
+  a host program that maps `/dev/shm/phi-hostmem` share memory with no
+  copy; every card access is a PCIe transaction, so this is an exchange
+  surface, and bulk traffic belongs on `/dev/phiblk1`.

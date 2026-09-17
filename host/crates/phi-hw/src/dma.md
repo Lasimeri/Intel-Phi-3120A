@@ -12,11 +12,17 @@ module drives one from the host, which the MPSS host driver also did:
   at a 4 KiB ring of 256 descriptors in host memory (SYS bit, SMPT page
   bits, size), masks both interrupt paths in `DCAR`, sets the head equal to
   the current tail and enables the channel.
-- `DmaChannel::copy`: writes one memcpy descriptor (40-bit source and
-  destination card addresses, length in 64-byte lines, type 1) at the
-  head, advances `DHPR`, and spins on `DTPR` until the engine has passed
-  the descriptor; two seconds without progress is an error reported with
-  `DCHERR` and `DSTAT`.
+- `DmaChannel::copy`: writes one cache line of descriptors at the head:
+  the memcpy (40-bit source and destination card addresses, length in
+  64-byte lines, type 1), a status descriptor (type 2) that stores the
+  copy's sequence number, and two NOPs; advances `DHPR` by four; then
+  spins on the status word, in host memory for copies into host memory
+  and in card memory (read through the aperture) for copies into the
+  card. The tail pointer is not a completion signal: the engine advances
+  it before its writes are visible (measured 2026-09-16, 225 of 10000
+  rapid copies stale), which is why MPSS polls a status word too. Two
+  seconds without the word is an error reported with `DTPR`, `DCHERR`
+  and `DSTAT`. `DCR` updates are serialised across channels.
 
 Constraints from the hardware: 64-byte alignment and granularity, at most
 1 MiB minus 64 bytes per descriptor, rings aligned to their size. The

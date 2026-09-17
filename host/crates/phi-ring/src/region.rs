@@ -49,7 +49,13 @@ impl Region {
     /// Format `mem` (of `region_size` bytes) with the given channels.
     /// Rings are laid out after the channel table, each 64-byte aligned.
     /// `host_epoch_ns` is the host wall clock the card will adopt.
-    pub fn format<M: RingMemory>(mem: &mut M, region_size: usize, plans: &[ChannelPlan], host_epoch_ns: u64) -> Result<Self, Error> {
+    pub fn format<M: RingMemory>(
+        mem: &mut M,
+        region_size: usize,
+        plans: &[ChannelPlan],
+        host_epoch_ns: u64,
+        hostmem: Option<(u64, u64)>,
+    ) -> Result<Self, Error> {
         for p in plans {
             for s in [p.h2c_size, p.c2h_size] {
                 if s == 0 || !s.is_power_of_two() {
@@ -108,6 +114,9 @@ impl Region {
         mem.write_u32(region_hdr::CHANNEL_COUNT, plans.len() as u32);
         mem.write_u64(region_hdr::HOST_EPOCH_NS, host_epoch_ns);
         mem.write_u64(region_hdr::CARD_BOOT_FLAGS, 0);
+        let (hm_addr, hm_size) = hostmem.unwrap_or((0, 0));
+        mem.write_u64(region_hdr::HOSTMEM_ADDR, hm_addr);
+        mem.write_u64(region_hdr::HOSTMEM_SIZE, hm_size);
         mem.fence();
         mem.write_u32(region_hdr::MAGIC, REGION_MAGIC);
         mem.fence();
@@ -170,6 +179,12 @@ impl Region {
         Ok((Producer::attach(mem, c.h2c_offset)?, Consumer::attach(mem, c.c2h_offset)?))
     }
 
+    /// The host memory window announced in the header, if any.
+    pub fn hostmem_window<M: RingMemory>(mem: &M) -> Option<(u64, u64)> {
+        let size = mem.read_u64(region_hdr::HOSTMEM_SIZE);
+        (size > 0).then(|| (mem.read_u64(region_hdr::HOSTMEM_ADDR), size))
+    }
+
     /// Card-side flags word (`CARD_FLAG_*`).
     pub fn card_boot_flags<M: RingMemory>(mem: &M) -> u64 {
         mem.read_u64(region_hdr::CARD_BOOT_FLAGS)
@@ -200,7 +215,7 @@ mod tests {
     fn format_then_open_round_trips() {
         let mut mem = VecMemory::new(1024 * 1024);
         let len = mem.len();
-        let r = Region::format(&mut mem, len, &PLANS, 1_700_000_000_000_000_000).unwrap();
+        let r = Region::format(&mut mem, len, &PLANS, 1_700_000_000_000_000_000, None).unwrap();
         let o = Region::open(&mem).unwrap();
         assert_eq!(o.channels(), r.channels());
         assert_eq!(o.size(), 1024 * 1024);
@@ -221,7 +236,7 @@ mod tests {
     fn refuses_layouts_that_do_not_fit() {
         let mut mem = VecMemory::new(4096);
         let len = mem.len();
-        let e = Region::format(&mut mem, len, &PLANS, 0).unwrap_err();
+        let e = Region::format(&mut mem, len, &PLANS, 0, None).unwrap_err();
         assert!(matches!(e, Error::DoesNotFit(_, 4096)));
         // Nothing was written because validation happens first.
         assert_eq!(mem.read_u32(region_hdr::MAGIC), 0);

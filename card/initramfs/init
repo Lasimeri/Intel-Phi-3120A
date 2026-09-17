@@ -35,6 +35,19 @@ if [ -b /dev/phiblk0 ]; then
 		disk="/dev/phiblk0 present but not mounted"
 	fi
 fi
+# Host memory as swap: /dev/phiblk1 is host RAM served over the ring (kernel
+# patch 0026, phictl boot --host-mem). Volatile, so it is formatted at every
+# boot; it extends the card's 6 GB.
+swap="no host memory"
+i=0
+while [ $i -lt 3 ] && [ ! -b /dev/phiblk1 ]; do /bin/busybox sleep 1; i=$((i+1)); done
+if [ -b /dev/phiblk1 ]; then
+	if /bin/busybox mkswap /dev/phiblk1 > /dev/null 2>&1 && /bin/busybox swapon /dev/phiblk1 2>/dev/console; then
+		swap="host memory as swap on /dev/phiblk1 ($(/bin/busybox awk '/SwapTotal/ {printf "%d MiB", $2/1024}' /proc/meminfo))"
+	else
+		swap="/dev/phiblk1 present but swapon failed"
+	fi
+fi
 # phi0 is the Ethernet device over the host/card ring (kernel patch 0021);
 # the host side is phictl boot --net phi0, 10.9.0.1/24 by default.
 /bin/busybox ip link set lo up
@@ -65,7 +78,7 @@ echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) 
 /bin/busybox grep -m1 "model name" /proc/cpuinfo
 /bin/busybox free -m | /bin/busybox head -2
 echo "network: $net; $sshd; $agent"
-echo "storage: $disk"
+echo "storage: $disk; $swap"
 echo "type 'poweroff' to halt the card"
 echo
 trap '/bin/busybox poweroff -f' USR1 USR2 TERM

@@ -18,7 +18,8 @@ shows it.
 (its guard sees the process); use `systemctl --user stop phi.service` to
 take the card over by hand, or `restart` to reboot it.
 
-On this machine: `scripts/phi-autoboot.sh install /mnt/1TB-NVMe/phi/disk.img`
-(2026-09-16). Requirements: group `phi` (`sudo scripts/setup-arch.sh`
+On this machine: `scripts/phi-autoboot.sh install /mnt/1TB-NVMe/phi/disk.img 4G`
+(2026-09-16): the disk, and 4 GiB of host memory for swap and `/dev/phihost`
+(`docs/spec/ring-protocol.md`, host memory). Requirements: group `phi` (`sudo scripts/setup-arch.sh`
 once), the host tools built, the kernel and initramfs built, the disk
 image created (`scripts/phi-disk.sh create`).

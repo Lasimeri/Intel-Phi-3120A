@@ -56,18 +56,25 @@ impl Producer {
         self.size
     }
 
-    /// Bytes that can be pushed right now.
+    /// Bytes that can be pushed right now. A tail ahead of the head (the
+    /// consumer's index read torn or reset) reads as a full ring rather than
+    /// an arithmetic overflow; `indices` shows the raw values.
     pub fn free<M: RingMemory>(&self, mem: &M) -> u32 {
         let head = mem.read_u32(self.base + ring_hdr::HEAD);
         let tail = mem.read_u32(self.base + ring_hdr::TAIL);
-        self.size - head.wrapping_sub(tail)
+        self.size.saturating_sub(head.wrapping_sub(tail))
+    }
+
+    /// The raw (head, tail) indices, for diagnostics.
+    pub fn indices<M: RingMemory>(&self, mem: &M) -> (u32, u32) {
+        (mem.read_u32(self.base + ring_hdr::HEAD), mem.read_u32(self.base + ring_hdr::TAIL))
     }
 
     /// Push as much of `data` as fits; returns the number of bytes pushed.
     pub fn push<M: RingMemory>(&self, mem: &mut M, data: &[u8]) -> usize {
         let head = mem.read_u32(self.base + ring_hdr::HEAD);
         let tail = mem.read_u32(self.base + ring_hdr::TAIL);
-        let free = self.size - head.wrapping_sub(tail);
+        let free = self.size.saturating_sub(head.wrapping_sub(tail));
         let n = data.len().min(free as usize);
         if n == 0 {
             return 0;
@@ -93,6 +100,11 @@ pub struct Consumer {
 }
 
 impl Consumer {
+    /// Data bytes the ring holds.
+    pub fn capacity(&self) -> u32 {
+        self.size
+    }
+
     /// Attach to a ring at `base` (validates the header).
     pub fn attach<M: RingMemory>(mem: &M, base: usize) -> Result<Self, Error> {
         Ok(Self {

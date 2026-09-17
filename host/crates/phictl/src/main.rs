@@ -116,6 +116,11 @@ enum Cmd {
         /// Serve the disk through aperture copies instead of the DMA engine.
         #[arg(long)]
         no_dma: bool,
+        /// Give the card this much host memory (e.g. 4G): a pinned shared file
+        /// (/dev/shm/phi-hostmem) served as /dev/phiblk1 (swap or scratch through
+        /// the DMA engine) and mapped as /dev/phihost for direct access.
+        #[arg(long, value_parser = parse_size)]
+        host_mem: Option<u64>,
         /// Uid allowed to use the control socket (default: SUDO_UID, else root).
         #[arg(long)]
         owner: Option<u32>,
@@ -267,6 +272,7 @@ fn main() -> Result<()> {
             forward,
             disk,
             no_dma,
+            host_mem,
             serve,
             owner,
         } => cmd_boot(
@@ -284,6 +290,7 @@ fn main() -> Result<()> {
             forward,
             disk,
             no_dma,
+            host_mem,
             serve.map(|p| {
                 let p = if p.as_os_str() == "auto" { serve::default_socket(true) } else { p };
                 (p, owner.unwrap_or_else(serve::default_owner))
@@ -334,7 +341,17 @@ fn main() -> Result<()> {
             forward,
         } => {
             let card = open(cli.bdf.as_deref())?;
-            console(&card, ring_base, ring_size, watch, net.map(|n| (n, net_addr)), forward, None, false)
+            console(
+                &card,
+                ring_base,
+                ring_size,
+                watch,
+                net.map(|n| (n, net_addr)),
+                forward,
+                None,
+                None,
+                false,
+            )
         }
         Cmd::Exec { socket, cwd, argv } => {
             let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false)), cwd, argv)?;
@@ -521,6 +538,7 @@ fn cmd_boot(
     forward: Option<String>,
     disk: Option<PathBuf>,
     no_dma: bool,
+    host_mem: Option<u64>,
     serve: Option<(PathBuf, u32)>,
 ) -> Result<()> {
     let card = open(bdf)?;
@@ -529,7 +547,22 @@ fn cmd_boot(
         Some(p) => Some(std::fs::read(p).with_context(|| format!("reading {}", p.display()))?),
         None => None,
     };
+    // Host memory for the card is pinned before the boot so its card address
+    // can be announced in the ring region header.
+    let hostmem = match host_mem {
+        Some(size) => Some(
+            phi_hw::dma::HostDmaBuffer::from_file(
+                &card,
+                disk::HOSTMEM_IOVA,
+                std::path::Path::new("/dev/shm/phi-hostmem"),
+                size as usize,
+            )
+            .with_context(|| format!("pinning {size} bytes of host memory for the card"))?,
+        ),
+        None => None,
+    };
     let img = BootImage {
+        host_mem: hostmem.as_ref().map(|b| (b.card_addr(), b.len() as u64)),
         kernel: kernel_bytes,
         initrd: initrd_bytes,
         cmdline,
@@ -540,6 +573,9 @@ fn cmd_boot(
     };
     let t0 = Instant::now();
     let r = boot(&card, &img)?;
+    // The card reaches host memory through the SMPT; map its first pages identity now
+    // so the window announced above is valid before the card touches it.
+    phi_hw::dma::smpt_identity(&card, 4);
     if load_only {
         println!(
             "loaded in {:.2}s; boot interrupt NOT sent (--load-only)",
@@ -569,7 +605,7 @@ fn cmd_boot(
                     }
                 });
             }
-            console(&card, ring_base, ring_size, watch, net, forward, disk, !no_dma)
+            console(&card, ring_base, ring_size, watch, net, forward, disk, hostmem, !no_dma)
         })
     } else {
         Ok(())
@@ -587,6 +623,7 @@ fn console(
     net: Option<(String, String)>,
     forward: Option<String>,
     disk: Option<PathBuf>,
+    hostmem: Option<phi_hw::dma::HostDmaBuffer>,
     dma: bool,
 ) -> Result<()> {
     thread::scope(|s| {
@@ -600,8 +637,36 @@ fn console(
         }
         if let Some(path) = &disk {
             s.spawn(move || {
-                if let Err(e) = disk::run(card, ring_base, ring_size, path, dma) {
+                let r = disk::open_image(path).and_then(|b| {
+                    disk::run(
+                        card,
+                        ring_base,
+                        ring_size,
+                        b,
+                        &path.display().to_string(),
+                        phi_ring::ChannelKind::Block,
+                        0,
+                        dma,
+                    )
+                });
+                if let Err(e) = r {
                     eprintln!("[phictl] disk: {e:#}");
+                }
+            });
+        }
+        if let Some(ram) = hostmem {
+            s.spawn(move || {
+                if let Err(e) = disk::run(
+                    card,
+                    ring_base,
+                    ring_size,
+                    disk::Backend::Ram(ram),
+                    "host memory",
+                    phi_ring::ChannelKind::HostMem,
+                    1,
+                    dma,
+                ) {
+                    eprintln!("[phictl] host memory: {e:#}");
                 }
             });
         }
@@ -713,4 +778,20 @@ fn console_loop(card: &Card, ring_base: u64, ring_size: u64, watch: Option<u64>)
             thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// Parse a size with an optional K, M or G suffix (binary units).
+fn parse_size(s: &str) -> std::result::Result<u64, String> {
+    let (num, mul) = match s.chars().last() {
+        Some('K' | 'k') => (&s[..s.len() - 1], 1u64 << 10),
+        Some('M' | 'm') => (&s[..s.len() - 1], 1u64 << 20),
+        Some('G' | 'g') => (&s[..s.len() - 1], 1u64 << 30),
+        _ => (s, 1),
+    };
+    let n: u64 = num.parse().map_err(|_| format!("bad size {s:?}"))?;
+    let v = n.checked_mul(mul).ok_or_else(|| format!("size {s:?} too large"))?;
+    if v == 0 || !v.is_multiple_of(1 << 21) {
+        return Err(format!("size {s:?} must be a positive multiple of 2 MiB"));
+    }
+    Ok(v)
 }

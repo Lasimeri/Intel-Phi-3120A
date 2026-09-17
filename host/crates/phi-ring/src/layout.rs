@@ -33,6 +33,11 @@ pub mod region_hdr {
     pub const HOST_EPOCH_NS: usize = 16;
     /// u64 flags written by the card (bit 0: kernel reached init).
     pub const CARD_BOOT_FLAGS: usize = 24;
+    /// u64 card address of the host memory window (0 = none): pinned host
+    /// memory the card reaches through the SMPT, `/dev/phihost` on the card.
+    pub const HOSTMEM_ADDR: usize = 32;
+    /// u64 size of the host memory window in bytes.
+    pub const HOSTMEM_SIZE: usize = 40;
 }
 
 /// Offsets inside `phi_channel_desc`.
@@ -83,6 +88,9 @@ pub enum ChannelKind {
     /// Block device: 32-byte request records from the card, 8-byte
     /// completions from the host (kernel patch 0025, phictl boot --disk).
     Block = 4,
+    /// A second block device with the same records, backed by host memory
+    /// (phictl boot --host-mem): swap or scratch for the card.
+    HostMem = 5,
 }
 
 impl ChannelKind {
@@ -93,6 +101,7 @@ impl ChannelKind {
             2 => Some(Self::Network),
             3 => Some(Self::Rpc),
             4 => Some(Self::Block),
+            5 => Some(Self::HostMem),
             _ => None,
         }
     }

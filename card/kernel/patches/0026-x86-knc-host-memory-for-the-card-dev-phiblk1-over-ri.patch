@@ -1,0 +1,503 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ian Haapanen <ian.haapanen@gmail.com>
+Date: Wed, 16 Sep 2026 13:36:49 -0500
+Subject: [PATCH 26/26] x86/knc: host memory for the card: /dev/phiblk1 over
+ ring channel 5, /dev/phihost
+
+The host tool pins a shared file for the card and announces its card
+address and size in the ring region header (REGION_HOSTMEM_ADDR and
+_SIZE); the card reaches it through the system memory page table at
+0x80_0000_0000 and up (SSDG 328207-002, 2.1.12).
+
+knc_blk.c becomes multi-instance: channel kind 4 is /dev/phiblk0 (the
+disk image) and kind 5 /dev/phiblk1, backed by that host memory and
+served by the DMA engine straight between the window and the card's
+pages. A channel without bounce slots works in direct mode only. The
+card's init runs mkswap and swapon on /dev/phiblk1 at every boot, which
+extends the card's 6 GB by the size the host gives.
+
+knc_hostmem.c adds /dev/phihost, root only: read, write, llseek (size at
+the end) and mmap (uncached) of the same window, so a card program and a
+host program share bytes with no copy. Every access is a PCIe
+transaction; bulk traffic belongs on /dev/phiblk1.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/knc_ring.h |   3 +
+ arch/x86/kernel/Makefile        |   2 +-
+ arch/x86/kernel/knc_blk.c       | 119 +++++++++++++---------
+ arch/x86/kernel/knc_hostmem.c   | 173 ++++++++++++++++++++++++++++++++
+ 4 files changed, 250 insertions(+), 47 deletions(-)
+ create mode 100644 arch/x86/kernel/knc_hostmem.c
+
+diff --git a/arch/x86/include/asm/knc_ring.h b/arch/x86/include/asm/knc_ring.h
+index 1881ae9e2..8eacd0a4d 100644
+--- a/arch/x86/include/asm/knc_ring.h
++++ b/arch/x86/include/asm/knc_ring.h
+@@ -18,6 +18,7 @@
+ #define PHI_CHANNEL_NETWORK	2
+ #define PHI_CHANNEL_RPC		3	/* command and file transport for the host tool */
+ #define PHI_CHANNEL_BLOCK	4	/* block device requests and completions */
++#define PHI_CHANNEL_HOSTMEM	5	/* the same records, backed by host memory (swap, scratch) */
+ 
+ /* Region header at offset 0. */
+ #define REGION_MAGIC		0
+@@ -26,6 +27,8 @@
+ #define REGION_CHANNEL_COUNT	12
+ #define REGION_HOST_EPOCH_NS	16	/* u64: host wall clock at boot */
+ #define REGION_CARD_BOOT_FLAGS	24	/* u64, written by the card */
++#define REGION_HOSTMEM_ADDR	32	/* u64: card address of the host memory window, 0 = none */
++#define REGION_HOSTMEM_SIZE	40	/* u64: its size in bytes */
+ #define REGION_DESC(i)		(64 + 64 * (i))
+ 
+ /* Channel descriptor, 64 bytes each from offset 64. */
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 06e614355..e41c53cab 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o knc_hostmem.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_blk.c b/arch/x86/kernel/knc_blk.c
+index dd2e37e61..01e2b0621 100644
+--- a/arch/x86/kernel/knc_blk.c
++++ b/arch/x86/kernel/knc_blk.c
+@@ -65,7 +65,6 @@
+ static int direct_param = -1;
+ module_param_named(direct, direct_param, int, 0444);
+ MODULE_PARM_DESC(direct, "-1 as the host says (default), 0 always bounce, 1 always hand pages to the host");
+-static bool direct;
+ 
+ struct knc_blk_cmd {
+ 	blk_status_t status;
+@@ -90,10 +89,23 @@ struct knc_blk {
+ 	struct task_struct *poller;
+ 	struct work_struct register_work;
+ 	u32 ident_sectors;
+-	int major;
++	const struct knc_blk_kind *what;
++	bool direct;			/* this instance hands pages to the host */
++	u32 depth;			/* requests in flight: slots, or KNC_BLK_MAX_SLOTS when direct */
+ };
+ 
+-static struct knc_blk *knc_blk;
++/* One instance per channel kind: kind 4 is /dev/phiblk0 (the disk image), kind 5 /dev/phiblk1 (host memory). */
++struct knc_blk_kind {
++	u32 kind;
++	const char *name;
++	int first_minor;
++};
++static const struct knc_blk_kind knc_blk_kinds[] = {
++	{ PHI_CHANNEL_BLOCK, "phiblk0", 0 },
++	{ PHI_CHANNEL_HOSTMEM, "phiblk1", 16 },
++};
++static struct knc_blk *knc_blk[ARRAY_SIZE(knc_blk_kinds)];
++static int knc_blk_major;
+ 
+ static void __iomem *knc_blk_slot(struct knc_blk *b, u32 tag)
+ {
+@@ -151,6 +163,7 @@ static blk_status_t knc_blk_queue_rq(struct blk_mq_hw_ctx *hctx, const struct bl
+ 	struct knc_blk_cmd *cmd = blk_mq_rq_to_pdu(rq);
+ 	u32 tag = rq->tag, len = 0, op;
+ 	unsigned long flags;
++	bool direct = b->direct;
+ 
+ 	switch (req_op(rq)) {
+ 	case REQ_OP_READ:
+@@ -167,7 +180,7 @@ static blk_status_t knc_blk_queue_rq(struct blk_mq_hw_ctx *hctx, const struct bl
+ 	default:
+ 		return BLK_STS_NOTSUPP;
+ 	}
+-	if (tag >= b->slots || len > KNC_BLK_SLOT)
++	if (tag >= b->depth || len > KNC_BLK_SLOT)
+ 		return BLK_STS_IOERR;
+ 	if (direct && len) {
+ 		struct scatterlist *sg;
+@@ -235,6 +248,7 @@ static const struct block_device_operations knc_blk_fops = {
+  */
+ static void knc_blk_register(struct knc_blk *b, u32 sectors)
+ {
++	const struct knc_blk_kind *k = b->what;
+ 	struct queue_limits lim = {
+ 		.logical_block_size	= 512,
+ 		.physical_block_size	= 4096,
+@@ -247,21 +261,29 @@ static void knc_blk_register(struct knc_blk *b, u32 sectors)
+ 	int err;
+ 
+ 	b->capacity = sectors;
+-	b->major = register_blkdev(0, "phiblk");
+-	if (b->major < 0) {
+-		pr_err("KNC: blk: register_blkdev: %d\n", b->major);
++	b->depth = b->direct ? KNC_BLK_MAX_SLOTS : b->slots;
++	if (!b->depth) {
++		pr_info("KNC: blk: %s: the host copies through the aperture and this channel has no bounce slots; no disk\n", k->name);
+ 		return;
+ 	}
++	if (!knc_blk_major) {
++		knc_blk_major = register_blkdev(0, "phiblk");
++		if (knc_blk_major < 0) {
++			pr_err("KNC: blk: register_blkdev: %d\n", knc_blk_major);
++			knc_blk_major = 0;
++			return;
++		}
++	}
+ 	memset(&b->set, 0, sizeof(b->set));
+ 	b->set.ops = &knc_blk_mq_ops;
+ 	b->set.nr_hw_queues = 1;
+-	b->set.queue_depth = b->slots;
++	b->set.queue_depth = b->depth;
+ 	b->set.numa_node = NUMA_NO_NODE;
+ 	b->set.cmd_size = sizeof(struct knc_blk_cmd);
+ 	err = blk_mq_alloc_tag_set(&b->set);
+ 	if (err) {
+ 		pr_err("KNC: blk: blk_mq_alloc_tag_set: %d\n", err);
+-		goto out_major;
++		return;
+ 	}
+ 	b->disk = blk_mq_alloc_disk(&b->set, &lim, b);
+ 	if (IS_ERR(b->disk)) {
+@@ -269,12 +291,12 @@ static void knc_blk_register(struct knc_blk *b, u32 sectors)
+ 		pr_err("KNC: blk: blk_mq_alloc_disk: %d\n", err);
+ 		goto out_set;
+ 	}
+-	b->disk->major = b->major;
+-	b->disk->first_minor = 0;
++	b->disk->major = knc_blk_major;
++	b->disk->first_minor = k->first_minor;
+ 	b->disk->minors = 16;
+ 	b->disk->fops = &knc_blk_fops;
+ 	b->disk->private_data = b;
+-	strscpy(b->disk->disk_name, "phiblk0", sizeof(b->disk->disk_name));
++	strscpy(b->disk->disk_name, k->name, sizeof(b->disk->disk_name));
+ 	set_capacity(b->disk, b->capacity);
+ 	err = add_disk(b->disk);
+ 	if (err) {
+@@ -283,15 +305,12 @@ static void knc_blk_register(struct knc_blk *b, u32 sectors)
+ 		b->disk = NULL;
+ 		goto out_set;
+ 	}
+-	pr_info("KNC: blk: /dev/phiblk0, %llu MiB served by the host, %u slots of %u KiB, %s\n",
+-		b->capacity >> 11, b->slots, KNC_BLK_SLOT >> 10, direct ? "direct (pages handed to the host)" : "bounced");
++	pr_info("KNC: blk: /dev/%s, %llu MiB served by the host, %s (%u in flight)\n",
++		k->name, b->capacity >> 11, b->direct ? "pages handed to the host" : "bounced through uncached slots", b->depth);
+ 	return;
+ 
+ out_set:
+ 	blk_mq_free_tag_set(&b->set);
+-out_major:
+-	unregister_blkdev(b->major, "phiblk");
+-	b->major = 0;
+ }
+ 
+ static void knc_blk_register_work(struct work_struct *work)
+@@ -311,7 +330,7 @@ static void knc_blk_complete_one(struct knc_blk *b, u32 tag, u32 status)
+ 		if (b->disk || b->ident_sectors)
+ 			return;
+ 		if (status) {
+-			direct = direct_param < 0 ? tag == KNC_BLK_IDENT_DIRECT : direct_param > 0;
++			b->direct = direct_param < 0 ? tag == KNC_BLK_IDENT_DIRECT : direct_param > 0;
+ 			b->ident_sectors = status;
+ 			schedule_work(&b->register_work);
+ 		} else {
+@@ -319,7 +338,7 @@ static void knc_blk_complete_one(struct knc_blk *b, u32 tag, u32 status)
+ 		}
+ 		return;
+ 	}
+-	if ((tag >> 8) >= b->slots) {
++	if ((tag >> 8) >= b->depth) {
+ 		pr_warn_ratelimited("KNC: blk: completion for unknown tag %#x status %u\n", tag, status);
+ 		return;
+ 	}
+@@ -338,7 +357,7 @@ static void knc_blk_complete_one(struct knc_blk *b, u32 tag, u32 status)
+ 	spin_lock_irqsave(&b->lock, flags);
+ 	b->reqs[tag >> 8] = NULL;
+ 	spin_unlock_irqrestore(&b->lock, flags);
+-	if (cmd->status == BLK_STS_OK && !direct && req_op(rq) == REQ_OP_READ)
++	if (cmd->status == BLK_STS_OK && !b->direct && req_op(rq) == REQ_OP_READ)
+ 		knc_blk_copy(rq, knc_blk_slot(b, tag >> 8), false);
+ 	blk_mq_complete_request(rq);
+ }
+@@ -380,42 +399,30 @@ static int knc_blk_poll(void *data)
+ 	return 0;
+ }
+ 
+-static int __init knc_blk_init(void)
++/* One instance: find the channel of this kind, its data area if any, start its poller, post identify. */
++static int __init knc_blk_probe(const struct knc_blk_kind *k, void __iomem *region, u64 base, u64 size, struct knc_blk **out)
+ {
+ 	struct knc_blk *b;
+-	void __iomem *region, *desc;
+-	u64 base, size;
++	void __iomem *desc;
+ 	u32 h2c_off, h2c_size, c2h_off, c2h_size, data_off, data_size, i;
+ 
+-	if (!knc_ring_params(&base, &size))
+-		return -ENODEV;
+-	region = ioremap(base, size);
+-	if (!region)
+-		return -ENOMEM;
+-	if (!knc_ring_find(region, size, PHI_CHANNEL_BLOCK, &h2c_off, &h2c_size, &c2h_off, &c2h_size)) {
+-		pr_info("KNC: blk: no block channel in the ring region\n");
+-		iounmap(region);
++	if (!knc_ring_find(region, size, k->kind, &h2c_off, &h2c_size, &c2h_off, &c2h_size))
+ 		return -ENODEV;
+-	}
+ 	data_off = data_size = 0;
+ 	for (i = 0; i < 8; i++) {
+ 		desc = region + REGION_DESC(i);
+-		if (readl(desc + DESC_KIND) == PHI_CHANNEL_BLOCK) {
++		if (readl(desc + DESC_KIND) == k->kind) {
+ 			data_off = readl(desc + DESC_DATA_OFFSET);
+ 			data_size = readl(desc + DESC_DATA_SIZE);
+ 			break;
+ 		}
+ 	}
+-	if (data_size < KNC_BLK_SLOT || (u64)data_off + data_size > size) {
+-		pr_info("KNC: blk: block channel without a usable data area (%u bytes at %u)\n", data_size, data_off);
+-		iounmap(region);
+-		return -ENODEV;
+-	}
++	if ((u64)data_off + data_size > size)
++		data_size = 0;
+ 	b = kzalloc(sizeof(*b), GFP_KERNEL);
+-	if (!b) {
+-		iounmap(region);
++	if (!b)
+ 		return -ENOMEM;
+-	}
++	b->what = k;
+ 	b->region = region;
+ 	b->rx = region + h2c_off;
+ 	b->rx_size = h2c_size;
+@@ -428,21 +435,41 @@ static int __init knc_blk_init(void)
+ 	b->slots = min_t(u32, data_size / KNC_BLK_SLOT, KNC_BLK_MAX_SLOTS);
+ 	spin_lock_init(&b->lock);
+ 	INIT_WORK(&b->register_work, knc_blk_register_work);
+-	knc_blk = b;
+-	b->poller = kthread_run(knc_blk_poll, b, "phiblk-poll");
++	b->poller = kthread_run(knc_blk_poll, b, "%s-poll", k->name);
+ 	if (IS_ERR(b->poller)) {
+ 		int err = PTR_ERR(b->poller);
+ 
+ 		kfree(b);
+-		knc_blk = NULL;
+-		iounmap(region);
+ 		return err;
+ 	}
+ 	spin_lock_irq(&b->lock);
+ 	knc_blk_post(b, KNC_BLK_IDENT_TAG, KNC_BLK_OP_IDENT, 0, 0, 0);
+ 	knc_blk_publish(b);
+ 	spin_unlock_irq(&b->lock);
+-	pr_info("KNC: blk: block channel found, %u bounce slots at %#llx, identify posted\n", b->slots, b->data_phys);
++	pr_info("KNC: blk: %s: channel %u found, %u bounce slots, identify posted\n", k->name, k->kind, b->slots);
++	*out = b;
++	return 0;
++}
++
++static int __init knc_blk_init(void)
++{
++	void __iomem *region;
++	u64 base, size;
++	int found = 0, i;
++
++	if (!knc_ring_params(&base, &size))
++		return -ENODEV;
++	region = ioremap(base, size);
++	if (!region)
++		return -ENOMEM;
++	for (i = 0; i < ARRAY_SIZE(knc_blk_kinds); i++)
++		if (!knc_blk_probe(&knc_blk_kinds[i], region, base, size, &knc_blk[i]))
++			found++;
++	if (!found) {
++		pr_info("KNC: blk: no block channel in the ring region\n");
++		iounmap(region);
++		return -ENODEV;
++	}
+ 	return 0;
+ }
+ device_initcall(knc_blk_init);
+diff --git a/arch/x86/kernel/knc_hostmem.c b/arch/x86/kernel/knc_hostmem.c
+new file mode 100644
+index 000000000..0112a7af0
+--- /dev/null
++++ b/arch/x86/kernel/knc_hostmem.c
+@@ -0,0 +1,173 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * knc_hostmem.c - /dev/phihost: host memory mapped into the card.
++ *
++ * The host tool pins a shared file (phictl boot --host-mem SIZE) and maps
++ * it for the card through the system memory page table; the card reaches
++ * it at a 40-bit address in the system range (0x80_0000_0000 and up, SSDG
++ * 328207-002 section 2.1.12), announced in the ring region header
++ * (asm/knc_ring.h, REGION_HOSTMEM_ADDR and _SIZE). This device exposes
++ * that window: read() and write() copy through it, mmap() maps it
++ * uncached into a process, so a card program and a host program share the
++ * bytes with no copy at all. Every access is a PCIe transaction, so it is
++ * a control and exchange surface, not fast bulk memory; for bulk the same
++ * memory is /dev/phiblk1 through the DMA engine (knc_blk.c). Root only.
++ */
++#include <linux/fs.h>
++#include <linux/io.h>
++#include <linux/miscdevice.h>
++#include <linux/mm.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++
++#include <asm/knc.h>
++#include <asm/knc_ring.h>
++
++#define KNC_HOSTMEM_CHUNK	SZ_64K
++
++struct knc_hostmem {
++	u64 addr;			/* card address of the window */
++	u64 size;
++	void __iomem *map;		/* the whole window, uncached */
++	struct mutex lock;		/* serialises the bounce buffer */
++	u8 *bounce;
++	struct miscdevice misc;
++};
++
++static struct knc_hostmem *knc_hostmem;
++
++static loff_t knc_hostmem_llseek(struct file *file, loff_t off, int whence)
++{
++	struct knc_hostmem *h = file->private_data;
++
++	return fixed_size_llseek(file, off, whence, h->size);
++}
++
++static ssize_t knc_hostmem_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
++{
++	struct knc_hostmem *h = file->private_data;
++	size_t done = 0;
++
++	if (*ppos >= h->size)
++		return 0;
++	count = min_t(u64, count, h->size - *ppos);
++	if (mutex_lock_interruptible(&h->lock))
++		return -ERESTARTSYS;
++	while (done < count) {
++		size_t n = min_t(size_t, count - done, KNC_HOSTMEM_CHUNK);
++
++		memcpy_fromio(h->bounce, h->map + *ppos + done, n);
++		if (copy_to_user(buf + done, h->bounce, n)) {
++			mutex_unlock(&h->lock);
++			return done ? done : -EFAULT;
++		}
++		done += n;
++	}
++	mutex_unlock(&h->lock);
++	*ppos += done;
++	return done;
++}
++
++static ssize_t knc_hostmem_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
++{
++	struct knc_hostmem *h = file->private_data;
++	size_t done = 0;
++
++	if (*ppos >= h->size)
++		return -ENOSPC;
++	count = min_t(u64, count, h->size - *ppos);
++	if (mutex_lock_interruptible(&h->lock))
++		return -ERESTARTSYS;
++	while (done < count) {
++		size_t n = min_t(size_t, count - done, KNC_HOSTMEM_CHUNK);
++
++		if (copy_from_user(h->bounce, buf + done, n)) {
++			mutex_unlock(&h->lock);
++			return done ? done : -EFAULT;
++		}
++		memcpy_toio(h->map + *ppos + done, h->bounce, n);
++		done += n;
++	}
++	mutex_unlock(&h->lock);
++	*ppos += done;
++	return done;
++}
++
++/* Map part of the window uncached; offset and length come from the caller. */
++static int knc_hostmem_mmap(struct file *file, struct vm_area_struct *vma)
++{
++	struct knc_hostmem *h = file->private_data;
++	u64 off = (u64)vma->vm_pgoff << PAGE_SHIFT;
++	u64 len = vma->vm_end - vma->vm_start;
++
++	if (off >= h->size || len > h->size - off)
++		return -EINVAL;
++	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
++	return io_remap_pfn_range(vma, vma->vm_start, (h->addr + off) >> PAGE_SHIFT, len, vma->vm_page_prot);
++}
++
++static int knc_hostmem_open(struct inode *inode, struct file *file)
++{
++	file->private_data = knc_hostmem;
++	return 0;
++}
++
++static const struct file_operations knc_hostmem_fops = {
++	.owner		= THIS_MODULE,
++	.open		= knc_hostmem_open,
++	.llseek		= knc_hostmem_llseek,
++	.read		= knc_hostmem_read,
++	.write		= knc_hostmem_write,
++	.mmap		= knc_hostmem_mmap,
++};
++
++static int __init knc_hostmem_init(void)
++{
++	struct knc_hostmem *h;
++	void __iomem *region;
++	u64 base, size, addr, len;
++	int err;
++
++	if (!knc_ring_params(&base, &size))
++		return -ENODEV;
++	region = ioremap(base, size);
++	if (!region)
++		return -ENOMEM;
++	addr = readq(region + REGION_HOSTMEM_ADDR);
++	len = readq(region + REGION_HOSTMEM_SIZE);
++	iounmap(region);
++	if (!len)
++		return -ENODEV;
++	h = kzalloc(sizeof(*h), GFP_KERNEL);
++	if (!h)
++		return -ENOMEM;
++	h->bounce = kmalloc(KNC_HOSTMEM_CHUNK, GFP_KERNEL);
++	h->map = ioremap(addr, len);
++	if (!h->bounce || !h->map) {
++		err = -ENOMEM;
++		goto out;
++	}
++	h->addr = addr;
++	h->size = len;
++	mutex_init(&h->lock);
++	h->misc.minor = MISC_DYNAMIC_MINOR;
++	h->misc.name = "phihost";
++	h->misc.fops = &knc_hostmem_fops;
++	h->misc.mode = 0600;
++	knc_hostmem = h;
++	err = misc_register(&h->misc);
++	if (err)
++		goto out;
++	pr_info("KNC: hostmem: %llu MiB of host memory at card address %#llx, /dev/phihost\n", len >> 20, addr);
++	return 0;
++
++out:
++	if (h->map)
++		iounmap(h->map);
++	kfree(h->bounce);
++	kfree(h);
++	knc_hostmem = NULL;
++	return err;
++}
++device_initcall(knc_hostmem_init);

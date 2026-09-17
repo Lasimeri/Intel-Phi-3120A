@@ -20,18 +20,20 @@ The host answers each record with an 8-byte completion in the
 host-to-card ring: tag u32, status u32 (0 ok, else an errno: 5 for an
 I/O error, 22 for a bad record, 95 for an unknown operation). For
 identify the status is the capacity in sectors; a capacity of 0 means no
-disk. Data moves with the DMA engine when `open_path` brings it up (channel 0,
-ring and a 512 KiB buffer pinned in host memory, `phi-hw/src/dma.rs`) and
-passes a self-test through card memory the card does not use (the last
-MiB of the ring region): a read is `pread` into the pinned buffer then one
-DMA descriptor into the card address the record names; a write is the
-reverse. The identify answer then carries tag `0xfffffffe`, and the card
-hands its pages over directly. Without the engine (`--no-dma`, or a
-failed self-test) the host copies through the aperture and answers with
-tag `0xffffffff`, and the card bounces through its uncached slots, since
-aperture writes are not seen by the card's caches (measured 2026-09-16,
-`docs/results/2026-09-16-storage.md`). Flush is `fdatasync`. Set
-`PHICTL_DISK_TRACE=1` to log the first 40 records.
+disk. Data moves with the DMA engine when `open_path` brings it up (one channel
+per served device, ring and a 512 KiB staging buffer pinned in host
+memory, `phi-hw/src/dma.rs`) and passes a self-test through card memory
+the card does not use (the last 2 MiB of the ring region): a read is
+`pread` into the staging buffer then one DMA copy into the card address
+the record names; a write is the reverse; host memory (`--host-mem`) is
+copied straight between the window and the card's pages. Without the
+engine (`--no-dma`, or a failed self-test) the host copies through the
+aperture. Both paths are coherent with the card's caches (measured
+2026-09-16), so the identify answer carries tag `0xfffffffe` and the card
+hands its pages over directly; `PHICTL_DISK_BOUNCE=1` answers `0xffffffff`
+instead, for the bounce path. Flush is `fdatasync`. `PHICTL_DISK_TRACE=1`
+logs the first 40 records; `PHICTL_DMA_STRESS=N` runs N verified random
+copies at start.
 
 Records are served one at a time in order. The thread spins for 3 ms
 after the last record, then polls every 200 us; the same policy runs on

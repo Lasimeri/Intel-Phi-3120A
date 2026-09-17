@@ -357,3 +357,12 @@ mod dma_tests {
         assert_eq!(dma_reg(1, DCAR), 0xA040);
     }
 }
+
+/// Encode a status descriptor (`md_mic_dma_prep_status_desc`): the engine
+/// writes the 64-bit `data` to the 40-bit card address `dst` when it
+/// reaches the descriptor, after everything before it in the ring. Type 2
+/// in bits 63:60 of quadword 1.
+pub const fn dma_status_desc(data: u64, dst: u64) -> (u64, u64) {
+    assert!(dst.is_multiple_of(8));
+    (data, (dst & ((1u64 << 40) - 1)) | (2u64 << 60))
+}

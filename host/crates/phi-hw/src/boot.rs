@@ -15,6 +15,8 @@ use crate::{Error, Result};
 pub struct BootImage {
     /// bzImage bytes.
     pub kernel: Vec<u8>,
+    /// Host memory window announced to the card: (card address, size).
+    pub host_mem: Option<(u64, u64)>,
     /// Optional initramfs bytes.
     pub initrd: Option<Vec<u8>>,
     /// Kernel command line, without the ring/`memmap` parameters, which are
@@ -52,7 +54,7 @@ pub struct BootReport {
 }
 
 /// Default ring plan used by `phictl boot`.
-pub const DEFAULT_CHANNELS: [ChannelPlan; 4] = [
+pub const DEFAULT_CHANNELS: [ChannelPlan; 5] = [
     ChannelPlan {
         kind: ChannelKind::Console,
         h2c_size: 4096,
@@ -76,6 +78,12 @@ pub const DEFAULT_CHANNELS: [ChannelPlan; 4] = [
         h2c_size: 16384,
         c2h_size: 65536,
         data_size: 8 << 20,
+    },
+    ChannelPlan {
+        kind: ChannelKind::HostMem,
+        h2c_size: 16384,
+        c2h_size: 65536,
+        data_size: 0,
     },
 ];
 
@@ -164,7 +172,7 @@ pub fn boot(card: &Card, img: &BootImage) -> Result<BootReport> {
 
     // 5. Format the ring region in host memory, then copy it in one go.
     let mut image = VecMemory::new(img.ring_size as usize);
-    Region::format(&mut image, img.ring_size as usize, &DEFAULT_CHANNELS, now_ns())?;
+    Region::format(&mut image, img.ring_size as usize, &DEFAULT_CHANNELS, now_ns(), img.host_mem)?;
     card.write_card_memory(img.ring_base, image.as_bytes())?;
 
     // 6. Kernel, with the header patched in the copy that goes to the card.

@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Ian Haapanen <ian.haapanen@gmail.com>
 Date: Wed, 16 Sep 2026 12:56:36 -0500
-Subject: [PATCH] x86/knc: /dev/phiblk0, a block device served by the host over
- ring channel 4
+Subject: [PATCH 25/26] x86/knc: /dev/phiblk0, a block device served by the
+ host over ring channel 4
 
 The host tool serves a disk image to the card through a fourth ring
 channel: the card posts 32-byte request records (tag, operation, byte
@@ -15,15 +15,16 @@ workqueue once identify is answered (add_disk reads the device, so it
 cannot run on the poller).
 
 Two data paths. In direct mode the request's pages are handed to the
-host, one record per physical segment, with no copy on the card. In
-bounce mode data goes through 512 KiB uncached slots in the channel's
-data area, part of the ring region, with one record per request and the
-request tag as the slot number. The host chooses through the tag of its
-identify answer: 0xfffffffe when its path into card memory is coherent
-with the cores' caches (the DMA engine), 0xffffffff when it is not (writes
-through the PCIe aperture, which a page the card had just written did not
-see; measured 2026-09-16, both memory zones). knc_blk.direct=0 or 1
-overrides the choice.
+host, one record per physical segment, with no copy on the card; this
+is the normal mode, since host writes into card memory through either
+the PCIe aperture or the DMA engine are coherent with the cores' caches
+(measured 2026-09-16 with dirty and clean lines on the issuing core and
+on another core). In bounce mode data goes through 512 KiB uncached
+slots in the channel's data area, one record per request with the
+request tag as the slot number; it is kept for experiments and for a
+host tool that asks for it. The host chooses through the tag of its
+identify answer (0xfffffffe direct, 0xffffffff bounce); knc_blk.direct=0
+or 1 overrides.
 
 The poller resynchronises on an impossible byte count, the guard the
 other channels carry: the host's index writes went out byte by byte until

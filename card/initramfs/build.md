@@ -49,3 +49,11 @@ boot, so the authorized keys baked into the initramfs stay authoritative.
 The toolchain pushed once with `clang-push.sh` then survives reboots.
 Without a disk the boot continues after the wait with everything in RAM as
 before.
+
+## Host memory (2026-09-16)
+
+When the host serves memory (`phictl boot --host-mem SIZE`, kernel patch
+0026), `/dev/phiblk1` appears within a few seconds of init; `init` runs
+`mkswap` and `swapon` on it every boot (host RAM is volatile), which
+extends the card's 6 GB by that size at DMA speed. `/dev/phihost` maps the
+same memory for direct access.
