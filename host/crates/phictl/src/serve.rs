@@ -28,6 +28,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use phi_hw::ringmem::ApertureRegion;
 use phi_hw::Card;
+use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
 use phi_rpc::{Decoder, Msg};
 
@@ -115,6 +116,65 @@ fn ends_session(m: &Msg) -> bool {
 
 /// Relay frames between one local client at a time and the card's rpc
 /// channel until the process ends.
+/// The card's sensors as text, read from the SBOX through the MMIO BAR:
+/// die and board temperatures, core voltage and clock (decoding in
+/// `phi_regs::sbox::sensors`, from Intel's RAS module).
+pub fn sensors_text(card: &Card) -> String {
+    use sbox::sensors::*;
+    let die = die_temps([
+        card.sbox_read(sbox::CURRENT_DIE_TEMP0),
+        card.sbox_read(sbox::CURRENT_DIE_TEMP0 + 4),
+        card.sbox_read(sbox::CURRENT_DIE_TEMP0 + 8),
+    ]);
+    let max = die_temps([
+        card.sbox_read(sbox::MAX_DIE_TEMP0),
+        card.sbox_read(sbox::MAX_DIE_TEMP0 + 4),
+        card.sbox_read(sbox::MAX_DIE_TEMP0 + 8),
+    ]);
+    let (inlet, vccp) = board_temps(card.sbox_read(sbox::BOARD_TEMP1));
+    let (gddr, gddr_vr) = board_temps(card.sbox_read(sbox::BOARD_TEMP2));
+    let vddg = vddg_temp(card.sbox_read(sbox::STATUS_FAN2));
+    let tmu = tmu_temp(card.sbox_read(sbox::THERMAL_STATUS));
+    let corevolt = card.sbox_read(sbox::COREVOLT);
+    let corefreq = card.sbox_read(sbox::COREFREQ);
+    let ratio = card.sbox_read(sbox::CURRENT_CLK_RATIO);
+    let scratch4 = card.sbox_read(sbox::spad(4));
+    let opt = |v: Option<u16>| v.map(|t| format!("{t} C")).unwrap_or_else(|| "n/a".into());
+    let khz = |r: u32| {
+        core_khz(r & 0xfff, scratch4)
+            .map(|k| format!("{} MHz", k / 1000))
+            .unwrap_or_else(|| format!("n/a (code {:#x})", r & 0xfff))
+    };
+    let mut s = String::new();
+    s.push_str(&format!(
+        "die temperatures: {} C (max seen {} C)\n",
+        die.iter()
+            .map(|t| if *t == 0 { "n/a".to_string() } else { t.to_string() })
+            .collect::<Vec<_>>()
+            .join(" "),
+        max.iter().max().copied().unwrap_or(0)
+    ));
+    s.push_str(&format!(
+        "board: inlet {}, vccp regulator {}, gddr {}, gddr regulator {}, vddg regulator {} C, tmu die {}\n",
+        opt(inlet),
+        opt(vccp),
+        opt(gddr),
+        opt(gddr_vr),
+        vddg,
+        opt(tmu)
+    ));
+    s.push_str(&format!(
+        "core voltage: {}\n",
+        vcore_mv(corevolt).map(|mv| format!("{mv} mV")).unwrap_or_else(|| "n/a".into())
+    ));
+    s.push_str(&format!(
+        "core clock: {} (COREFREQ), {} (CURRENT_CLK_RATIO)\n",
+        khz(corefreq),
+        khz(ratio)
+    ));
+    s
+}
+
 pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, owner: u32) -> Result<()> {
     if !wait_for_init(card, Duration::from_secs(120)) {
         eprintln!("[phictl] serve: the card did not reach init; not relaying");
@@ -168,6 +228,16 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, 
                     from_client.push(&chunk[..n]);
                     loop {
                         match from_client.next_frame() {
+                            Ok(Some(Msg::Sensors)) => {
+                                // Answered here; the card never sees it.
+                                let reply = Msg::SensorsReply { text: sensors_text(card) };
+                                if let Some(stream) = client.as_mut() {
+                                    if stream.write_all(&reply.encode()).is_err() {
+                                        client = None;
+                                    }
+                                }
+                                break;
+                            }
                             Ok(Some(m)) => {
                                 if matches!(m, Msg::Exec { .. }) {
                                     in_exec = true;

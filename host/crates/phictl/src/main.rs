@@ -223,6 +223,12 @@ enum Cmd {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
+    /// Read the card's temperatures, core voltage and clock from the SBOX
+    /// through the daemon (no card involvement).
+    Sensors {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 fn parse_mode(s: &str) -> std::result::Result<u32, String> {
@@ -360,6 +366,7 @@ fn main() -> Result<()> {
         Cmd::Put { socket, src, dst, mode } => client::put(&socket.unwrap_or_else(|| serve::default_socket(false)), &src, dst, mode),
         Cmd::Get { socket, src, dst } => client::get(&socket.unwrap_or_else(|| serve::default_socket(false)), src, &dst),
         Cmd::Status { socket } => client::status(&socket.unwrap_or_else(|| serve::default_socket(false))),
+        Cmd::Sensors { socket } => client::sensors(&socket.unwrap_or_else(|| serve::default_socket(false))),
     }
 }
 

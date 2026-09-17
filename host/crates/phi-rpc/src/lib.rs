@@ -58,6 +58,11 @@ pub enum Msg {
     Ping,
     /// Card to host: reply to `Ping`, with the agent's version.
     Pong { version: String },
+    /// Client to the host daemon only: read the card's sensors from the SBOX
+    /// (never relayed to the card; the daemon answers with `SensorsReply`).
+    Sensors,
+    /// Host daemon to client: the sensors as text, one reading per line.
+    SensorsReply { text: String },
 }
 
 /// Why a frame could not be decoded.
@@ -98,6 +103,8 @@ const TAG_GET_END: u8 = 12;
 const TAG_ERROR: u8 = 13;
 const TAG_PING: u8 = 14;
 const TAG_PONG: u8 = 15;
+const TAG_SENSORS: u8 = 16;
+const TAG_SENSORS_REPLY: u8 = 17;
 
 fn put_str(out: &mut Vec<u8>, s: &str) {
     let b = s.as_bytes();
@@ -210,6 +217,11 @@ impl Msg {
                 put_str(&mut body, version);
                 TAG_PONG
             }
+            Msg::Sensors => TAG_SENSORS,
+            Msg::SensorsReply { text } => {
+                put_str(&mut body, text);
+                TAG_SENSORS_REPLY
+            }
         };
         let mut out = Vec::with_capacity(5 + body.len());
         out.extend_from_slice(&((1 + body.len()) as u32).to_le_bytes());
@@ -260,6 +272,8 @@ impl Msg {
             TAG_ERROR => Msg::Error(r.str()?),
             TAG_PING => Msg::Ping,
             TAG_PONG => Msg::Pong { version: r.str()? },
+            TAG_SENSORS => Msg::Sensors,
+            TAG_SENSORS_REPLY => Msg::SensorsReply { text: r.str()? },
             t => return Err(DecodeError::Tag(t)),
         };
         Ok(msg)

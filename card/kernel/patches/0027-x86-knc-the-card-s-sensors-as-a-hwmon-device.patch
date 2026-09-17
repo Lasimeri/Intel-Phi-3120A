@@ -1,0 +1,360 @@
+From 65053c3e8734298b3fa057fdfd763b0fc142aac2 Mon Sep 17 00:00:00 2001
+From: Ian Haapanen <ian.haapanen@gmail.com>
+Date: Wed, 16 Sep 2026 19:30:48 -0500
+Subject: [PATCH] x86/knc: the card's sensors as a hwmon device
+
+The SBOX carries the thermal monitoring unit's die temperatures (nine
+10-bit fields over three registers, with the maxima seen), the board
+telemetry the SMC broadcasts (air inlet, VCCP and GDDR regulators, GDDR,
+VDDG), the TMU's own die reading, the core voltage as a VR12 SVID code
+and the core clock as PLL ratios. Register offsets and field layouts
+follow Intel's RAS module for the card (MPSS 3.8.6 ras/micras_knc.c,
+reference only). knc_hwmon.c maps the SBOX and registers hwmon "knc":
+temp1..temp15 with labels (die0..die8, inlet, vccp_vr, gddr, gddr_vr,
+vddg_vr, tmu_die), in0 vcore, and core_mhz / core_ratio_mhz / raw
+attributes for the clock decodes and the raw words. Fields without their
+valid bit or reading zero report ENODATA. lm-sensors, psutil and glances
+pick the readings up from sysfs.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+
+The platform layer's core clock decode now falls back to COREFREQ when
+CURRENT_CLK_RATIO reads 0, which it does on the 3120A. Both words carry
+the same PLL ratio encoding and decode to 1100 MHz here, so the boot
+message no longer reports an assumed clock.
+---
+ arch/x86/include/asm/knc.h  |   1 +
+ arch/x86/kernel/Makefile    |   2 +-
+ arch/x86/kernel/knc.c       |  28 +++--
+ arch/x86/kernel/knc_hwmon.c | 237 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 259 insertions(+), 9 deletions(-)
+ create mode 100644 arch/x86/kernel/knc_hwmon.c
+
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+index 53b75bc8f..723f6c2bd 100644
+--- a/arch/x86/include/asm/knc.h
++++ b/arch/x86/include/asm/knc.h
+@@ -25,6 +25,7 @@
+ 
+ /* SBOX registers (micsboxdefine.h, CONFIG_MK1OM values). */
+ #define KNC_SBOX_CURRENT_CLK_RATIO	0x3004
++#define KNC_SBOX_COREFREQ		0x4100	/* same ratio encoding, bits 11:0 */
+ #define KNC_SBOX_SCRATCH(n)		(0xAB20 + 4 * (n))
+ #define KNC_SBOX_SCRATCH4		KNC_SBOX_SCRATCH(4)	/* platform word */
+ 
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index e41c53cab..67e435342 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o knc_hostmem.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o knc_hostmem.o knc_hwmon.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
+index fd54133e3..3d61d5892 100644
+--- a/arch/x86/kernel/knc.c
++++ b/arch/x86/kernel/knc.c
+@@ -72,15 +72,15 @@ void knc_postcode(u32 code)
+  * Core clock from the SBOX, decoded as Intel's card kernel did
+  * (arch/x86/kernel/intelmic.c, get_core_freq, KNC branch): the platform
+  * word SCRATCH4 carries the ICC divider in bits 29:25, the reference
+- * clock is 4000 MHz / divider; CURRENT_CLK_RATIO carries the feedback
++ * clock is 4000 MHz / divider; a ratio word carries the feedback
+  * divider in bits 8:1 and a feedforward code in bits 10:9 (3 = /1,
+- * 2 = /2, else /4). Core MHz = reference * fb / ff.
++ * 2 = /2, else /4). Core MHz = reference * fb / ff. CURRENT_CLK_RATIO
++ * is the word Intel decoded, but it reads 0 on the 3120A (its PLL
++ * ratio is not latched there); COREFREQ, which Intel's RAS module
++ * decodes the same way, carries the ratio on that card.
+  */
+-static unsigned long __init knc_read_core_khz(void)
++static unsigned long __init knc_decode_ratio_khz(u32 ratio, u32 icc_div)
+ {
+-	u32 spad4 = readl(knc_sbox + KNC_SBOX_SCRATCH4);
+-	u32 ratio = readl(knc_sbox + KNC_SBOX_CURRENT_CLK_RATIO);
+-	u32 icc_div = (spad4 >> 25) & 0x1f;
+ 	u32 fb = (ratio >> 1) & 0xff;
+ 	u32 ffcode = (ratio >> 9) & 0x3;
+ 	u32 ff = ffcode == 3 ? 1 : ffcode == 2 ? 2 : 4;
+@@ -90,6 +90,17 @@ static unsigned long __init knc_read_core_khz(void)
+ 	return (4000000UL / icc_div) * fb / ff;
+ }
+ 
++static unsigned long __init knc_read_core_khz(void)
++{
++	u32 icc_div = (readl(knc_sbox + KNC_SBOX_SCRATCH4) >> 25) & 0x1f;
++	unsigned long khz;
++
++	khz = knc_decode_ratio_khz(readl(knc_sbox + KNC_SBOX_CURRENT_CLK_RATIO), icc_div);
++	if (!khz)
++		khz = knc_decode_ratio_khz(readl(knc_sbox + KNC_SBOX_COREFREQ) & 0xfff, icc_div);
++	return khz;
++}
++
+ /* knc.core_khz=N overrides the SBOX decode (unverified on real hardware). */
+ static int __init knc_core_khz_setup(char *s)
+ {
+@@ -246,9 +257,10 @@ static void __init knc_init_platform(void)
+ 		knc_core_khz = 1100000;
+ 		pr_warn("could not decode the core clock; assuming %lu kHz\n", knc_core_khz);
+ 	}
+-	pr_info("core clock %lu kHz (SCRATCH4 %#x, CLK_RATIO %#x)\n", knc_core_khz,
++	pr_info("core clock %lu kHz (SCRATCH4 %#x, CLK_RATIO %#x, COREFREQ %#x)\n", knc_core_khz,
+ 		readl(knc_sbox + KNC_SBOX_SCRATCH4),
+-		readl(knc_sbox + KNC_SBOX_CURRENT_CLK_RATIO));
++		readl(knc_sbox + KNC_SBOX_CURRENT_CLK_RATIO),
++		readl(knc_sbox + KNC_SBOX_COREFREQ));
+ 
+ 	/* SSDG 4.2.2 and 4.2.6: none of the PC-AT devices exist. */
+ 	x86_init.irqs.pre_vector_init		= x86_init_noop;
+diff --git a/arch/x86/kernel/knc_hwmon.c b/arch/x86/kernel/knc_hwmon.c
+new file mode 100644
+index 000000000..7a26b1364
+--- /dev/null
++++ b/arch/x86/kernel/knc_hwmon.c
+@@ -0,0 +1,237 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * knc_hwmon.c - the card's own sensors as a hwmon device.
++ *
++ * The SBOX (memory-mapped at KNC_SBOX_PHYS) carries the thermal monitoring
++ * unit's readings and the board's telemetry; register offsets and field
++ * layouts follow Intel's RAS module for the card (MPSS 3.8.6,
++ * ras/micras_knc.c, reference only):
++ *
++ *   die temperatures  CURRENT_DIE_TEMP0..2 (0x103C..), three 10-bit fields
++ *                     per register, nine sensors; MAX_DIE_TEMP0..2 (0x1048..)
++ *   board             BOARD_TEMP1 (0x1030): bits 8:0 air inlet, valid bit 15;
++ *                     bits 24:16 VCCP regulator, valid bit 31
++ *                     BOARD_TEMP2 (0x1034): GDDR and GDDR regulator likewise
++ *                     STATUS_FAN2 (0x1028): bits 19:12 VDDG regulator
++ *   TMU               THERMAL_STATUS (0x1018): bits 30:22 die, valid bit 31
++ *   core voltage      COREVOLT (0x4104) bits 7:0, VR12 SVID: 250 mV + 5 mV/step
++ *   core frequency    COREFREQ (0x4100) and CURRENT_CLK_RATIO (0x3004) bits
++ *                     11:0: feedback bits 8:1 times 200 MHz over a feed
++ *                     forward of 1, 2 or 4 from bits 10:9 (inverted), scaled by
++ *                     20 over the fused ICC divider in SCRATCH4 bits 29:25
++ *
++ * The values depend on telemetry the SMC broadcasts; fields that read zero
++ * or carry no valid bit are reported as absent. Readings appear under
++ * /sys/class/hwmon (lm-sensors, glances, psutil), plus core_mhz and
++ * core_ratio_mhz attributes for the clock decodes.
++ */
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <asm/knc.h>
++
++#define SBOX_THERMAL_STATUS	0x1018
++#define SBOX_STATUS_FAN2	0x1028
++#define SBOX_BOARD_TEMP1	0x1030
++#define SBOX_BOARD_TEMP2	0x1034
++#define SBOX_BOARD_VOLTAGE_SENSE 0x1038
++#define SBOX_CURRENT_DIE_TEMP0	0x103C
++#define SBOX_MAX_DIE_TEMP0	0x1048
++#define SBOX_CURRENT_CLK_RATIO	0x3004
++#define SBOX_COREFREQ		0x4100
++#define SBOX_COREVOLT		0x4104
++#define SBOX_SCRATCH4		0xAB30
++
++#define BITS(l, r, v)		(((v) >> (r)) & ((1u << ((l) - (r) + 1)) - 1))
++
++static void __iomem *sbox;
++
++/* Channels: 0..8 die sensors, 9 inlet, 10 VCCP VR, 11 GDDR, 12 GDDR VR, 13 VDDG VR, 14 TMU die. */
++static const char *const knc_temp_labels[] = {
++	"die0", "die1", "die2", "die3", "die4", "die5", "die6", "die7", "die8",
++	"inlet", "vccp_vr", "gddr", "gddr_vr", "vddg_vr", "tmu_die",
++};
++
++/* Degrees C of channel n, or -1 when the field is empty or not valid. */
++static int knc_temp(int n)
++{
++	u32 v;
++
++	if (n < 9) {
++		/* Zero means an unfused sensor (this 3120A reports seven of nine). */
++		v = BITS(9, 0, readl(sbox + SBOX_CURRENT_DIE_TEMP0 + 4 * (n / 3)) >> (10 * (n % 3)));
++		return v ? (int)v : -1;
++	}
++	switch (n) {
++	case 9:
++		v = readl(sbox + SBOX_BOARD_TEMP1);
++		return v & BIT(15) ? BITS(8, 0, v) : -1;
++	case 10:
++		v = readl(sbox + SBOX_BOARD_TEMP1);
++		return v & BIT(31) ? BITS(24, 16, v) : -1;
++	case 11:
++		v = readl(sbox + SBOX_BOARD_TEMP2);
++		return v & BIT(15) ? BITS(8, 0, v) : -1;
++	case 12:
++		v = readl(sbox + SBOX_BOARD_TEMP2);
++		return v & BIT(31) ? BITS(24, 16, v) : -1;
++	case 13:
++		v = readl(sbox + SBOX_STATUS_FAN2);
++		return BITS(19, 12, v);
++	case 14:
++		v = readl(sbox + SBOX_THERMAL_STATUS);
++		return v & BIT(31) ? BITS(30, 22, v) : -1;
++	}
++	return -1;
++}
++
++static int knc_temp_max(int n)
++{
++	u32 v;
++
++	if (n >= 9)
++		return -1;
++	v = BITS(9, 0, readl(sbox + SBOX_MAX_DIE_TEMP0 + 4 * (n / 3)) >> (10 * (n % 3)));
++	return v ? (int)v : -1;
++}
++
++/* Core clock in kHz from a 12-bit PLL ratio, as Intel's RAS module decodes it; 0 if the code is out of range. */
++static unsigned long knc_ratio_khz(u32 ratio)
++{
++	static const u8 clk_div[3] = { 1, 2, 4 };
++	static const u8 min_mul[3] = { 8, 8, 8 }, max_mul[3] = { 16, 15, 15 };
++	u32 fwd = BITS(10, 9, ~ratio), bck = BITS(8, 1, ratio);
++	u32 icc = BITS(29, 25, readl(sbox + SBOX_SCRATCH4));
++	unsigned long mhz;
++
++	if (fwd >= 3 || bck < min_mul[fwd] || bck > max_mul[fwd])
++		return 0;
++	mhz = 200 * bck / clk_div[fwd];
++	return 1000 * mhz * 20 / (icc ? icc : 20);
++}
++
++static umode_t knc_is_visible(const void *data, enum hwmon_sensor_types type, u32 attr, int channel)
++{
++	return 0444;
++}
++
++static int knc_read(struct device *dev, enum hwmon_sensor_types type, u32 attr, int channel, long *val)
++{
++	int t;
++
++	switch (type) {
++	case hwmon_temp:
++		if (attr == hwmon_temp_input)
++			t = knc_temp(channel);
++		else if (attr == hwmon_temp_max)
++			t = knc_temp_max(channel);
++		else
++			return -EOPNOTSUPP;
++		if (t < 0)
++			return -ENODATA;
++		*val = t * 1000;
++		return 0;
++	case hwmon_in:
++		if (attr != hwmon_in_input)
++			return -EOPNOTSUPP;
++		t = BITS(7, 0, readl(sbox + SBOX_COREVOLT));
++		if (!t)
++			return -ENODATA;
++		*val = 250 + 5 * (t - 1);
++		return 0;
++	default:
++		return -EOPNOTSUPP;
++	}
++}
++
++static int knc_read_string(struct device *dev, enum hwmon_sensor_types type, u32 attr, int channel, const char **str)
++{
++	if (type == hwmon_temp && attr == hwmon_temp_label && channel < ARRAY_SIZE(knc_temp_labels)) {
++		*str = knc_temp_labels[channel];
++		return 0;
++	}
++	if (type == hwmon_in && attr == hwmon_in_label) {
++		*str = "vcore";
++		return 0;
++	}
++	return -EOPNOTSUPP;
++}
++
++static const struct hwmon_ops knc_hwmon_ops = {
++	.is_visible = knc_is_visible,
++	.read = knc_read,
++	.read_string = knc_read_string,
++};
++
++#define T (HWMON_T_INPUT | HWMON_T_LABEL)
++#define TM (HWMON_T_INPUT | HWMON_T_LABEL | HWMON_T_MAX)
++static const struct hwmon_channel_info *const knc_info[] = {
++	HWMON_CHANNEL_INFO(temp, TM, TM, TM, TM, TM, TM, TM, TM, TM, T, T, T, T, T, T),
++	HWMON_CHANNEL_INFO(in, HWMON_I_INPUT | HWMON_I_LABEL),
++	NULL
++};
++
++static const struct hwmon_chip_info knc_chip = {
++	.ops = &knc_hwmon_ops,
++	.info = knc_info,
++};
++
++static ssize_t core_mhz_show(struct device *dev, struct device_attribute *a, char *buf)
++{
++	return sysfs_emit(buf, "%lu\n", knc_ratio_khz(BITS(11, 0, readl(sbox + SBOX_COREFREQ))) / 1000);
++}
++static DEVICE_ATTR_RO(core_mhz);
++
++static ssize_t core_ratio_mhz_show(struct device *dev, struct device_attribute *a, char *buf)
++{
++	return sysfs_emit(buf, "%lu\n", knc_ratio_khz(BITS(11, 0, readl(sbox + SBOX_CURRENT_CLK_RATIO))) / 1000);
++}
++static DEVICE_ATTR_RO(core_ratio_mhz);
++
++static ssize_t raw_show(struct device *dev, struct device_attribute *a, char *buf)
++{
++	return sysfs_emit(buf, "thermal_status %08x board_temp1 %08x board_temp2 %08x fan2 %08x vsense %08x die %08x %08x %08x max %08x %08x %08x corefreq %08x corevolt %08x clk_ratio %08x scratch4 %08x\n",
++			  readl(sbox + SBOX_THERMAL_STATUS), readl(sbox + SBOX_BOARD_TEMP1), readl(sbox + SBOX_BOARD_TEMP2),
++			  readl(sbox + SBOX_STATUS_FAN2), readl(sbox + SBOX_BOARD_VOLTAGE_SENSE),
++			  readl(sbox + SBOX_CURRENT_DIE_TEMP0), readl(sbox + SBOX_CURRENT_DIE_TEMP0 + 4), readl(sbox + SBOX_CURRENT_DIE_TEMP0 + 8),
++			  readl(sbox + SBOX_MAX_DIE_TEMP0), readl(sbox + SBOX_MAX_DIE_TEMP0 + 4), readl(sbox + SBOX_MAX_DIE_TEMP0 + 8),
++			  readl(sbox + SBOX_COREFREQ), readl(sbox + SBOX_COREVOLT), readl(sbox + SBOX_CURRENT_CLK_RATIO), readl(sbox + SBOX_SCRATCH4));
++}
++static DEVICE_ATTR_RO(raw);
++
++static struct attribute *knc_extra_attrs[] = {
++	&dev_attr_core_mhz.attr,
++	&dev_attr_core_ratio_mhz.attr,
++	&dev_attr_raw.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(knc_extra);
++
++static int __init knc_hwmon_init(void)
++{
++	struct device *hw;
++	struct platform_device *pdev;
++
++	sbox = ioremap(KNC_SBOX_PHYS, KNC_BOX_SIZE);
++	if (!sbox)
++		return -ENOMEM;
++	pdev = platform_device_register_simple("knc-sensors", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		iounmap(sbox);
++		return PTR_ERR(pdev);
++	}
++	hw = devm_hwmon_device_register_with_info(&pdev->dev, "knc", NULL, &knc_chip, knc_extra_groups);
++	if (IS_ERR(hw)) {
++		platform_device_unregister(pdev);
++		iounmap(sbox);
++		return PTR_ERR(hw);
++	}
++	pr_info("KNC: sensors: hwmon '%s', die %d %d %d C, inlet %d C, vcore code %#x, corefreq %#x clk_ratio %#x\n",
++		dev_name(hw), knc_temp(0), knc_temp(1), knc_temp(2), knc_temp(9),
++		BITS(7, 0, readl(sbox + SBOX_COREVOLT)), readl(sbox + SBOX_COREFREQ), readl(sbox + SBOX_CURRENT_CLK_RATIO));
++	return 0;
++}
++device_initcall(knc_hwmon_init);
+-- 
+2.55.0
+

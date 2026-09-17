@@ -25,3 +25,4 @@
 0024-x86-knc-save-and-restore-the-vector-unit-state-on-co.patch
 0025-x86-knc-dev-phiblk0-a-block-device-served-by-the-hos.patch
 0026-x86-knc-host-memory-for-the-card-dev-phiblk1-over-ri.patch
+0027-x86-knc-the-card-s-sensors-as-a-hwmon-device.patch

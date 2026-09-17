@@ -188,3 +188,19 @@ pub fn status(socket: &Path) -> Result<()> {
         other => bail!("unexpected reply {other:?}"),
     }
 }
+
+/// `phictl sensors`: the card's temperatures, voltage and clock, read by the
+/// daemon from the SBOX (the card is not involved, so this works while it
+/// boots or hangs).
+pub fn sensors(socket: &Path) -> Result<()> {
+    let mut conn = Conn::open(socket)?;
+    conn.send(&Msg::Sensors)?;
+    match conn.recv()? {
+        Msg::SensorsReply { text } => {
+            print!("{text}");
+            Ok(())
+        }
+        Msg::Error(e) => bail!("{e}"),
+        other => bail!("unexpected reply {other:?}"),
+    }
+}

@@ -17,3 +17,10 @@ request.
 
 `Decoder` reassembles frames from arbitrary chunks (the rings deliver bytes,
 not messages); the tests feed the whole message set in 7-byte pieces.
+
+## Host-only messages (2026-09-16)
+
+`Sensors` (tag 16) and `SensorsReply` (tag 17) travel only between a
+client and the host daemon: the daemon answers a `Sensors` request with
+the card's SBOX readings as text and never relays it to the card, so the
+agent does not see these tags. `phictl sensors` uses them.

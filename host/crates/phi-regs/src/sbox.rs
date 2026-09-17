@@ -366,3 +366,110 @@ pub const fn dma_status_desc(data: u64, dst: u64) -> (u64, u64) {
     assert!(dst.is_multiple_of(8));
     (data, (dst & ((1u64 << 40) - 1)) | (2u64 << 60))
 }
+
+/// Fan controller status 2: VDDG regulator temperature in bits 19:12 (`SBOX_STATUS_FAN2`).
+pub const STATUS_FAN2: u32 = 0x1028;
+/// Board temperatures 1: air inlet bits 8:0 (valid bit 15), VCCP regulator bits 24:16 (valid bit 31) (`SBOX_BOARD_TEMP1`).
+pub const BOARD_TEMP1: u32 = 0x1030;
+/// Board temperatures 2: GDDR bits 8:0 (valid bit 15), GDDR regulator bits 24:16 (valid bit 31) (`SBOX_BOARD_TEMP2`).
+pub const BOARD_TEMP2: u32 = 0x1034;
+/// Board voltage sense (`SBOX_BOARD_VOLTAGE_SENSE`), raw.
+pub const BOARD_VOLTAGE_SENSE: u32 = 0x1038;
+/// Current die temperatures: three 10-bit fields per register, three registers, nine sensors (`SBOX_CURRENT_DIE_TEMP0..2`).
+pub const CURRENT_DIE_TEMP0: u32 = 0x103C;
+/// Maximum die temperatures, same layout (`SBOX_MAX_DIE_TEMP0..2`).
+pub const MAX_DIE_TEMP0: u32 = 0x1048;
+
+/// Decoding of the sensor registers, shared by the host tool and, in C,
+/// by the card's hwmon driver (kernel patch 0027).
+pub mod sensors {
+    /// The nine die temperatures in degrees C from the three registers.
+    pub const fn die_temps(regs: [u32; 3]) -> [u16; 9] {
+        let mut t = [0u16; 9];
+        let mut i = 0;
+        while i < 9 {
+            t[i] = ((regs[i / 3] >> (10 * (i % 3))) & 0x3ff) as u16;
+            i += 1;
+        }
+        t
+    }
+
+    /// (inlet, VCCP regulator) from BOARD_TEMP1, or (GDDR, GDDR regulator)
+    /// from BOARD_TEMP2; `None` for a field without its valid bit.
+    pub const fn board_temps(reg: u32) -> (Option<u16>, Option<u16>) {
+        let low = if reg & (1 << 15) != 0 { Some((reg & 0x1ff) as u16) } else { None };
+        let high = if reg & (1 << 31) != 0 {
+            Some(((reg >> 16) & 0x1ff) as u16)
+        } else {
+            None
+        };
+        (low, high)
+    }
+
+    /// VDDG regulator temperature from STATUS_FAN2.
+    pub const fn vddg_temp(fan2: u32) -> u16 {
+        ((fan2 >> 12) & 0xff) as u16
+    }
+
+    /// TMU die temperature from THERMAL_STATUS, if valid.
+    pub const fn tmu_temp(status: u32) -> Option<u16> {
+        if status & (1 << 31) != 0 {
+            Some(((status >> 22) & 0x1ff) as u16)
+        } else {
+            None
+        }
+    }
+
+    /// Core voltage in millivolts from the COREVOLT SVID code (VR12: 250 mV
+    /// plus 5 mV per step above code 1; 0 = unset).
+    pub const fn vcore_mv(corevolt: u32) -> Option<u32> {
+        let code = corevolt & 0xff;
+        if code == 0 {
+            None
+        } else {
+            Some(250 + 5 * (code - 1))
+        }
+    }
+
+    /// Core clock in kHz from a 12-bit PLL ratio (COREFREQ or
+    /// CURRENT_CLK_RATIO bits 11:0): feedback bits 8:1 times 200 MHz over a
+    /// feed-forward divider of 1, 2 or 4 selected by bits 10:9 (inverted),
+    /// scaled by 20 over the fused ICC divider (SCRATCH4 bits 29:25, 0 = 20).
+    /// `None` for a code outside the PLL tables (`ratio2freq`, `cpu_tab`).
+    pub const fn core_khz(ratio: u32, scratch4: u32) -> Option<u64> {
+        let fwd = ((!ratio) >> 9) & 0x3;
+        let bck = (ratio >> 1) & 0xff;
+        let (div, max) = match fwd {
+            0 => (1u64, 16),
+            1 => (2, 15),
+            2 => (4, 15),
+            _ => return None,
+        };
+        if bck < 8 || bck > max {
+            return None;
+        }
+        let icc = (scratch4 >> 25) & 0x1f;
+        let icc = if icc == 0 { 20 } else { icc as u64 };
+        Some(200_000 * bck as u64 / div * 20 / icc)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn decodes() {
+            let t = die_temps([(50 << 20) | (49 << 10) | 48, 0, 0]);
+            assert_eq!((t[0], t[1], t[2], t[3]), (48, 49, 50, 0));
+            assert_eq!(board_temps((1 << 15) | 31 | (1 << 31) | (40 << 16)), (Some(31), Some(40)));
+            assert_eq!(board_temps(31), (None, None));
+            assert_eq!(vcore_mv(0), None);
+            assert_eq!(vcore_mv(0x01), Some(250));
+            assert_eq!(vcore_mv(0x9b), Some(250 + 5 * 154));
+            // 1100 MHz: feed-forward 2 (bits 10:9 inverted = 01 -> code 10b), feedback 11.
+            let ratio = (0b10 << 9) | (11 << 1);
+            assert_eq!(core_khz(ratio, 0), Some(1_100_000));
+            assert_eq!(core_khz(0, 0), None);
+        }
+    }
+}
