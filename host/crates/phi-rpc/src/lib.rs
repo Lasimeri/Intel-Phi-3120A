@@ -13,18 +13,33 @@
 //! list    := u16 count | items
 //! ```
 //!
+//! Limits, and what the encoder does at them (the wire cannot say "too
+//! big", so the encoder clips and the receiver never sees an invalid
+//! frame): a string longer than [`MAX_STRING`] bytes is cut at the last
+//! character boundary within the limit, a list longer than [`MAX_LIST`]
+//! keeps its first `MAX_LIST` items, and a byte payload (`Stdin`,
+//! `Stdout`, `PutData`, ...) is the sender's to keep under [`MAX_FRAME`]:
+//! the receiver rejects a longer frame and loses its place in the stream.
+//! The agent and the client send data frames of at most 64 KiB.
+//!
 //! Nothing here touches the ring itself; `phi-ring` and `/dev/phirpc` carry
 //! the frames. See lib.md.
 
 use std::fmt;
 
-/// Largest frame either side accepts (body plus tag).
+/// Largest frame either side accepts: the `length` field's maximum, which
+/// counts the tag and the body (so the whole frame is four bytes more).
 pub const MAX_FRAME: usize = 1 << 20;
+/// Longest string, in bytes (a `u16` length prefix).
+pub const MAX_STRING: usize = u16::MAX as usize;
+/// Longest list (a `u16` count).
+pub const MAX_LIST: usize = u16::MAX as usize;
 
 /// A message on the rpc channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
-    /// Host to card: start a command. `argv[0]` is the program.
+    /// Host to card: start a command. `argv[0]` is the program. An absent
+    /// `cwd` is encoded as an empty string, so `Some("")` decodes as `None`.
     Exec {
         argv: Vec<String>,
         env: Vec<(String, String)>,
@@ -132,7 +147,8 @@ pub struct Stat {
     pub cpus: Vec<CpuStat>,
     /// /proc/meminfo, in kB.
     pub mem: MemStat,
-    /// Load averages over 1, 5 and 15 minutes, in hundredths.
+    /// Load averages over 1, 5 and 15 minutes, in hundredths; the wire
+    /// type caps each at 655.35 (a runaway on 228 threads can exceed it).
     pub load: [u16; 3],
     /// Runnable tasks and all tasks (the fourth field of /proc/loadavg).
     pub running: u32,
@@ -162,7 +178,8 @@ pub struct CpuStat {
     /// Physical core (sysfs topology/core_id).
     pub core: u16,
     /// Ticks (USER_HZ, 100 per second) spent busy: user, nice, system, irq,
-    /// softirq and steal.
+    /// softirq and steal. The kernel's counters are 64-bit; these are their
+    /// low 32 bits, which wrap after 497 days of one state.
     pub busy: u32,
     /// Ticks spent idle or waiting for I/O.
     pub idle: u32,
@@ -224,11 +241,32 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// A list count, clamped to what a u16 holds; returns the count written.
+/// A list count, clipped to [`MAX_LIST`]; returns the count written, which
+/// is how many items the caller must then write.
 fn put_count(out: &mut Vec<u8>, n: usize) -> usize {
-    let n = n.min(u16::MAX as usize);
+    let n = n.min(MAX_LIST);
     put_u16(out, n as u16);
     n
+}
+
+/// The longest prefix of `s` that is at most `max` bytes and ends on a
+/// character boundary, so that a clipped string is still UTF-8.
+fn clip(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// A string, clipped to [`MAX_STRING`] bytes at a character boundary.
+fn put_str(out: &mut Vec<u8>, s: &str) {
+    let b = clip(s, MAX_STRING).as_bytes();
+    put_u16(out, b.len() as u16);
+    out.extend_from_slice(b);
 }
 
 fn put_devs(out: &mut Vec<u8>, list: &[DevStat]) {
@@ -286,13 +324,8 @@ fn put_stat(out: &mut Vec<u8>, s: &Stat) {
     put_u32(out, s.nkthreads);
 }
 
-fn put_str(out: &mut Vec<u8>, s: &str) {
-    let b = s.as_bytes();
-    let n = b.len().min(u16::MAX as usize);
-    out.extend_from_slice(&(n as u16).to_le_bytes());
-    out.extend_from_slice(&b[..n]);
-}
-
+/// A cursor over one frame body. Fields are read in wire order; running
+/// out of bytes is `Malformed`. Bytes after the last field are ignored.
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -300,7 +333,7 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
-        if self.pos + n > self.buf.len() {
+        if n > self.buf.len() - self.pos {
             return Err(DecodeError::Malformed);
         }
         let s = &self.buf[self.pos..self.pos + n];
@@ -368,6 +401,7 @@ impl<'a> Reader<'a> {
         s.running = self.u32()?;
         s.tasks = self.u32()?;
         let n = self.u16()? as usize;
+        s.temps.reserve(n.min(64));
         for _ in 0..n {
             s.temps.push(self.i16()?);
         }
@@ -401,17 +435,48 @@ impl<'a> Reader<'a> {
 }
 
 impl Msg {
-    /// Serialise as one frame (length prefix included).
+    /// The message's name, for logs: its payload (which may be a data
+    /// chunk of 64 KiB) is left out.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Msg::Exec { .. } => "Exec",
+            Msg::Stdin(_) => "Stdin",
+            Msg::StdinEof => "StdinEof",
+            Msg::Stdout(_) => "Stdout",
+            Msg::Stderr(_) => "Stderr",
+            Msg::Exit(_) => "Exit",
+            Msg::PutOpen { .. } => "PutOpen",
+            Msg::PutData(_) => "PutData",
+            Msg::PutClose => "PutClose",
+            Msg::Get { .. } => "Get",
+            Msg::GetData(_) => "GetData",
+            Msg::GetEnd { .. } => "GetEnd",
+            Msg::Error(_) => "Error",
+            Msg::Ping => "Ping",
+            Msg::Pong { .. } => "Pong",
+            Msg::Sensors => "Sensors",
+            Msg::SensorsReply { .. } => "SensorsReply",
+            Msg::Stat => "Stat",
+            Msg::StatReply(_) => "StatReply",
+            Msg::Traffic => "Traffic",
+            Msg::TrafficReply(_) => "TrafficReply",
+        }
+    }
+
+    /// Serialise as one frame (length prefix included). Strings and lists
+    /// are clipped to their wire limits (see the crate documentation); a
+    /// byte payload is the caller's to keep under [`MAX_FRAME`], and a
+    /// frame over it is asserted against in debug builds.
     pub fn encode(&self) -> Vec<u8> {
         let mut body = Vec::new();
         let tag = match self {
             Msg::Exec { argv, env, cwd } => {
-                body.extend_from_slice(&(argv.len().min(u16::MAX as usize) as u16).to_le_bytes());
-                for a in argv.iter().take(u16::MAX as usize) {
+                let n = put_count(&mut body, argv.len());
+                for a in &argv[..n] {
                     put_str(&mut body, a);
                 }
-                body.extend_from_slice(&(env.len().min(u16::MAX as usize) as u16).to_le_bytes());
-                for (k, v) in env.iter().take(u16::MAX as usize) {
+                let n = put_count(&mut body, env.len());
+                for (k, v) in &env[..n] {
                     put_str(&mut body, k);
                     put_str(&mut body, v);
                 }
@@ -484,6 +549,12 @@ impl Msg {
                 TAG_TRAFFIC_REPLY
             }
         };
+        debug_assert!(
+            body.len() < MAX_FRAME,
+            "{} frame of {} bytes exceeds MAX_FRAME",
+            self.name(),
+            body.len() + 1
+        );
         let mut out = Vec::with_capacity(5 + body.len());
         out.extend_from_slice(&((1 + body.len()) as u32).to_le_bytes());
         out.push(tag);
@@ -571,23 +642,30 @@ impl Decoder {
         self.buf.len()
     }
 
-    /// Take the next complete frame, if any. After an error the stream is
-    /// unusable: the caller should end the session.
+    /// Take the next complete frame, if any. A frame that does not decode
+    /// is discarded and reported, and the decoder stays usable: after
+    /// [`DecodeError::Tag`] or [`DecodeError::Malformed`] exactly that
+    /// frame is gone (its length was valid, so the stream is still in
+    /// sync); after [`DecodeError::Length`] every buffered byte is gone,
+    /// because the frame boundary is lost and only fresh input can restore
+    /// it (the bytes of the oversize frame still in flight will likely be
+    /// reported the same way).
     pub fn next_frame(&mut self) -> Result<Option<Msg>, DecodeError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
         let len = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
         if len == 0 || len as usize > MAX_FRAME {
+            self.buf.clear();
             return Err(DecodeError::Length(len));
         }
         let total = 4 + len as usize;
         if self.buf.len() < total {
             return Ok(None);
         }
-        let msg = Msg::decode_body(self.buf[4], &self.buf[5..total])?;
+        let result = Msg::decode_body(self.buf[4], &self.buf[5..total]);
         self.buf.drain(..total);
-        Ok(Some(msg))
+        result.map(Some)
     }
 }
 
@@ -595,9 +673,32 @@ impl Decoder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn round_trip_every_message() {
-        let msgs = vec![
+    /// A frame with the given length field, tag and body bytes, as built
+    /// by hand (so that it can be wrong).
+    fn frame(len: u32, tag: u8, body: &[u8]) -> Vec<u8> {
+        let mut f = len.to_le_bytes().to_vec();
+        f.push(tag);
+        f.extend_from_slice(body);
+        f
+    }
+
+    fn decode_all(bytes: &[u8]) -> Vec<Result<Msg, DecodeError>> {
+        let mut d = Decoder::new();
+        d.push(bytes);
+        let mut out = Vec::new();
+        loop {
+            match d.next_frame() {
+                Ok(Some(m)) => out.push(Ok(m)),
+                Ok(None) => break,
+                Err(e) => out.push(Err(e)),
+            }
+        }
+        out
+    }
+
+    /// One of every message, with non-trivial payloads.
+    fn every_message() -> Vec<Msg> {
+        vec![
             Msg::Exec {
                 argv: vec!["/bin/sh".into(), "-c".into(), "echo hi".into()],
                 env: vec![("PATH".into(), "/bin".into())],
@@ -627,45 +728,24 @@ mod tests {
             Msg::Error("no such file".into()),
             Msg::Ping,
             Msg::Pong { version: "0.1".into() },
-        ];
-        let mut stream = Vec::new();
-        for m in &msgs {
-            stream.extend_from_slice(&m.encode());
-        }
-        // Feed in odd-sized pieces to exercise reassembly.
-        let mut d = Decoder::new();
-        let mut got = Vec::new();
-        for piece in stream.chunks(7) {
-            d.push(piece);
-            while let Some(m) = d.next_frame().unwrap() {
-                got.push(m);
-            }
-        }
-        assert_eq!(got, msgs);
-        assert_eq!(d.pending(), 0);
+            Msg::Sensors,
+            Msg::SensorsReply {
+                text: "die temperatures: 54 C\n".into(),
+            },
+            Msg::Stat,
+            Msg::StatReply(Box::new(sample_stat())),
+            Msg::Traffic,
+            Msg::TrafficReply(Traffic {
+                dma_to_card: 1,
+                dma_from_card: 2,
+                aperture_to_card: 3,
+                aperture_from_card: u64::MAX,
+            }),
+        ]
     }
 
-    #[test]
-    fn rejects_bad_frames() {
-        let mut d = Decoder::new();
-        d.push(&[0, 0, 0, 0]);
-        assert_eq!(d.next_frame(), Err(DecodeError::Length(0)));
-        let mut d = Decoder::new();
-        d.push(&[1, 0, 0, 0, 200]);
-        assert_eq!(d.next_frame(), Err(DecodeError::Tag(200)));
-        let mut d = Decoder::new();
-        d.push(&[2, 0, 0, 0, TAG_GET, 5]);
-        assert_eq!(d.next_frame(), Err(DecodeError::Malformed));
-    }
-}
-
-#[cfg(test)]
-mod stat_tests {
-    use super::*;
-
-    #[test]
-    fn stat_and_traffic_round_trip() {
-        let stat = Stat {
+    fn sample_stat() -> Stat {
+        Stat {
             uptime_ms: 123_456,
             cpus: (0..228)
                 .map(|i| CpuStat {
@@ -721,26 +801,236 @@ mod stat_tests {
             ],
             nprocs: 1507,
             nkthreads: 1490,
-        };
-        let traffic = Traffic {
-            dma_to_card: 1,
-            dma_from_card: 2,
-            aperture_to_card: 3,
-            aperture_from_card: u64::MAX,
-        };
-        let msgs = vec![Msg::Stat, Msg::StatReply(Box::new(stat)), Msg::Traffic, Msg::TrafficReply(traffic)];
+        }
+    }
+
+    #[test]
+    fn round_trip_every_message() {
+        let msgs = every_message();
         let mut stream = Vec::new();
         for m in &msgs {
             stream.extend_from_slice(&m.encode());
         }
+        // Feed in odd-sized pieces to exercise reassembly.
+        for piece_len in [1, 5, 7, 4096] {
+            let mut d = Decoder::new();
+            let mut got = Vec::new();
+            for piece in stream.chunks(piece_len) {
+                d.push(piece);
+                while let Some(m) = d.next_frame().unwrap() {
+                    got.push(m);
+                }
+            }
+            assert_eq!(got, msgs);
+            assert_eq!(d.pending(), 0);
+        }
+    }
+
+    #[test]
+    fn tags_are_stable() {
+        // The wire tags are shared with every agent ever built; a renumbering
+        // would only show up on the card.
+        let expect: Vec<(u8, &str)> = vec![
+            (1, "Exec"),
+            (2, "Stdin"),
+            (3, "StdinEof"),
+            (4, "Stdout"),
+            (5, "Stderr"),
+            (6, "Exit"),
+            (7, "PutOpen"),
+            (8, "PutData"),
+            (9, "PutClose"),
+            (10, "Get"),
+            (11, "GetData"),
+            (12, "GetEnd"),
+            (13, "Error"),
+            (14, "Ping"),
+            (15, "Pong"),
+            (16, "Sensors"),
+            (17, "SensorsReply"),
+            (18, "Stat"),
+            (19, "StatReply"),
+            (20, "Traffic"),
+            (21, "TrafficReply"),
+        ];
+        let mut msgs = every_message();
+        msgs.remove(1); // the second Exec
+        assert_eq!(msgs.len(), expect.len());
+        for (m, (tag, name)) in msgs.iter().zip(&expect) {
+            assert_eq!(m.encode()[4], *tag, "{name}");
+            assert_eq!(m.name(), *name);
+        }
+    }
+
+    #[test]
+    fn rejects_bad_frames() {
         let mut d = Decoder::new();
-        let mut got = Vec::new();
-        for piece in stream.chunks(5) {
-            d.push(piece);
-            while let Some(m) = d.next_frame().unwrap() {
-                got.push(m);
+        d.push(&[0, 0, 0, 0]);
+        assert_eq!(d.next_frame(), Err(DecodeError::Length(0)));
+        let mut d = Decoder::new();
+        d.push(&[1, 0, 0, 0, 200]);
+        assert_eq!(d.next_frame(), Err(DecodeError::Tag(200)));
+        let mut d = Decoder::new();
+        d.push(&[2, 0, 0, 0, TAG_GET, 5]);
+        assert_eq!(d.next_frame(), Err(DecodeError::Malformed));
+        // A string that is not UTF-8.
+        let mut d = Decoder::new();
+        d.push(&frame(4, TAG_ERROR, &[1, 0, 0xff]));
+        assert_eq!(d.next_frame(), Err(DecodeError::Malformed));
+    }
+
+    #[test]
+    fn every_truncated_body_is_malformed() {
+        // Cutting any structured body short must be reported, never read as
+        // a shorter valid message; a bytes body is valid at every length.
+        for m in every_message() {
+            let full = m.encode();
+            let body = &full[5..];
+            let bytes_body = matches!(
+                m,
+                Msg::Stdin(_) | Msg::Stdout(_) | Msg::Stderr(_) | Msg::PutData(_) | Msg::GetData(_)
+            );
+            for cut in 0..body.len() {
+                let f = frame(1 + cut as u32, full[4], &body[..cut]);
+                let got = decode_all(&f);
+                assert_eq!(got.len(), 1, "{} cut at {cut}", m.name());
+                if bytes_body {
+                    assert!(got[0].is_ok(), "{} cut at {cut}", m.name());
+                } else {
+                    assert_eq!(got[0], Err(DecodeError::Malformed), "{} cut at {cut}", m.name());
+                }
             }
         }
-        assert_eq!(got, msgs);
+    }
+
+    #[test]
+    fn trailing_bytes_are_ignored() {
+        let mut f = Msg::Exit(3).encode();
+        f.extend_from_slice(&[9, 9, 9]);
+        f[0] += 3;
+        assert_eq!(decode_all(&f), vec![Ok(Msg::Exit(3))]);
+    }
+
+    #[test]
+    fn bad_frame_keeps_sync_and_bad_length_resets() {
+        // An unknown tag and a malformed body each cost exactly their own
+        // frame: the frames around them still decode.
+        let mut stream = Msg::Ping.encode();
+        stream.extend_from_slice(&frame(3, 200, &[1, 2]));
+        stream.extend_from_slice(&Msg::Exit(1).encode());
+        stream.extend_from_slice(&frame(2, TAG_GET, &[5]));
+        stream.extend_from_slice(&Msg::StdinEof.encode());
+        assert_eq!(
+            decode_all(&stream),
+            vec![
+                Ok(Msg::Ping),
+                Err(DecodeError::Tag(200)),
+                Ok(Msg::Exit(1)),
+                Err(DecodeError::Malformed),
+                Ok(Msg::StdinEof),
+            ]
+        );
+        // A bad length loses everything buffered, and only that: what comes
+        // in afterwards decodes again.
+        let mut d = Decoder::new();
+        let mut stream = frame(u32::MAX, TAG_PING, &[]);
+        stream.extend_from_slice(&Msg::Ping.encode());
+        d.push(&stream);
+        assert_eq!(d.next_frame(), Err(DecodeError::Length(u32::MAX)));
+        assert_eq!(d.pending(), 0);
+        assert_eq!(d.next_frame(), Ok(None));
+        d.push(&Msg::Exit(0).encode());
+        assert_eq!(d.next_frame(), Ok(Some(Msg::Exit(0))));
+    }
+
+    #[test]
+    fn frame_at_the_limit() {
+        // The length field may be exactly MAX_FRAME: a tag and a body of
+        // MAX_FRAME - 1 bytes.
+        let m = Msg::Stdin(vec![0xab; MAX_FRAME - 1]);
+        let f = m.encode();
+        assert_eq!(f.len(), 4 + MAX_FRAME);
+        assert_eq!(u32::from_le_bytes([f[0], f[1], f[2], f[3]]) as usize, MAX_FRAME);
+        let mut d = Decoder::new();
+        d.push(&f[..1000]);
+        assert_eq!(d.next_frame(), Ok(None));
+        d.push(&f[1000..]);
+        assert_eq!(d.next_frame(), Ok(Some(m)));
+        // One byte more is refused before the body is even read.
+        let mut d = Decoder::new();
+        d.push(&(MAX_FRAME as u32 + 1).to_le_bytes());
+        assert_eq!(d.next_frame(), Err(DecodeError::Length(MAX_FRAME as u32 + 1)));
+    }
+
+    #[test]
+    fn strings_and_lists_are_clipped_at_their_limits() {
+        // Exactly the limit passes whole.
+        let s = "a".repeat(MAX_STRING);
+        let m = Msg::Error(s.clone());
+        assert_eq!(decode_all(&m.encode()), vec![Ok(m)]);
+        // One more byte is cut, and the cut lands on a character boundary
+        // so the receiver still gets valid UTF-8: here the two-byte "é"
+        // straddling the limit goes entirely.
+        let mut s = "a".repeat(MAX_STRING - 1);
+        s.push('\u{e9}');
+        assert_eq!(s.len(), MAX_STRING + 1);
+        let m = Msg::Error(s);
+        assert_eq!(decode_all(&m.encode()), vec![Ok(Msg::Error("a".repeat(MAX_STRING - 1)))]);
+        assert_eq!(clip("h\u{e9}llo", 2), "h");
+        assert_eq!(clip("h\u{e9}llo", 3), "h\u{e9}");
+        assert_eq!(clip("", 0), "");
+        // A list of exactly MAX_LIST items round-trips; one more is dropped.
+        let argv: Vec<String> = (0..MAX_LIST + 1).map(|i| (i % 10).to_string()).collect();
+        let m = Msg::Exec {
+            argv: argv.clone(),
+            env: vec![],
+            cwd: None,
+        };
+        match decode_all(&m.encode()).remove(0) {
+            Ok(Msg::Exec { argv: got, .. }) => assert_eq!(got, argv[..MAX_LIST]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_cwd_is_none() {
+        let m = Msg::Exec {
+            argv: vec!["x".into()],
+            env: vec![],
+            cwd: Some(String::new()),
+        };
+        match decode_all(&m.encode()).remove(0) {
+            Ok(Msg::Exec { cwd, .. }) => assert_eq!(cwd, None),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn stat_lists_at_their_limits() {
+        // Stat lists longer than the wire allows keep their first MAX_LIST
+        // entries and the rest of the sample still decodes. (The process
+        // list is bounded by the frame before the count: at 28 bytes plus
+        // the name per entry, MAX_LIST of them would not fit MAX_FRAME; the
+        // agent caps what it sends, see card/agent/src/stat.rs.)
+        let mut s = sample_stat();
+        s.cpus = (0..MAX_LIST as u32 + 5)
+            .map(|i| CpuStat {
+                core: (i / 4) as u16,
+                busy: i,
+                idle: 0,
+            })
+            .collect();
+        s.temps = vec![-1; MAX_LIST + 1];
+        let m = Msg::StatReply(Box::new(s));
+        match decode_all(&m.encode()).remove(0) {
+            Ok(Msg::StatReply(got)) => {
+                assert_eq!(got.cpus.len(), MAX_LIST);
+                assert_eq!(got.cpus[MAX_LIST - 1].busy, MAX_LIST as u32 - 1);
+                assert_eq!(got.temps.len(), MAX_LIST);
+                assert_eq!(got.nprocs, 1507);
+                assert_eq!(got.procs.len(), 2);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
