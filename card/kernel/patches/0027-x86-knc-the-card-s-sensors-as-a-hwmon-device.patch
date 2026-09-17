@@ -1,4 +1,4 @@
-From 65053c3e8734298b3fa057fdfd763b0fc142aac2 Mon Sep 17 00:00:00 2001
+From 07cfa3b894ecd34572ee4306bc8c6aa32afa0fa8 Mon Sep 17 00:00:00 2001
 From: Ian Haapanen <ian.haapanen@gmail.com>
 Date: Wed, 16 Sep 2026 19:30:48 -0500
 Subject: [PATCH] x86/knc: the card's sensors as a hwmon device
@@ -22,22 +22,40 @@ The platform layer's core clock decode now falls back to COREFREQ when
 CURRENT_CLK_RATIO reads 0, which it does on the 3120A. Both words carry
 the same PLL ratio encoding and decode to 1100 MHz here, so the boot
 message no longer reports an assumed clock.
+
+The clock ratio register is CURRENTRATIO at SBOX offset 0x402C on Knights
+Corner (Intel's k1om tree: mic_knc/micsboxdefine.h, and intelmic.c under
+CONFIG_MK1OM); the merged MPSS header lists the Knights Ferry offset 0x3004
+without a guard, which this port had copied, and that register reads 0 on
+the 3120A. Measured 2026-09-17: SBOX+0x402C = 0x04160416 (current and goal
+ratio 0x416, 1100 MHz), SBOX+0x3004 = 0. The platform layer and the hwmon
+driver now read 0x402C; the COREFREQ fallback stays.
 ---
- arch/x86/include/asm/knc.h  |   1 +
+ arch/x86/include/asm/knc.h  |  11 +-
  arch/x86/kernel/Makefile    |   2 +-
- arch/x86/kernel/knc.c       |  28 +++--
+ arch/x86/kernel/knc.c       |  29 +++--
  arch/x86/kernel/knc_hwmon.c | 237 ++++++++++++++++++++++++++++++++++++
- 4 files changed, 259 insertions(+), 9 deletions(-)
+ 4 files changed, 268 insertions(+), 11 deletions(-)
  create mode 100644 arch/x86/kernel/knc_hwmon.c
 
 diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
-index 53b75bc8f..723f6c2bd 100644
+index 53b75bc8f..60fb2afa1 100644
 --- a/arch/x86/include/asm/knc.h
 +++ b/arch/x86/include/asm/knc.h
-@@ -25,6 +25,7 @@
+@@ -23,8 +23,15 @@
+ /* DBOX: the POST code register the host reads at BAR4 + 0x242c. */
+ #define KNC_DBOX_POSTCODE	0x242c
  
- /* SBOX registers (micsboxdefine.h, CONFIG_MK1OM values). */
- #define KNC_SBOX_CURRENT_CLK_RATIO	0x3004
+-/* SBOX registers (micsboxdefine.h, CONFIG_MK1OM values). */
+-#define KNC_SBOX_CURRENT_CLK_RATIO	0x3004
++/*
++ * SBOX registers, KNC offsets from Intel's k1om tree (mic_knc/micsboxdefine.h,
++ * intelmic.c under CONFIG_MK1OM). CURRENTRATIO is 0x402C on KNC: the merged
++ * MPSS header lists the KNF value 0x3004 without a guard, and that offset
++ * reads 0 on the 3120A (measured 2026-09-17: SBOX+0x402C = 0x04160416,
++ * SBOX+0x3004 = 0).
++ */
++#define KNC_SBOX_CURRENT_CLK_RATIO	0x402C	/* bits 11:0 current ratio, 27:16 goal */
 +#define KNC_SBOX_COREFREQ		0x4100	/* same ratio encoding, bits 11:0 */
  #define KNC_SBOX_SCRATCH(n)		(0xAB20 + 4 * (n))
  #define KNC_SBOX_SCRATCH4		KNC_SBOX_SCRATCH(4)	/* platform word */
@@ -56,10 +74,10 @@ index e41c53cab..67e435342 100644
  obj-$(CONFIG_EISA)		+= eisa.o
  obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
 diff --git a/arch/x86/kernel/knc.c b/arch/x86/kernel/knc.c
-index fd54133e3..3d61d5892 100644
+index fd54133e3..32121c748 100644
 --- a/arch/x86/kernel/knc.c
 +++ b/arch/x86/kernel/knc.c
-@@ -72,15 +72,15 @@ void knc_postcode(u32 code)
+@@ -72,15 +72,16 @@ void knc_postcode(u32 code)
   * Core clock from the SBOX, decoded as Intel's card kernel did
   * (arch/x86/kernel/intelmic.c, get_core_freq, KNC branch): the platform
   * word SCRATCH4 carries the ICC divider in bits 29:25, the reference
@@ -68,9 +86,10 @@ index fd54133e3..3d61d5892 100644
   * divider in bits 8:1 and a feedforward code in bits 10:9 (3 = /1,
 - * 2 = /2, else /4). Core MHz = reference * fb / ff.
 + * 2 = /2, else /4). Core MHz = reference * fb / ff. CURRENT_CLK_RATIO
-+ * is the word Intel decoded, but it reads 0 on the 3120A (its PLL
-+ * ratio is not latched there); COREFREQ, which Intel's RAS module
-+ * decodes the same way, carries the ratio on that card.
++ * (0x402C on KNC) is the word Intel decoded; COREFREQ, which Intel's RAS
++ * module decodes the same way, carries the programmed ratio and is the
++ * fallback should the live word ever read 0 (it did while this port used
++ * the KNF offset 0x3004).
   */
 -static unsigned long __init knc_read_core_khz(void)
 +static unsigned long __init knc_decode_ratio_khz(u32 ratio, u32 icc_div)
@@ -81,7 +100,7 @@ index fd54133e3..3d61d5892 100644
  	u32 fb = (ratio >> 1) & 0xff;
  	u32 ffcode = (ratio >> 9) & 0x3;
  	u32 ff = ffcode == 3 ? 1 : ffcode == 2 ? 2 : 4;
-@@ -90,6 +90,17 @@ static unsigned long __init knc_read_core_khz(void)
+@@ -90,6 +91,17 @@ static unsigned long __init knc_read_core_khz(void)
  	return (4000000UL / icc_div) * fb / ff;
  }
  
@@ -99,7 +118,7 @@ index fd54133e3..3d61d5892 100644
  /* knc.core_khz=N overrides the SBOX decode (unverified on real hardware). */
  static int __init knc_core_khz_setup(char *s)
  {
-@@ -246,9 +257,10 @@ static void __init knc_init_platform(void)
+@@ -246,9 +258,10 @@ static void __init knc_init_platform(void)
  		knc_core_khz = 1100000;
  		pr_warn("could not decode the core clock; assuming %lu kHz\n", knc_core_khz);
  	}
@@ -114,7 +133,7 @@ index fd54133e3..3d61d5892 100644
  	x86_init.irqs.pre_vector_init		= x86_init_noop;
 diff --git a/arch/x86/kernel/knc_hwmon.c b/arch/x86/kernel/knc_hwmon.c
 new file mode 100644
-index 000000000..7a26b1364
+index 000000000..21a29c43c
 --- /dev/null
 +++ b/arch/x86/kernel/knc_hwmon.c
 @@ -0,0 +1,237 @@
@@ -135,7 +154,7 @@ index 000000000..7a26b1364
 + *                     STATUS_FAN2 (0x1028): bits 19:12 VDDG regulator
 + *   TMU               THERMAL_STATUS (0x1018): bits 30:22 die, valid bit 31
 + *   core voltage      COREVOLT (0x4104) bits 7:0, VR12 SVID: 250 mV + 5 mV/step
-+ *   core frequency    COREFREQ (0x4100) and CURRENT_CLK_RATIO (0x3004) bits
++ *   core frequency    COREFREQ (0x4100) and CURRENT_CLK_RATIO (0x402C) bits
 + *                     11:0: feedback bits 8:1 times 200 MHz over a feed
 + *                     forward of 1, 2 or 4 from bits 10:9 (inverted), scaled by
 + *                     20 over the fused ICC divider in SCRATCH4 bits 29:25
@@ -160,7 +179,7 @@ index 000000000..7a26b1364
 +#define SBOX_BOARD_VOLTAGE_SENSE 0x1038
 +#define SBOX_CURRENT_DIE_TEMP0	0x103C
 +#define SBOX_MAX_DIE_TEMP0	0x1048
-+#define SBOX_CURRENT_CLK_RATIO	0x3004
++#define SBOX_CURRENT_CLK_RATIO	0x402C	/* SBOX_CURRENTRATIO in mic_knc/micsboxdefine.h; 0x3004 is the KNF offset */
 +#define SBOX_COREFREQ		0x4100
 +#define SBOX_COREVOLT		0x4104
 +#define SBOX_SCRATCH4		0xAB30

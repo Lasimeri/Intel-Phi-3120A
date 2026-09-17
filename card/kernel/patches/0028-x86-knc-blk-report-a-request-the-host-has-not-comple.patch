@@ -1,0 +1,59 @@
+From efad59f4ff328554cc07ea21f93d60c336bd7031 Mon Sep 17 00:00:00 2001
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 17:43:20 -0500
+Subject: [PATCH] x86/knc: blk: report a request the host has not completed
+
+A block request the host never answers hangs its process in D state for
+ever with nothing in the log: the driver had no timeout operation, so the
+block layer only re-armed its timer. One direct read did exactly that on
+2026-09-17 (docs/results/2026-09-17-phitop.md), and nothing on either side
+said which request, or whether its records had reached the host.
+
+Add the timeout operation. It prints the tag, the operation, the size and
+sector, how many of the request's records are still outstanding, and the
+head and tail of both rings, then keeps waiting (BLK_EH_RESET_TIMER). The
+request is deliberately not failed: in direct mode its pages belong to the
+host's DMA engine until the completion arrives, and freeing them under a
+write that may still land would corrupt whatever reuses them.
+---
+ arch/x86/kernel/knc_blk.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/arch/x86/kernel/knc_blk.c b/arch/x86/kernel/knc_blk.c
+index 01e2b0621..47559b218 100644
+--- a/arch/x86/kernel/knc_blk.c
++++ b/arch/x86/kernel/knc_blk.c
+@@ -232,9 +232,30 @@ static void knc_blk_complete(struct request *rq)
+ 	blk_mq_end_request(rq, cmd->status);
+ }
+ 
++/*
++ * A request the host has not completed in the block layer's 30 s: say so,
++ * with both rings' indices, and keep waiting. The request is never failed
++ * here: in direct mode its pages belong to the host's DMA engine until
++ * the completion arrives, and failing it would hand them out for reuse
++ * under a write that may still land (docs/results/2026-09-17-phitop.md,
++ * the direct read that stalled).
++ */
++static enum blk_eh_timer_return knc_blk_timeout(struct request *rq)
++{
++	struct knc_blk *b = rq->q->queuedata;
++	struct knc_blk_cmd *cmd = blk_mq_rq_to_pdu(rq);
++
++	pr_warn_ratelimited("KNC: blk: %s: tag %u (%s, %u bytes at sector %llu) still waiting: %d record(s) outstanding, requests tx head %u tail %u, completions rx head %u tail %u\n",
++			    b->what->name, rq->tag, blk_op_str(req_op(rq)), blk_rq_bytes(rq),
++			    (unsigned long long)blk_rq_pos(rq), atomic_read(&cmd->pending),
++			    b->tx_head, readl(b->tx + RING_TAIL), readl(b->rx + RING_HEAD), b->rx_tail);
++	return BLK_EH_RESET_TIMER;
++}
++
+ static const struct blk_mq_ops knc_blk_mq_ops = {
+ 	.queue_rq	= knc_blk_queue_rq,
+ 	.complete	= knc_blk_complete,
++	.timeout	= knc_blk_timeout,
+ };
+ 
+ static const struct block_device_operations knc_blk_fops = {
+-- 
+2.55.0
+
