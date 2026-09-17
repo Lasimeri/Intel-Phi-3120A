@@ -13,4 +13,12 @@ Scalar instructions (moves, loop control, `lea`) are ordinary AT&T
 mnemonics for the card's clang; only the vector and mask instructions are
 `.byte` lines, each with its Intel-syntax mnemonic as a comment. The
 generated files are committed so that the card can be used without
-running the generator; regenerate and diff after any encoder change.
+running the generator.
+
+`cargo test -p knc-mvex` compares the generator's output with the two
+committed `.S` files and with the header inside patch 0024, so after any
+encoder change the tests fail until all three are regenerated: the two
+`.S` files in place, the header into the patch (and the kernel tree, then
+a kernel rebuild). The mandel and probe files are then run on the card
+before the change is accepted (`docs/results/2026-09-15-vpu.md` is the
+procedure).

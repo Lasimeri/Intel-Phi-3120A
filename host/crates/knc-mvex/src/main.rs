@@ -16,8 +16,6 @@ use knc_mvex::*;
 use std::env;
 use std::fmt::Write;
 
-const RDI: Mem = Mem { base: Gpr::Rdi, disp: 0 };
-
 fn at(base: Gpr, disp: i32) -> Src {
     Src::Mem(Mem::new(base, disp))
 }
@@ -116,7 +114,6 @@ fn probe() -> String {
     get_body(&mut s);
     end_function(&mut s, "vpu_get");
     writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
-    let _ = RDI;
     s
 }
 
@@ -237,4 +234,36 @@ fn main() {
         }
     };
     print!("{text}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed files are this generator's output. An encoder change
+    /// fails here until the files are regenerated (main.md), so the card
+    /// never runs bytes the tests in lib.rs did not see.
+    #[test]
+    fn committed_probe_and_mandel_are_current() {
+        assert_eq!(probe(), include_str!("../../../../card/examples/vpu_probe.S"));
+        assert_eq!(mandel(), include_str!("../../../../card/examples/mandel_vpu.S"));
+    }
+
+    /// The kernel header as patch 0024 adds it: the `+` lines of its
+    /// `knc_vpu.h` hunk, less the marker.
+    #[test]
+    fn kernel_header_matches_patch_0024() {
+        let patch = include_str!("../../../../card/kernel/patches/0024-x86-knc-save-and-restore-the-vector-unit-state-on-co.patch");
+        let hunk = patch
+            .split("+++ b/arch/x86/include/asm/knc_vpu.h\n")
+            .nth(1)
+            .expect("the patch adds the header");
+        let header: String = hunk
+            .lines()
+            .take_while(|l| !l.starts_with("diff --git"))
+            .filter_map(|l| l.strip_prefix('+'))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(kernel_header(), header);
+    }
 }
