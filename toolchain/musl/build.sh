@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build.sh: build musl with knc-cc into the card sysroot (toolchain/build/sysroot).
-# Pinned version, trust-on-first-use checksum, XMM-using arch files removed,
-# project patches applied, archive audited. See build.md.
+# Pinned version and SHA-256 (toolchain/SHA256SUMS), XMM-using arch files
+# removed, project patches applied, archive audited. See build.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/../env.sh"
@@ -9,24 +9,14 @@ root="$phi_root"
 here="$root/toolchain/musl"
 VER="${PHI_MUSL_VERSION:-1.2.5}"
 URL="https://musl.libc.org/releases/musl-$VER.tar.gz"
-DL="$root/toolchain/build/downloads"
 SRC="$root/toolchain/build/musl-$VER"
 SYSROOT="$PHI_SYSROOT"
-SUMS="$DL/SHA256SUMS"
-mkdir -p "$DL"; touch "$SUMS"
+AUDIT="$root/host/target/debug/phi-isa-audit"
+[ -x "$AUDIT" ] || { echo "build.sh: $AUDIT missing; run 'make build' first (the audit tool is a prerequisite of every card build)" >&2; exit 1; }
 
-tarball="$DL/musl-$VER.tar.gz"
-if [ ! -s "$tarball" ]; then
-    echo "== fetching $URL"
-    curl -fL --retry 3 -o "$tarball.part" "$URL" && mv "$tarball.part" "$tarball"
-fi
-sum=$(sha256sum "$tarball" | awk '{print $1}')
-if grep -q " musl-$VER.tar.gz\$" "$SUMS"; then
-    want=$(grep " musl-$VER.tar.gz\$" "$SUMS" | awk '{print $1}')
-    [ "$sum" = "$want" ] || { echo "SHA-256 mismatch for musl-$VER.tar.gz" >&2; exit 1; }
-else
-    echo "$sum  musl-$VER.tar.gz" >> "$SUMS"
-fi
+# Pinned download (toolchain/fetch.sh, toolchain/SHA256SUMS).
+phi_fetch "musl-$VER.tar.gz" "$URL"
+tarball="$phi_fetched"
 
 rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xzf "$tarball" -C "$SRC" --strip-components=1
@@ -71,5 +61,5 @@ fi
 
 # 5. Audit every member of libc.a; one illegal instruction fails the build.
 echo "== audit"
-"$root/host/target/debug/phi-isa-audit" "$SYSROOT/usr/lib/libc.a"
+"$AUDIT" "$SYSROOT/usr/lib/libc.a"
 echo "musl $VER installed in $SYSROOT"

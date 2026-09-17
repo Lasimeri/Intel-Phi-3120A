@@ -52,3 +52,5 @@ export PHI_SYSROOT="${PHI_SYSROOT:-$phi_root/toolchain/build/sysroot}"
 export PATH="$phi_root/toolchain/clang:$PHI_LLVM/bin:$PATH"
 export CC=knc-cc
 export CXX=knc-c++
+# Pinned downloads: phi_fetch NAME URL (toolchain/fetch.sh, toolchain/SHA256SUMS).
+. "$_env_here/fetch.sh"

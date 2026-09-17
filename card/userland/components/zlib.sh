@@ -7,23 +7,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 root="$phi_root"
 VER="${PHI_ZLIB_VERSION:-1.3.1}"
 URL="https://github.com/madler/zlib/releases/download/v$VER/zlib-$VER.tar.gz"
-DL="$root/toolchain/build/downloads"
 SRC="$root/card/userland/build/zlib-$VER"
-SUMS="$DL/SHA256SUMS"
 AUDIT="$root/host/target/debug/phi-isa-audit"
-mkdir -p "$DL"; touch "$SUMS"
-tarball="$DL/zlib-$VER.tar.gz"
-if [ ! -s "$tarball" ]; then
-    echo "== fetching $URL"
-    curl -fL --retry 3 -o "$tarball.part" "$URL" && mv "$tarball.part" "$tarball"
-fi
-sum=$(sha256sum "$tarball" | awk '{print $1}')
-if grep -q " zlib-$VER.tar.gz\$" "$SUMS"; then
-    want=$(grep " zlib-$VER.tar.gz\$" "$SUMS" | awk '{print $1}')
-    [ "$sum" = "$want" ] || { echo "SHA-256 mismatch for zlib-$VER.tar.gz" >&2; exit 1; }
-else
-    echo "$sum  zlib-$VER.tar.gz" >> "$SUMS"
-fi
+[ -x "$AUDIT" ] || { echo "zlib.sh: $AUDIT missing; run 'make build' first" >&2; exit 1; }
+[ -f "$PHI_SYSROOT/usr/lib/libc.a" ] || { echo "zlib.sh: no musl sysroot at $PHI_SYSROOT; run toolchain/musl/build.sh first" >&2; exit 1; }
+# Pinned download (toolchain/fetch.sh, toolchain/SHA256SUMS).
+phi_fetch "zlib-$VER.tar.gz" "$URL"
+tarball="$phi_fetched"
 rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xzf "$tarball" -C "$SRC" --strip-components=1
 cd "$SRC"

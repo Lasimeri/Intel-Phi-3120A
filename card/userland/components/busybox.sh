@@ -8,24 +8,16 @@ here=$(cd "$(dirname "$0")" && pwd)
 root="$phi_root"
 VER="${PHI_BUSYBOX_VERSION:-1.37.0}"
 URL="https://busybox.net/downloads/busybox-$VER.tar.bz2"
-DL="$root/toolchain/build/downloads"
 SRC="$root/card/userland/build/busybox-$VER"
 OUT="$root/card/userland/build/busybox"
-SUMS="$DL/SHA256SUMS"
-mkdir -p "$DL" "$OUT"; touch "$SUMS"
+AUDIT="$root/host/target/debug/phi-isa-audit"
+[ -x "$AUDIT" ] || { echo "busybox.sh: $AUDIT missing; run 'make build' first" >&2; exit 1; }
+[ -f "$PHI_SYSROOT/usr/lib/libc.a" ] || { echo "busybox.sh: no musl sysroot at $PHI_SYSROOT; run toolchain/musl/build.sh first" >&2; exit 1; }
+mkdir -p "$OUT"
 
-tarball="$DL/busybox-$VER.tar.bz2"
-if [ ! -s "$tarball" ]; then
-    echo "== fetching $URL"
-    curl -fL --retry 3 -o "$tarball.part" "$URL" && mv "$tarball.part" "$tarball"
-fi
-sum=$(sha256sum "$tarball" | awk '{print $1}')
-if grep -q " busybox-$VER.tar.bz2\$" "$SUMS"; then
-    want=$(grep " busybox-$VER.tar.bz2\$" "$SUMS" | awk '{print $1}')
-    [ "$sum" = "$want" ] || { echo "SHA-256 mismatch for busybox-$VER.tar.bz2" >&2; exit 1; }
-else
-    echo "$sum  busybox-$VER.tar.bz2" >> "$SUMS"
-fi
+# Pinned download (toolchain/fetch.sh, toolchain/SHA256SUMS).
+phi_fetch "busybox-$VER.tar.bz2" "$URL"
+tarball="$phi_fetched"
 
 rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xjf "$tarball" -C "$SRC" --strip-components=1
@@ -67,7 +59,7 @@ cp busybox "$OUT/busybox"
 ls -l "$OUT/busybox"
 
 echo "== audit"
-"$root/host/target/debug/phi-isa-audit" "$OUT/busybox"
+"$AUDIT" "$OUT/busybox"
 echo "== run on host"
 "$OUT/busybox" echo "busybox $VER for the card runs on the host"
 "$OUT/busybox" sh -c 'echo "shell ok: $((6*7))"; uname -m; ls -d /proc | head -1'

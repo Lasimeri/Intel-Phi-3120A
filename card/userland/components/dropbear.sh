@@ -10,24 +10,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 root="$phi_root"
 VER="${PHI_DROPBEAR_VERSION:-2025.88}"
 URL="https://matt.ucc.asn.au/dropbear/releases/dropbear-$VER.tar.bz2"
-DL="$root/toolchain/build/downloads"
 SRC="$root/card/userland/build/dropbear-$VER"
 OUT="$root/card/userland/build/dropbear"
-SUMS="$DL/SHA256SUMS"
 AUDIT="$root/host/target/debug/phi-isa-audit"
-mkdir -p "$DL" "$OUT/keys"; touch "$SUMS"
-tarball="$DL/dropbear-$VER.tar.bz2"
-if [ ! -s "$tarball" ]; then
-    echo "== fetching $URL"
-    curl -fL --retry 3 -o "$tarball.part" "$URL" && mv "$tarball.part" "$tarball"
-fi
-sum=$(sha256sum "$tarball" | awk '{print $1}')
-if grep -q " dropbear-$VER.tar.bz2\$" "$SUMS"; then
-    want=$(grep " dropbear-$VER.tar.bz2\$" "$SUMS" | awk '{print $1}')
-    [ "$sum" = "$want" ] || { echo "SHA-256 mismatch for dropbear-$VER.tar.bz2" >&2; exit 1; }
-else
-    echo "$sum  dropbear-$VER.tar.bz2" >> "$SUMS"
-fi
+[ -x "$AUDIT" ] || { echo "dropbear.sh: $AUDIT missing; run 'make build' first" >&2; exit 1; }
+[ -f "$PHI_SYSROOT/usr/lib/libc.a" ] || { echo "dropbear.sh: no musl sysroot at $PHI_SYSROOT; run toolchain/musl/build.sh first" >&2; exit 1; }
+mkdir -p "$OUT/keys"
+# Pinned download (toolchain/fetch.sh, toolchain/SHA256SUMS).
+phi_fetch "dropbear-$VER.tar.bz2" "$URL"
+tarball="$phi_fetched"
 rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xjf "$tarball" -C "$SRC" --strip-components=1
 cd "$SRC"

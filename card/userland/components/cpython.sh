@@ -14,27 +14,21 @@ here=$(cd "$(dirname "$0")" && pwd)
 root="$phi_root"
 VER="${PHI_PYTHON_VERSION:-3.14.7}"
 URL="https://www.python.org/ftp/python/$VER/Python-$VER.tar.xz"
-DL="$root/toolchain/build/downloads"
 SRC="$root/card/userland/build/Python-$VER"
 OUT="$root/card/userland/build/cpython"
-SUMS="$DL/SHA256SUMS"
 AUDIT="$root/host/target/debug/phi-isa-audit"
 BUILD_PY="${PHI_BUILD_PYTHON:-/usr/bin/python3}"
+[ -x "$AUDIT" ] || { echo "cpython.sh: $AUDIT missing; run 'make build' first" >&2; exit 1; }
+[ -x "$BUILD_PY" ] || { echo "cpython.sh: build interpreter $BUILD_PY missing (pacman -S python, or set PHI_BUILD_PYTHON)" >&2; exit 1; }
+for lib in libc.a libz.a libncursesw.a; do
+    [ -f "$PHI_SYSROOT/usr/lib/$lib" ] || { echo "cpython.sh: $lib missing from the sysroot $PHI_SYSROOT; run toolchain/musl/build.sh, zlib.sh and ncurses.sh first" >&2; exit 1; }
+done
 hostver=$("$BUILD_PY" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')
 [ "$hostver" = "$VER" ] || { echo "cpython.sh: the build interpreter is $hostver but the target is $VER; they must match (set PHI_PYTHON_VERSION or PHI_BUILD_PYTHON)" >&2; exit 1; }
-mkdir -p "$DL" "$OUT"; touch "$SUMS"
-tarball="$DL/Python-$VER.tar.xz"
-if [ ! -s "$tarball" ]; then
-    echo "== fetching $URL"
-    curl -fL --retry 3 -o "$tarball.part" "$URL" && mv "$tarball.part" "$tarball"
-fi
-sum=$(sha256sum "$tarball" | awk '{print $1}')
-if grep -q " Python-$VER.tar.xz\$" "$SUMS"; then
-    want=$(grep " Python-$VER.tar.xz\$" "$SUMS" | awk '{print $1}')
-    [ "$sum" = "$want" ] || { echo "SHA-256 mismatch for Python-$VER.tar.xz" >&2; exit 1; }
-else
-    echo "$sum  Python-$VER.tar.xz" >> "$SUMS"
-fi
+mkdir -p "$OUT"
+# Pinned download (toolchain/fetch.sh, toolchain/SHA256SUMS).
+phi_fetch "Python-$VER.tar.xz" "$URL"
+tarball="$phi_fetched"
 # PHI_PYTHON_INCREMENTAL=1 keeps an existing configured tree and only
 # refreshes the extra modules and reruns make (iterating on a Setup fragment).
 if [ -z "${PHI_PYTHON_INCREMENTAL:-}" ] || [ ! -f "$SRC/Makefile" ]; then
