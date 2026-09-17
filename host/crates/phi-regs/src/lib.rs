@@ -9,9 +9,17 @@
 //! Sources are abbreviated in doc comments as:
 //! - `mic_x100.h` / `mic_x100.c`: mainline Linux v5.9, `drivers/misc/mic/host/`
 //! - `intelmic.c`: Intel's k1om kernel `arch/x86/kernel/intelmic.c` (2.6.38.8+mpss3.5.1)
+//! - `micsboxdefine.h` / `micsboxstruct.h`: the KNC register list and bit
+//!   layouts, `arch/x86/include/asm/mic/mic_knc/` in the same tree; MPSS
+//!   3.8.6 ships a merged KNF/KNC copy as `include/mic/micsboxdefine.h`
+//! - `micras_knc.c`: MPSS 3.8.6 `ras/micras_knc.c`, the sensor and PLL decodes
+//! - `mic_dma_md.c` / `mic_dma_md.h`: MPSS 3.8.6 `dma/` and `include/mic/`, the DMA engine
 //! - `SSDG`: Intel document 328207-002, with section number
 //! - `ISA`: Intel document 327364-001, with appendix
 //! - `boot.rst`: Linux `Documentation/arch/x86/boot.rst`
+//!
+//! Measurements on this card are cited by their record in `docs/results/`
+//! or, for register reads, by the table in `docs/spec/sbox-registers.md`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

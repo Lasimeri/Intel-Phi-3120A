@@ -18,6 +18,13 @@ pub const CHANNEL_DESC_SIZE: usize = 64;
 /// Size of the `phi_ring` header that precedes its data area (three
 /// 64-byte lines: magic/size, head, tail).
 pub const RING_HDR_SIZE: usize = 192;
+/// Alignment of every structure in the region: the KNC cache line
+/// (SSDG 328207-002, 2.1.1), so that no two fields written by different
+/// sides share a line.
+pub const LINE: usize = 64;
+/// Alignment of a channel's data area (bounce slots are handed to the
+/// card as whole pages).
+pub const DATA_ALIGN: usize = 4096;
 
 /// Offsets inside `phi_region_hdr`.
 pub mod region_hdr {
@@ -94,6 +101,9 @@ pub enum ChannelKind {
 }
 
 impl ChannelKind {
+    /// Every kind this crate knows, in wire order.
+    pub const ALL: [ChannelKind; 5] = [Self::Console, Self::Network, Self::Rpc, Self::Block, Self::HostMem];
+
     /// Decode from the wire value.
     pub fn from_u32(v: u32) -> Option<Self> {
         match v {
@@ -110,6 +120,11 @@ impl ChannelKind {
 /// Bit in `card_boot_flags` the card sets when its kernel reached `init`.
 pub const CARD_FLAG_INIT_REACHED: u64 = 1;
 
+// The last field of each structure ends inside its line.
+const _: () = assert!(region_hdr::HOSTMEM_SIZE + 8 <= REGION_HDR_SIZE);
+const _: () = assert!(channel_desc::DATA_SIZE + 4 <= CHANNEL_DESC_SIZE);
+const _: () = assert!(ring_hdr::TAIL + 4 <= RING_HDR_SIZE);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,10 +135,19 @@ mod tests {
         assert_eq!(RING_MAGIC, 0x474E_4952);
         assert_eq!(ring_hdr::DATA, RING_HDR_SIZE);
         // Head and tail on distinct 64-byte lines, data on a fresh line.
-        assert_eq!(ring_hdr::HEAD % 64, 0);
-        assert_eq!(ring_hdr::TAIL % 64, 0);
-        assert_eq!(ring_hdr::DATA % 64, 0);
-        assert_eq!(REGION_HDR_SIZE % 64, 0);
-        assert_eq!(CHANNEL_DESC_SIZE % 64, 0);
+        assert_eq!(ring_hdr::HEAD % LINE, 0);
+        assert_eq!(ring_hdr::TAIL % LINE, 0);
+        assert_eq!(ring_hdr::DATA % LINE, 0);
+        assert_eq!(REGION_HDR_SIZE % LINE, 0);
+        assert_eq!(CHANNEL_DESC_SIZE % LINE, 0);
+    }
+
+    #[test]
+    fn channel_kinds_round_trip_and_unknown_is_none() {
+        for k in ChannelKind::ALL {
+            assert_eq!(ChannelKind::from_u32(k as u32), Some(k));
+        }
+        assert_eq!(ChannelKind::from_u32(0), None);
+        assert_eq!(ChannelKind::from_u32(6), None);
     }
 }

@@ -25,8 +25,17 @@ unsafe impl Sync for Mapping {}
 
 impl Mapping {
     /// mmap `len` bytes of `fd` starting at `offset`, read/write, shared.
+    /// `offset` is the region offset VFIO reported (`index << 40` for
+    /// `vfio-pci`), which must be page aligned and fit in `off_t`; `len`
+    /// must be non-zero. Both are checked before the call so that a bad
+    /// argument fails with `EINVAL` here rather than as a later fault.
     pub fn new(fd: BorrowedFd<'_>, offset: u64, len: usize) -> io::Result<Self> {
-        // SAFETY: mmap with a valid fd and length; the result is checked.
+        let off = libc::off_t::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        if len == 0 {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        // SAFETY: mmap with a valid fd and a non-zero length; the result is
+        // checked against MAP_FAILED.
         let p = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -34,7 +43,7 @@ impl Mapping {
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 fd.as_raw_fd(),
-                offset as libc::off_t,
+                off,
             )
         };
         if p == libc::MAP_FAILED {
@@ -51,11 +60,14 @@ impl Mapping {
         self.len
     }
 
-    /// True if the mapping is empty (never, for a real BAR).
+    /// True if the mapping is empty (never: `new` rejects a zero length).
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Bounds check: `off..off+width` must lie inside the mapping. Panics
+    /// otherwise, because an out-of-range device access is a programming
+    /// error in the caller (a wrong register offset), not a runtime condition.
     fn check(&self, off: usize, width: usize) {
         assert!(
             off.checked_add(width).is_some_and(|end| end <= self.len),
@@ -64,23 +76,32 @@ impl Mapping {
         );
     }
 
-    /// Volatile 32-bit read at byte offset `off` (must be 4-aligned).
+    /// Volatile 32-bit read at byte offset `off`.
+    ///
+    /// # Panics
+    /// If `off` is not 4-aligned or the dword lies outside the mapping.
     pub fn read32(&self, off: usize) -> u32 {
         self.check(off, 4);
         assert!(off.is_multiple_of(4), "unaligned 32-bit read at {off:#x}");
-        // SAFETY: bounds and alignment checked above.
+        // SAFETY: bounds and alignment checked above; the base is page aligned.
         unsafe { ptr::read_volatile(self.base.as_ptr().add(off) as *const u32) }
     }
 
-    /// Volatile 32-bit write at byte offset `off` (must be 4-aligned).
+    /// Volatile 32-bit write at byte offset `off`.
+    ///
+    /// # Panics
+    /// If `off` is not 4-aligned or the dword lies outside the mapping.
     pub fn write32(&self, off: usize, v: u32) {
         self.check(off, 4);
         assert!(off.is_multiple_of(4), "unaligned 32-bit write at {off:#x}");
-        // SAFETY: bounds and alignment checked above.
+        // SAFETY: bounds and alignment checked above; the base is page aligned.
         unsafe { ptr::write_volatile(self.base.as_ptr().add(off) as *mut u32, v) }
     }
 
     /// Volatile 8-bit read.
+    ///
+    /// # Panics
+    /// If `off` lies outside the mapping.
     pub fn read8(&self, off: usize) -> u8 {
         self.check(off, 1);
         // SAFETY: bounds checked.
@@ -88,6 +109,9 @@ impl Mapping {
     }
 
     /// Volatile 8-bit write.
+    ///
+    /// # Panics
+    /// If `off` lies outside the mapping.
     pub fn write8(&self, off: usize, v: u8) {
         self.check(off, 1);
         // SAFETY: bounds checked.
@@ -97,6 +121,10 @@ impl Mapping {
     /// Copy `data` into the mapping at `off` using 8-byte volatile stores
     /// where alignment allows and byte stores for the ragged edges. Meant
     /// for the aperture (plain memory behind a BAR), not for registers.
+    /// Counted in [`traffic::APERTURE_TO_CARD`].
+    ///
+    /// # Panics
+    /// If `off..off+data.len()` lies outside the mapping.
     pub fn write_bytes(&self, off: usize, data: &[u8]) {
         self.check(off, data.len());
         traffic::add(&traffic::APERTURE_TO_CARD, data.len());
@@ -120,7 +148,11 @@ impl Mapping {
         }
     }
 
-    /// Copy `buf.len()` bytes out of the mapping at `off`, mirror of [`Self::write_bytes`].
+    /// Copy `buf.len()` bytes out of the mapping at `off`, mirror of
+    /// [`Self::write_bytes`]. Counted in [`traffic::APERTURE_FROM_CARD`].
+    ///
+    /// # Panics
+    /// If `off..off+buf.len()` lies outside the mapping.
     pub fn read_bytes(&self, off: usize, buf: &mut [u8]) {
         self.check(off, buf.len());
         traffic::add(&traffic::APERTURE_FROM_CARD, buf.len());
@@ -154,7 +186,7 @@ impl Drop for Mapping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::OwnedFd;
+    use std::os::fd::{AsFd, OwnedFd};
 
     /// Anonymous memory through memfd stands in for a BAR so the byte
     /// copy paths (alignment head/body/tail) are tested on plain RAM.
@@ -171,27 +203,68 @@ mod tests {
 
     #[test]
     fn byte_copies_round_trip_at_every_alignment() {
-        use std::os::fd::AsFd;
         let fd = memfd(4096);
         let m = Mapping::new(fd.as_fd(), 0, 4096).unwrap();
+        assert_eq!(m.len(), 4096);
+        assert!(!m.is_empty());
+        let before = traffic::snapshot();
+        let mut moved = 0;
         for start in 0..17usize {
             let data: Vec<u8> = (0..37u8).map(|b| b.wrapping_mul(7).wrapping_add(start as u8)).collect();
             m.write_bytes(100 + start, &data);
             let mut back = vec![0u8; data.len()];
             m.read_bytes(100 + start, &mut back);
             assert_eq!(back, data, "alignment offset {start}");
+            moved += data.len() as u64;
         }
+        let after = traffic::snapshot();
+        assert!(after[2] - before[2] >= moved, "aperture writes counted");
+        assert!(after[3] - before[3] >= moved, "aperture reads counted");
         m.write32(0, 0xDEAD_BEEF);
         assert_eq!(m.read32(0), 0xDEAD_BEEF);
         assert_eq!(m.read8(0), 0xEF, "little-endian byte order");
+        m.write8(3, 0x11);
+        assert_eq!(m.read32(0), 0x11AD_BEEF);
+        // Empty copies at the very end are in bounds; one byte past is not.
+        m.write_bytes(4096, &[]);
+        m.read_bytes(4096, &mut []);
+    }
+
+    #[test]
+    fn rejects_bad_arguments_before_mmap() {
+        let fd = memfd(4096);
+        assert_eq!(
+            Mapping::new(fd.as_fd(), 0, 0).err().map(|e| e.kind()),
+            Some(io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(
+            Mapping::new(fd.as_fd(), u64::MAX, 4096).err().map(|e| e.kind()),
+            Some(io::ErrorKind::InvalidInput)
+        );
+        // A page-aligned offset past the file still mmaps (SIGBUS only on touch), so it is not tested.
     }
 
     #[test]
     #[should_panic(expected = "outside mapping")]
     fn out_of_bounds_panics() {
-        use std::os::fd::AsFd;
         let fd = memfd(4096);
         let m = Mapping::new(fd.as_fd(), 0, 4096).unwrap();
         m.read32(4096);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside mapping")]
+    fn byte_copy_past_the_end_panics() {
+        let fd = memfd(4096);
+        let m = Mapping::new(fd.as_fd(), 0, 4096).unwrap();
+        m.write_bytes(4090, &[0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "unaligned 32-bit")]
+    fn unaligned_dword_panics() {
+        let fd = memfd(4096);
+        let m = Mapping::new(fd.as_fd(), 0, 4096).unwrap();
+        m.read32(2);
     }
 }

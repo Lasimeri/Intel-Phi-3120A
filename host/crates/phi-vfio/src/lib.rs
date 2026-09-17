@@ -8,10 +8,12 @@
 //! The bindings are hand-written from `/usr/include/linux/vfio.h` rather
 //! than generated, because the surface is ten ioctls and eight structs and
 //! a reader should be able to check every one against the header in a few
-//! minutes. Struct sizes are pinned by tests.
+//! minutes. Struct sizes and field offsets are pinned by tests.
 //!
 //! `unsafe` is confined to [`ioctl`], [`mapping`], and the fd plumbing; the
-//! public API is safe.
+//! public API is safe except [`container::Container::map_dma`], whose
+//! contract (the device gains write access to the memory) cannot be
+//! checked here.
 
 #![warn(missing_docs)]
 
@@ -46,9 +48,33 @@ pub enum Error {
     /// A sysfs value could not be parsed.
     #[error("sysfs: {0}")]
     Sysfs(String),
+    /// A PCI address string is malformed.
+    #[error("bad PCI address {0:?}: expected [dddd:]bb:dd.f, hex digits, function 0..7")]
+    BadBdf(String),
     /// The device is not a Xeon Phi (wrong vendor/device ID).
     #[error("{0} is not a Xeon Phi 3120 series device (vendor {1:#06x} device {2:#06x})")]
     NotPhi(String, u16, u16),
+    /// A PCI config space access lies outside the config region.
+    #[error("config space access at {offset:#x}+{len} outside the {size}-byte region")]
+    ConfigRange {
+        /// Requested offset.
+        offset: u64,
+        /// Requested length.
+        len: usize,
+        /// Region size reported by VFIO.
+        size: u64,
+    },
+    /// `VFIO_IOMMU_UNMAP_DMA` removed a different number of bytes than
+    /// asked for: the range did not correspond to earlier `map_dma` calls.
+    #[error("unmap at iova {iova:#x}: asked for {requested:#x} bytes, kernel unmapped {unmapped:#x}")]
+    PartialUnmap {
+        /// Start of the range.
+        iova: u64,
+        /// Bytes requested.
+        requested: u64,
+        /// Bytes the kernel reports it unmapped.
+        unmapped: u64,
+    },
 }
 
 /// Result alias.
@@ -56,32 +82,40 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// One PCI device opened through VFIO: its container, group, and device fd.
 ///
-/// Dropping it closes the fds in the right order (device, group, container)
-/// and returns the device to the `vfio-pci` driver's idle state.
+/// Dropping it closes the fds in the reverse order of opening (device,
+/// group, container), which returns the device to the `vfio-pci` driver's
+/// idle state and releases every DMA mapping made through the container.
 pub struct VfioPci {
-    container: container::Container,
-    group: group::Group,
+    // Rust drops fields in declaration order, so the order here is the
+    // teardown order the kernel documentation describes: device fd first,
+    // then the group (which detaches from the container), then the
+    // container itself. The kernel tolerates any order through reference
+    // counts; this keeps the teardown readable in `strace`.
     device: device::Device,
+    group: group::Group,
+    container: container::Container,
     bdf: String,
 }
 
 impl VfioPci {
-    /// Open the device with PCI address `bdf` (`0000:2e:00.0`). The device
-    /// must already be bound to `vfio-pci` (`scripts/bind-vfio.sh`) and the
-    /// caller must have read/write access to `/dev/vfio/<group>`.
+    /// Open the device with PCI address `bdf` (`0000:2e:00.0`; the domain
+    /// may be omitted). The device must already be bound to `vfio-pci`
+    /// (`scripts/bind-vfio.sh`) and the caller must have read/write access
+    /// to `/dev/vfio/<group>`.
     pub fn open(bdf: &str) -> Result<Self> {
-        let group_id = sysfs::iommu_group_of(bdf)?;
+        let bdf = sysfs::normalize_bdf(bdf)?;
+        let group_id = sysfs::iommu_group_of(&bdf)?;
         let container = container::Container::open()?;
         let group = group::Group::open(group_id)?;
         group.set_container(&container)?;
         container.set_iommu_type1v2()?;
-        let device = group.get_device(bdf)?;
+        let device = group.get_device(&bdf)?;
         log::info!("opened {bdf} via VFIO group {group_id}");
         Ok(Self {
-            container,
-            group,
             device,
-            bdf: bdf.to_string(),
+            group,
+            container,
+            bdf,
         })
     }
 
@@ -100,7 +134,7 @@ impl VfioPci {
         &self.group
     }
 
-    /// PCI address this handle was opened with.
+    /// PCI address this handle was opened with, normalized (`0000:2e:00.0`).
     pub fn bdf(&self) -> &str {
         &self.bdf
     }
@@ -108,10 +142,7 @@ impl VfioPci {
 
 impl Drop for VfioPci {
     fn drop(&mut self) {
-        // Field drop order in Rust is declaration order: container first,
-        // which would be wrong. Take the device and group out explicitly.
-        // (OwnedFd close is infallible; ordering only matters for tidiness
-        // of kernel-side teardown, so this is belt and braces.)
+        // The fields close themselves in declaration order; this only logs.
         log::debug!("closing VFIO handles for {}", self.bdf);
     }
 }

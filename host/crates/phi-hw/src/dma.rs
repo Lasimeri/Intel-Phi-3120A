@@ -59,7 +59,7 @@ impl HostDmaBuffer {
             )
         };
         if ptr == libc::MAP_FAILED {
-            return Err(Error::Range(format!("mmap of {len:#x} bytes for DMA failed")));
+            return Err(Error::Io("mmap of the DMA buffer", std::io::Error::last_os_error()));
         }
         let ptr = ptr as *mut u8;
         // SAFETY: the mapping above is page aligned and lives as long as
@@ -124,9 +124,8 @@ impl HostDmaBuffer {
             .truncate(false)
             .mode(0o600)
             .open(path)
-            .map_err(|e| Error::Range(format!("open {}: {e}", path.display())))?;
-        file.set_len(len as u64)
-            .map_err(|e| Error::Range(format!("size {}: {e}", path.display())))?;
+            .map_err(|e| Error::Io("open the host memory file", e))?;
+        file.set_len(len as u64).map_err(|e| Error::Io("size the host memory file", e))?;
         use std::os::fd::AsRawFd;
         // SAFETY: shared mapping of a file we own; checked for MAP_FAILED below.
         let ptr = unsafe {
@@ -140,7 +139,7 @@ impl HostDmaBuffer {
             )
         };
         if ptr == libc::MAP_FAILED {
-            return Err(Error::Range(format!("mmap of {} failed", path.display())));
+            return Err(Error::Io("mmap of the host memory file", std::io::Error::last_os_error()));
         }
         let ptr = ptr as *mut u8;
         // SAFETY: page aligned mapping living as long as this struct; VFIO pins it.
@@ -267,8 +266,8 @@ impl<'a> DmaChannel<'a> {
                 return Ok(());
             }
             if start.elapsed() > Duration::from_secs(2) {
-                return Err(Error::Range(format!(
-                    "DMA channel {} did not drain (head {} tail {tail})",
+                return Err(Error::Dma(format!(
+                    "channel {} did not drain (head {} tail {tail})",
                     self.chan, self.head
                 )));
             }
@@ -349,8 +348,8 @@ impl<'a> DmaChannel<'a> {
                 let tail = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DTPR)) % RING_DESCRIPTORS;
                 let err = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DCHERR));
                 let stat = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DSTAT));
-                return Err(Error::Range(format!(
-                    "DMA channel {} timed out: head {} tail {tail}, status {seen} (want {seq}), DCHERR {err:#x}, DSTAT {stat:#x}",
+                return Err(Error::Dma(format!(
+                    "channel {} timed out: head {} tail {tail}, status {seen} (want {seq}), DCHERR {err:#x}, DSTAT {stat:#x}",
                     self.chan, self.head
                 )));
             }

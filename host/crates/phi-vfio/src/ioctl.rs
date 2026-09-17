@@ -62,6 +62,8 @@ pub const VFIO_GROUP_FLAGS_CONTAINER_SET: u32 = 1 << 1;
 pub const VFIO_DEVICE_FLAGS_RESET: u32 = 1 << 0;
 /// `VFIO_DEVICE_FLAGS_PCI`.
 pub const VFIO_DEVICE_FLAGS_PCI: u32 = 1 << 1;
+/// `VFIO_DEVICE_FLAGS_CAPS`: `cap_offset` in the device info is valid.
+pub const VFIO_DEVICE_FLAGS_CAPS: u32 = 1 << 7;
 
 /// `VFIO_REGION_INFO_FLAG_READ`.
 pub const VFIO_REGION_INFO_FLAG_READ: u32 = 1 << 0;
@@ -69,6 +71,11 @@ pub const VFIO_REGION_INFO_FLAG_READ: u32 = 1 << 0;
 pub const VFIO_REGION_INFO_FLAG_WRITE: u32 = 1 << 1;
 /// `VFIO_REGION_INFO_FLAG_MMAP`.
 pub const VFIO_REGION_INFO_FLAG_MMAP: u32 = 1 << 2;
+/// `VFIO_REGION_INFO_FLAG_CAPS`: `cap_offset` in the region info is valid.
+pub const VFIO_REGION_INFO_FLAG_CAPS: u32 = 1 << 3;
+
+/// `VFIO_IRQ_INFO_EVENTFD`: the index supports eventfd signalling.
+pub const VFIO_IRQ_INFO_EVENTFD: u32 = 1 << 0;
 
 /// `VFIO_IRQ_SET_DATA_NONE`.
 pub const VFIO_IRQ_SET_DATA_NONE: u32 = 1 << 0;
@@ -76,6 +83,9 @@ pub const VFIO_IRQ_SET_DATA_NONE: u32 = 1 << 0;
 pub const VFIO_IRQ_SET_DATA_EVENTFD: u32 = 1 << 2;
 /// `VFIO_IRQ_SET_ACTION_TRIGGER`.
 pub const VFIO_IRQ_SET_ACTION_TRIGGER: u32 = 1 << 5;
+
+/// `VFIO_IOMMU_INFO_PGSIZES`: `iova_pgsizes` in the IOMMU info is valid.
+pub const VFIO_IOMMU_INFO_PGSIZES: u32 = 1 << 0;
 
 /// `VFIO_DMA_MAP_FLAG_READ`: device may read the mapping.
 pub const VFIO_DMA_MAP_FLAG_READ: u32 = 1 << 0;
@@ -118,7 +128,7 @@ pub struct VfioDeviceInfo {
     pub num_regions: u32,
     /// Max IRQ index + 1.
     pub num_irqs: u32,
-    /// Offset of the first capability, if `VFIO_DEVICE_FLAGS_CAPS`.
+    /// Offset of the first capability, if [`VFIO_DEVICE_FLAGS_CAPS`].
     pub cap_offset: u32,
     /// Padding.
     pub pad: u32,
@@ -134,7 +144,7 @@ pub struct VfioRegionInfo {
     pub flags: u32,
     /// Region index, filled in by the caller.
     pub index: u32,
-    /// Offset of the first capability.
+    /// Offset of the first capability, if [`VFIO_REGION_INFO_FLAG_CAPS`].
     pub cap_offset: u32,
     /// Region size in bytes.
     pub size: u64,
@@ -205,6 +215,7 @@ pub struct VfioIommuType1DmaMap {
 }
 
 /// `struct vfio_iommu_type1_dma_unmap` (fixed part; no dirty-bitmap data used).
+/// On return the kernel overwrites `size` with the number of bytes unmapped.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VfioIommuType1DmaUnmap {
@@ -214,7 +225,7 @@ pub struct VfioIommuType1DmaUnmap {
     pub flags: u32,
     /// IOVA to unmap.
     pub iova: u64,
-    /// Length in bytes.
+    /// Length in bytes; bytes actually unmapped on return.
     pub size: u64,
 }
 
@@ -233,7 +244,8 @@ pub unsafe fn ioctl_ptr<T>(fd: BorrowedFd<'_>, req: libc::c_ulong, arg: *mut T) 
 }
 
 /// Issue an ioctl with an integer argument (used for `VFIO_CHECK_EXTENSION`
-/// and `VFIO_SET_IOMMU`, whose argument is a plain `unsigned long`).
+/// and `VFIO_SET_IOMMU`, whose argument is a plain `unsigned long`, and for
+/// the argument-less `VFIO_GET_API_VERSION` and `VFIO_DEVICE_RESET`).
 pub fn ioctl_int(fd: BorrowedFd<'_>, req: libc::c_ulong, arg: libc::c_ulong) -> io::Result<libc::c_int> {
     // SAFETY: an integer argument is always valid to pass; the kernel does
     // not dereference it for these requests.
@@ -248,14 +260,29 @@ pub fn ioctl_int(fd: BorrowedFd<'_>, req: libc::c_ulong, arg: libc::c_ulong) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::size_of;
+    use std::mem::{offset_of, size_of};
 
     #[test]
     fn ioctl_numbers_match_vfio_h() {
-        // ';' is 0x3B, VFIO_BASE is 100 = 0x64.
-        assert_eq!(VFIO_GET_API_VERSION, 0x3B64);
-        assert_eq!(VFIO_GROUP_GET_DEVICE_FD, 0x3B6A);
-        assert_eq!(VFIO_IOMMU_UNMAP_DMA, 0x3B72);
+        // ';' is 0x3B, VFIO_BASE is 100 = 0x64; _IO adds nothing else.
+        for (req, expect) in [
+            (VFIO_GET_API_VERSION, 0x3B64),
+            (VFIO_CHECK_EXTENSION, 0x3B65),
+            (VFIO_SET_IOMMU, 0x3B66),
+            (VFIO_GROUP_GET_STATUS, 0x3B67),
+            (VFIO_GROUP_SET_CONTAINER, 0x3B68),
+            (VFIO_GROUP_GET_DEVICE_FD, 0x3B6A),
+            (VFIO_DEVICE_GET_INFO, 0x3B6B),
+            (VFIO_DEVICE_GET_REGION_INFO, 0x3B6C),
+            (VFIO_DEVICE_GET_IRQ_INFO, 0x3B6D),
+            (VFIO_DEVICE_SET_IRQS, 0x3B6E),
+            (VFIO_DEVICE_RESET, 0x3B6F),
+            (VFIO_IOMMU_GET_INFO, 0x3B70),
+            (VFIO_IOMMU_MAP_DMA, 0x3B71),
+            (VFIO_IOMMU_UNMAP_DMA, 0x3B72),
+        ] {
+            assert_eq!(req, expect);
+        }
     }
 
     #[test]
@@ -268,5 +295,22 @@ mod tests {
         assert_eq!(size_of::<VfioIommuType1Info>(), 24);
         assert_eq!(size_of::<VfioIommuType1DmaMap>(), 32);
         assert_eq!(size_of::<VfioIommuType1DmaUnmap>(), 24);
+    }
+
+    #[test]
+    fn field_offsets_match_vfio_h() {
+        // __aligned_u64 fields sit at 8-byte boundaries after the u32 pairs.
+        assert_eq!(offset_of!(VfioRegionInfo, cap_offset), 12);
+        assert_eq!(offset_of!(VfioRegionInfo, size), 16);
+        assert_eq!(offset_of!(VfioRegionInfo, offset), 24);
+        assert_eq!(offset_of!(VfioIommuType1Info, iova_pgsizes), 8);
+        assert_eq!(offset_of!(VfioIommuType1Info, cap_offset), 16);
+        assert_eq!(offset_of!(VfioIommuType1DmaMap, vaddr), 8);
+        assert_eq!(offset_of!(VfioIommuType1DmaMap, iova), 16);
+        assert_eq!(offset_of!(VfioIommuType1DmaMap, size), 24);
+        assert_eq!(offset_of!(VfioIommuType1DmaUnmap, iova), 8);
+        assert_eq!(offset_of!(VfioIommuType1DmaUnmap, size), 16);
+        assert_eq!(offset_of!(VfioIrqSetHeader, count), 16);
+        assert_eq!(offset_of!(VfioDeviceInfo, cap_offset), 16);
     }
 }

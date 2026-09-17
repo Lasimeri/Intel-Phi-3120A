@@ -73,11 +73,11 @@ enum Cmd {
         /// Kernel command line.
         #[arg(long, default_value = "earlyprintk=phiring,keep loglevel=8")]
         cmdline: String,
-        /// Card physical base of the ring region (hex or decimal).
-        #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
+        /// Card physical base of the ring region (hex or decimal; default 256 MiB).
+        #[arg(long, value_parser = parse_u64, default_value_t = memory::RING_REGION_BASE)]
         ring_base: u64,
-        /// Size of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x1000000")]
+        /// Size of the ring region (default 16 MiB).
+        #[arg(long, value_parser = parse_u64, default_value_t = memory::RING_REGION_BYTES)]
         ring_size: u64,
         /// Use the command line exactly as given (no memmap/phi.ring parameters).
         #[arg(long)]
@@ -163,11 +163,11 @@ enum Cmd {
     },
     /// Tail the card's console ring and forward stdin lines to it.
     Console {
-        /// Card physical base of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x10000000")]
+        /// Card physical base of the ring region (default 256 MiB).
+        #[arg(long, value_parser = parse_u64, default_value_t = memory::RING_REGION_BASE)]
         ring_base: u64,
-        /// Size of the ring region.
-        #[arg(long, value_parser = parse_u64, default_value = "0x1000000")]
+        /// Size of the ring region (default 16 MiB).
+        #[arg(long, value_parser = parse_u64, default_value_t = memory::RING_REGION_BYTES)]
         ring_size: u64,
         /// Also watch a 32-bit word in card memory and print changes.
         #[arg(long, value_parser = parse_u64)]

@@ -58,6 +58,8 @@ pub const HOSTMEM_IOVA: u64 = 0x1_0000_0000;
 /// last 4 KiB, which hold the channels' status words.
 const SELFTEST_OFFSET: u64 = 0xE0_0000;
 const STATUS_OFFSET: u64 = 0xFF_F000;
+// The status words of all eight DMA channels lie inside the default region.
+const _: () = assert!(STATUS_OFFSET + 8 * 64 <= phi_regs::memory::RING_REGION_BYTES);
 
 /// What a block channel is backed by.
 pub enum Backend {
@@ -475,5 +477,16 @@ mod tests {
             }
         );
         assert_eq!(completion(7, 0), [7, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// The self-test scratch and the DMA status words use the last 2 MiB of
+    /// the default 16 MiB region; the default channel plan must end below them.
+    #[test]
+    fn default_layout_leaves_the_self_test_area_clear() {
+        let (_, end) = phi_ring::Region::plan_layout(&phi_hw::boot::DEFAULT_CHANNELS).unwrap();
+        assert!(
+            end as u64 <= SELFTEST_OFFSET,
+            "the channels end at {end:#x}, the self-test scratch starts at {SELFTEST_OFFSET:#x}"
+        );
     }
 }

@@ -170,4 +170,34 @@ mod tests {
         assert_eq!(Postcode(0x0000_0012).text(), "0x00000012");
         assert!(Postcode(0x0000_0012).describe().is_none());
     }
+
+    #[test]
+    fn reset_trace_and_kernel_marks_decode() {
+        // Raw values from docs/results/2026-09-13-reset-2.md, in the order seen.
+        for (raw, text, what) in [
+            (0x0000_3033, "30", "Begin memory training"),
+            (0x0000_4333, "3C", "Begin GDDR read training with CDR enabled"),
+            (0x0000_4633, "3F", "Finalize GDDR training"),
+            (
+                0x0000_3631,
+                "16",
+                "(undocumented; observed between GDDR finalize and enable caching, 2026-09-13)",
+            ),
+            (0x0000_4630, "0F", "Wake up APs"),
+            (0x0000_3231, "12", "Wait for coprocessor OS download (ready)"),
+        ] {
+            assert_eq!(Postcode(raw).text(), text);
+            assert_eq!(Postcode(raw).describe(), Some(what), "{text}");
+        }
+        // The card off the bus mid-reset reads all ones: shown as hex, undecoded.
+        assert_eq!(Postcode(0xffff_ffff).text(), "0xffffffff");
+        assert!(Postcode(0xffff_ffff).describe().is_none());
+        // Kernel marks as the patches encode them: KNC_POST(a, b) = a | b << 8,
+        // and the raw movl constants in head_64.S and the trampoline.
+        assert_eq!(Postcode(0x464B).describe(), Some("kernel: startup_64, verify_cpu passed"));
+        assert_eq!(Postcode(0x4E4B).describe(), Some("kernel: startup_64, bringup IDT loaded"));
+        assert_eq!(Postcode(0x3141).describe(), Some("kernel: AP: trampoline, 32-bit protected mode"));
+        assert_eq!(Postcode(0x3653).describe(), Some("kernel: smp: wake-up sequence done"));
+        assert_eq!(Postcode(0x374B).describe(), Some("kernel: late initcalls done, starting init"));
+    }
 }

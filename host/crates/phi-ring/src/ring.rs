@@ -3,7 +3,9 @@
 //! Indices are free-running `u32` values; the data offset is
 //! `index & (size - 1)`. Because `size` is a power of two and `head - tail`
 //! (wrapping) never exceeds `size`, the arithmetic is exact across the
-//! `u32` wraparound.
+//! `u32` wraparound. Neither end caches an index: every operation reads
+//! both from memory, so an end attached before the other side reset (or
+//! before the region was reformatted) follows without being told.
 
 use crate::layout::{ring_hdr, RING_MAGIC};
 use crate::memory::RingMemory;
@@ -23,6 +25,8 @@ pub fn ring_size<M: RingMemory>(mem: &M, base: usize) -> Result<u32, Error> {
 }
 
 /// Write a fresh ring header (magic, size, head = tail = 0) at `base`.
+/// The magic goes last, after a fence, so a reader that sees it sees the
+/// indices at zero.
 pub fn format_ring<M: RingMemory>(mem: &mut M, base: usize, size: u32) -> Result<(), Error> {
     if size == 0 || !size.is_power_of_two() {
         return Err(Error::BadRingSize(size));
@@ -60,8 +64,7 @@ impl Producer {
     /// consumer's index read torn or reset) reads as a full ring rather than
     /// an arithmetic overflow; `indices` shows the raw values.
     pub fn free<M: RingMemory>(&self, mem: &M) -> u32 {
-        let head = mem.read_u32(self.base + ring_hdr::HEAD);
-        let tail = mem.read_u32(self.base + ring_hdr::TAIL);
+        let (head, tail) = self.indices(mem);
         self.size.saturating_sub(head.wrapping_sub(tail))
     }
 
@@ -71,9 +74,11 @@ impl Producer {
     }
 
     /// Push as much of `data` as fits; returns the number of bytes pushed.
+    /// The bytes are written (possibly in two pieces around the end of the
+    /// data area), then fenced, then `head` is published in one 32-bit
+    /// write.
     pub fn push<M: RingMemory>(&self, mem: &mut M, data: &[u8]) -> usize {
-        let head = mem.read_u32(self.base + ring_hdr::HEAD);
-        let tail = mem.read_u32(self.base + ring_hdr::TAIL);
+        let (head, tail) = self.indices(mem);
         let free = self.size.saturating_sub(head.wrapping_sub(tail));
         let n = data.len().min(free as usize);
         if n == 0 {
@@ -100,11 +105,6 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    /// Data bytes the ring holds.
-    pub fn capacity(&self) -> u32 {
-        self.size
-    }
-
     /// Attach to a ring at `base` (validates the header).
     pub fn attach<M: RingMemory>(mem: &M, base: usize) -> Result<Self, Error> {
         Ok(Self {
@@ -113,12 +113,21 @@ impl Consumer {
         })
     }
 
+    /// Data bytes the ring holds.
+    pub fn capacity(&self) -> u32 {
+        self.size
+    }
+
+    /// The raw (head, tail) indices, for diagnostics.
+    pub fn indices<M: RingMemory>(&self, mem: &M) -> (u32, u32) {
+        (mem.read_u32(self.base + ring_hdr::HEAD), mem.read_u32(self.base + ring_hdr::TAIL))
+    }
+
     /// Bytes available to pop. More than the ring holds means the indices
     /// are inconsistent (the producer reset, or the header was overwritten);
     /// reported as nothing available, and `pop` resynchronises.
     pub fn available<M: RingMemory>(&self, mem: &M) -> u32 {
-        let head = mem.read_u32(self.base + ring_hdr::HEAD);
-        let tail = mem.read_u32(self.base + ring_hdr::TAIL);
+        let (head, tail) = self.indices(mem);
         let avail = head.wrapping_sub(tail);
         if avail > self.size {
             0
@@ -127,15 +136,19 @@ impl Consumer {
         }
     }
 
-    /// Pop up to `buf.len()` bytes; returns the number popped.
+    /// Pop up to `buf.len()` bytes; returns the number popped. The bytes
+    /// are read, then fenced, then `tail` is published in one 32-bit write
+    /// so the producer never overwrites bytes still being read.
+    ///
+    /// Inconsistent indices (`head - tail > size`) are resolved by setting
+    /// `tail = head`: whatever was there is dropped and the ring continues
+    /// from the producer's index. A caller whose records must never be
+    /// dropped (the block service) checks `available` and handles the
+    /// condition itself.
     pub fn pop<M: RingMemory>(&self, mem: &mut M, buf: &mut [u8]) -> usize {
-        let head = mem.read_u32(self.base + ring_hdr::HEAD);
-        let tail = mem.read_u32(self.base + ring_hdr::TAIL);
+        let (head, tail) = self.indices(mem);
         let avail = head.wrapping_sub(tail);
         if avail > self.size {
-            // Inconsistent indices: drop whatever is there and start again
-            // from the producer's head rather than reading the whole ring in
-            // a loop.
             mem.write_u32(self.base + ring_hdr::TAIL, head);
             mem.fence();
             return 0;
@@ -172,6 +185,16 @@ mod tests {
     }
 
     #[test]
+    fn format_ring_round_trips_through_the_header() {
+        let (mem, p, c) = ring(32);
+        assert_eq!(mem.read_u32(ring_hdr::MAGIC), RING_MAGIC);
+        assert_eq!(ring_size(&mem, 0), Ok(32));
+        assert_eq!((p.capacity(), c.capacity()), (32, 32));
+        assert_eq!(p.indices(&mem), (0, 0));
+        assert_eq!(c.indices(&mem), (0, 0));
+    }
+
+    #[test]
     fn round_trip_with_wraparound() {
         let (mut mem, p, c) = ring(16);
         assert_eq!(p.free(&mem), 16);
@@ -186,6 +209,42 @@ mod tests {
         assert_eq!(c.pop(&mut mem, &mut out), 14);
         assert_eq!(&out, b"89abCDEFGHIJKL");
         assert_eq!(c.available(&mem), 0);
+    }
+
+    #[test]
+    fn free_and_available_at_the_boundaries() {
+        let (mut mem, p, c) = ring(8);
+        assert_eq!((p.free(&mem), c.available(&mem)), (8, 0));
+        // Exactly `size` bytes fill the ring: head - tail == size, not index equality.
+        assert_eq!(p.push(&mut mem, b"abcdefgh"), 8);
+        assert_eq!((p.free(&mem), c.available(&mem)), (0, 8));
+        assert_eq!(p.indices(&mem), (8, 0));
+        let mut out = [0u8; 8];
+        assert_eq!(c.pop(&mut mem, &mut out), 8);
+        assert_eq!(&out, b"abcdefgh");
+        assert_eq!((p.free(&mem), c.available(&mem)), (8, 0));
+        assert_eq!(c.indices(&mem), (8, 8));
+        // Empty pushes and pops leave the indices alone.
+        assert_eq!(p.push(&mut mem, b""), 0);
+        assert_eq!(c.pop(&mut mem, &mut []), 0);
+        assert_eq!(c.pop(&mut mem, &mut out), 0);
+        assert_eq!(p.indices(&mem), (8, 8));
+    }
+
+    #[test]
+    fn push_and_pop_split_at_the_last_byte_of_the_data_area() {
+        let (mut mem, p, c) = ring(8);
+        assert_eq!(p.push(&mut mem, b"0123456"), 7);
+        let mut out = [0u8; 7];
+        assert_eq!(c.pop(&mut mem, &mut out), 7);
+        // Head at 7: one byte fits before the end, the rest goes to offset 0.
+        assert_eq!(p.push(&mut mem, b"XYZ"), 3);
+        assert_eq!(mem.as_bytes()[ring_hdr::DATA + 7], b'X');
+        assert_eq!(&mem.as_bytes()[ring_hdr::DATA..ring_hdr::DATA + 2], b"YZ");
+        let mut out = [0u8; 3];
+        assert_eq!(c.pop(&mut mem, &mut out), 3);
+        assert_eq!(&out, b"XYZ");
+        assert_eq!(p.indices(&mem), (10, 10));
     }
 
     #[test]
@@ -204,32 +263,42 @@ mod tests {
         // Force head and tail near u32::MAX.
         mem.write_u32(ring_hdr::HEAD, u32::MAX - 2);
         mem.write_u32(ring_hdr::TAIL, u32::MAX - 2);
+        assert_eq!(p.free(&mem), 8);
         assert_eq!(p.push(&mut mem, b"12345"), 5);
+        assert_eq!(mem.read_u32(ring_hdr::HEAD), 2, "wrapped");
+        assert_eq!((p.free(&mem), c.available(&mem)), (3, 5));
         let mut out = [0u8; 5];
         assert_eq!(c.pop(&mut mem, &mut out), 5);
         assert_eq!(&out, b"12345");
-        assert_eq!(mem.read_u32(ring_hdr::HEAD), 2, "wrapped");
+        assert_eq!(c.indices(&mem), (2, 2));
+    }
+
+    #[test]
+    fn tail_ahead_of_head_reads_as_full_not_overflow() {
+        let (mut mem, p, c) = ring(8);
+        mem.write_u32(ring_hdr::HEAD, 4);
+        mem.write_u32(ring_hdr::TAIL, 9);
+        assert_eq!(p.free(&mem), 0);
+        assert_eq!(p.push(&mut mem, b"x"), 0);
+        assert_eq!(p.indices(&mem), (4, 9), "diagnostics show the raw values");
+        assert_eq!(c.available(&mem), 0);
     }
 
     #[test]
     fn rejects_bad_headers() {
         let mut mem = VecMemory::new(ring_hdr::DATA + 16);
         assert_eq!(Producer::attach(&mem, 0).err(), Some(Error::BadMagic(0, RING_MAGIC)));
+        assert_eq!(Consumer::attach(&mem, 0).err(), Some(Error::BadMagic(0, RING_MAGIC)));
         assert_eq!(format_ring(&mut mem, 0, 12).err(), Some(Error::BadRingSize(12)));
+        assert_eq!(format_ring(&mut mem, 0, 0).err(), Some(Error::BadRingSize(0)));
+        mem.write_u32(ring_hdr::MAGIC, RING_MAGIC);
+        mem.write_u32(ring_hdr::SIZE, 24);
+        assert_eq!(Producer::attach(&mem, 0).err(), Some(Error::BadRingSize(24)));
     }
-}
-
-#[cfg(test)]
-mod resync_tests {
-    use super::*;
-    use crate::memory::VecMemory;
 
     #[test]
     fn inconsistent_indices_resync_instead_of_flooding() {
-        let mut mem = VecMemory::new(ring_hdr::DATA + 64);
-        format_ring(&mut mem, 0, 64).unwrap();
-        let p = Producer::attach(&mem, 0).unwrap();
-        let c = Consumer::attach(&mem, 0).unwrap();
+        let (mut mem, p, c) = ring(64);
         assert_eq!(p.push(&mut mem, b"hello"), 5);
         let mut buf = [0u8; 16];
         assert_eq!(c.pop(&mut mem, &mut buf), 5);

@@ -4,7 +4,8 @@
 //! operations the host needs: read POST code and scratchpads, reset, copy
 //! bytes into card memory, send the boot interrupt. [`boot`] composes them
 //! into the image-loading sequence Intel's driver used, with validation
-//! before any byte touches the card.
+//! before any byte touches the card. [`dma`] drives one SBOX DMA channel
+//! from host memory; [`ringmem`] adapts the aperture to `phi_ring`.
 
 #![warn(missing_docs)]
 
@@ -30,10 +31,14 @@ pub enum Error {
     /// The bootstrap is not in the ready state.
     #[error("bootstrap not ready: POST code {0:?}, SPAD2 {1:#010x} (reset the card first)")]
     NotReady(String, u32),
-    /// A loader address or size is out of range.
+    /// A loader address, size or alignment is out of range.
     #[error("{0}")]
     Range(String),
-    /// I/O on host files.
+    /// The DMA engine did not complete or drain in time; the message
+    /// carries the channel registers read at the timeout.
+    #[error("DMA: {0}")]
+    Dma(String),
+    /// I/O on host files and descriptors.
     #[error("{0}: {1}")]
     Io(&'static str, #[source] std::io::Error),
 }

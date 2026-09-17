@@ -2,9 +2,10 @@
 //!
 //! The crate is hardware-independent: all access goes through the
 //! [`RingMemory`] trait, implemented by an in-memory `Vec` for tests and by
-//! the aperture mapping in `phi-hw` for the real card. Layouts are
-//! `#[repr(C)]` and mirrored by `card/drivers/phinet/include/phi_ring.h`;
-//! both sides assert the same sizes.
+//! the aperture mapping in `phi-hw` for the real card. The wire layout is
+//! a set of byte offsets in [`layout`]; the card kernel reads the same
+//! offsets from `arch/x86/include/asm/knc_ring.h` (kernel patches 0021 to
+//! 0026).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -19,11 +20,11 @@ pub use memory::{RingMemory, VecMemory};
 pub use region::{ChannelPlan, ChannelView, Region};
 pub use ring::{Consumer, Producer};
 
-/// Errors from region validation.
+/// Errors from region and ring validation.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    /// The region header magic is missing (card memory not formatted, or wrong base address).
-    #[error("region magic mismatch: found {0:#010x}, expected {1:#010x}")]
+    /// The region or ring magic is missing (card memory not formatted, or wrong base address).
+    #[error("magic mismatch: found {0:#010x}, expected {1:#010x}")]
     BadMagic(u32, u32),
     /// Unsupported protocol version.
     #[error("region version {0} not supported (this host speaks {1})")]
@@ -34,6 +35,9 @@ pub enum Error {
     /// The requested layout does not fit in the region.
     #[error("layout needs {0:#x} bytes but the region is {1:#x}")]
     DoesNotFit(usize, usize),
+    /// A header field points outside the region or breaks an alignment rule.
+    #[error("region layout: {0}")]
+    BadLayout(String),
     /// No channel of the requested kind exists.
     #[error("no channel of kind {0:?}")]
     NoChannel(ChannelKind),

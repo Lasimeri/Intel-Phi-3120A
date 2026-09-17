@@ -29,6 +29,9 @@ impl<'a> ApertureRegion<'a> {
 }
 
 impl RingMemory for ApertureRegion<'_> {
+    fn len(&self) -> usize {
+        self.len
+    }
     fn read(&self, off: usize, buf: &mut [u8]) {
         assert!(off + buf.len() <= self.len, "ring read outside region");
         self.aperture.read_bytes(self.base + off, buf);

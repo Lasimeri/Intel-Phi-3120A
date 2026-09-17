@@ -13,7 +13,9 @@ pub struct Container {
 }
 
 impl Container {
-    /// Open `/dev/vfio/vfio` and check the API version.
+    /// Open `/dev/vfio/vfio`, check the API version and that the type1v2
+    /// backend exists (`VFIO_CHECK_EXTENSION` is legal before any group is
+    /// attached; `VFIO_SET_IOMMU` is not).
     pub fn open() -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -41,6 +43,9 @@ impl Container {
     }
 
     /// Supported IOVA page sizes as a bitmap (bit n set means 2^n bytes).
+    /// Legal only after [`Self::set_iommu_type1v2`]; type1 always sets
+    /// `VFIO_IOMMU_INFO_PGSIZES`, and a kernel that did not would return 0
+    /// here, which the caller should treat as "4 KiB only".
     pub fn iova_page_sizes(&self) -> Result<u64> {
         let mut info = VfioIommuType1Info {
             argsz: std::mem::size_of::<VfioIommuType1Info>() as u32,
@@ -48,12 +53,23 @@ impl Container {
         };
         // SAFETY: correctly sized struct with argsz set.
         unsafe { ioctl_ptr(self.fd.as_fd(), VFIO_IOMMU_GET_INFO, &mut info) }.map_err(|e| Error::Os("VFIO_IOMMU_GET_INFO", e))?;
-        Ok(info.iova_pgsizes)
+        Ok(if info.flags & VFIO_IOMMU_INFO_PGSIZES != 0 {
+            info.iova_pgsizes
+        } else {
+            0
+        })
     }
 
     /// Pin `len` bytes of this process's memory at `vaddr` and map them at
-    /// `iova` for device access. The memory stays pinned until
-    /// [`Self::unmap_dma`] or the container is closed.
+    /// `iova` for device access, readable and writable by the device. The
+    /// memory stays pinned until [`Self::unmap_dma`] or the container is
+    /// closed; munmapping it first leaves the pages pinned and the IOVA
+    /// occupied (a second `map_dma` there fails with `EEXIST`).
+    ///
+    /// The kernel requires `vaddr`, `iova` and `len` to be multiples of the
+    /// smallest supported IOVA page (4 KiB here) and rejects a range that
+    /// overlaps an existing mapping or a reserved region
+    /// (`docs/hardware.md`) with `EINVAL` or `EEXIST`.
     ///
     /// # Safety
     /// `vaddr..vaddr+len` must be a valid, page-aligned mapping owned by the
@@ -70,7 +86,12 @@ impl Container {
         Ok(())
     }
 
-    /// Remove a mapping made by [`Self::map_dma`] (same `iova` and `len`).
+    /// Remove the mappings made by [`Self::map_dma`] inside `iova..iova+len`.
+    /// type1v2 unmaps whole mappings only, so the range must be the union
+    /// of earlier `map_dma` ranges; the kernel reports how many bytes it
+    /// unmapped and this returns [`Error::PartialUnmap`] when that differs
+    /// from `len` (the mappings, and the pinned memory, are then still
+    /// partly in place).
     pub fn unmap_dma(&self, iova: u64, len: u64) -> Result<()> {
         let mut u = VfioIommuType1DmaUnmap {
             argsz: std::mem::size_of::<VfioIommuType1DmaUnmap>() as u32,
@@ -80,6 +101,13 @@ impl Container {
         };
         // SAFETY: correctly sized struct with argsz set.
         unsafe { ioctl_ptr(self.fd.as_fd(), VFIO_IOMMU_UNMAP_DMA, &mut u) }.map_err(|e| Error::Os("VFIO_IOMMU_UNMAP_DMA", e))?;
+        if u.size != len {
+            return Err(Error::PartialUnmap {
+                iova,
+                requested: len,
+                unmapped: u.size,
+            });
+        }
         Ok(())
     }
 

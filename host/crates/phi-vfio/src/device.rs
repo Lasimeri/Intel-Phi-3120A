@@ -1,5 +1,6 @@
 //! The VFIO device fd: regions, config space, interrupts, reset.
 
+use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
 use crate::ioctl::*;
@@ -10,7 +11,11 @@ use crate::{Error, Result};
 pub struct Device {
     fd: OwnedFd,
     info: VfioDeviceInfo,
+    /// Offset of the config space region inside the device fd.
     config_offset: u64,
+    /// Size of the config space region (256 bytes, or 4096 with extended
+    /// config space, as `vfio-pci` reports it).
+    config_size: u64,
 }
 
 /// PCI configuration space offsets used here (PCI Local Bus spec 3.0, 6.1).
@@ -44,9 +49,11 @@ impl Device {
             fd,
             info,
             config_offset: 0,
+            config_size: 0,
         };
         let cfg = dev.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         dev.config_offset = cfg.offset;
+        dev.config_size = cfg.size;
         Ok(dev)
     }
 
@@ -69,28 +76,49 @@ impl Device {
     }
 
     /// mmap a whole region. Fails if the region lacks the MMAP flag (config
-    /// space and the ROM are read with `pread` instead).
+    /// space and the ROM are read with `pread` instead) or is empty (an
+    /// unimplemented BAR).
     pub fn map_region(&self, index: u32) -> Result<Mapping> {
         let ri = self.region_info(index)?;
         if ri.flags & VFIO_REGION_INFO_FLAG_MMAP == 0 || ri.size == 0 {
             return Err(Error::NotMmappable(index));
         }
-        Mapping::new(self.fd.as_fd(), ri.offset, ri.size as usize).map_err(|e| Error::Os("mmap region", e))
+        let len = usize::try_from(ri.size).map_err(|_| Error::NotMmappable(index))?;
+        Mapping::new(self.fd.as_fd(), ri.offset, len).map_err(|e| Error::Os("mmap region", e))
+    }
+
+    /// Byte range check for a config space access, and the fd offset of its
+    /// first byte.
+    fn config_range(&self, offset: u64, len: usize) -> Result<libc::off_t> {
+        let end = offset.checked_add(len as u64);
+        if !end.is_some_and(|e| e <= self.config_size) {
+            return Err(Error::ConfigRange {
+                offset,
+                len,
+                size: self.config_size,
+            });
+        }
+        libc::off_t::try_from(self.config_offset + offset).map_err(|_| Error::ConfigRange {
+            offset,
+            len,
+            size: self.config_size,
+        })
     }
 
     /// Read `buf.len()` bytes of PCI config space at `offset`.
     pub fn read_config(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        // SAFETY: pread into a valid buffer at a valid fd offset.
-        let n = unsafe {
-            libc::pread(
-                self.fd.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                (self.config_offset + offset) as libc::off_t,
-            )
-        };
-        if n != buf.len() as isize {
-            return Err(Error::Os("pread config space", std::io::Error::last_os_error()));
+        let pos = self.config_range(offset, buf.len())?;
+        // SAFETY: pread into a valid buffer of the given length at an fd
+        // offset inside the config region.
+        let n = unsafe { libc::pread(self.fd.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len(), pos) };
+        if n < 0 {
+            return Err(Error::Os("pread config space", io::Error::last_os_error()));
+        }
+        if n as usize != buf.len() {
+            return Err(Error::Os(
+                "pread config space",
+                io::Error::new(io::ErrorKind::UnexpectedEof, format!("short read: {n} of {} bytes", buf.len())),
+            ));
         }
         Ok(())
     }
@@ -99,17 +127,17 @@ impl Device {
     /// bits (BARs, MSI-X capability); the COMMAND register memory and bus
     /// master bits pass through to hardware.
     pub fn write_config(&self, offset: u64, data: &[u8]) -> Result<()> {
-        // SAFETY: pwrite from a valid buffer.
-        let n = unsafe {
-            libc::pwrite(
-                self.fd.as_raw_fd(),
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-                (self.config_offset + offset) as libc::off_t,
-            )
-        };
-        if n != data.len() as isize {
-            return Err(Error::Os("pwrite config space", std::io::Error::last_os_error()));
+        let pos = self.config_range(offset, data.len())?;
+        // SAFETY: pwrite from a valid buffer of the given length.
+        let n = unsafe { libc::pwrite(self.fd.as_raw_fd(), data.as_ptr() as *const libc::c_void, data.len(), pos) };
+        if n < 0 {
+            return Err(Error::Os("pwrite config space", io::Error::last_os_error()));
+        }
+        if n as usize != data.len() {
+            return Err(Error::Os(
+                "pwrite config space",
+                io::Error::new(io::ErrorKind::WriteZero, format!("short write: {n} of {} bytes", data.len())),
+            ));
         }
         Ok(())
     }
@@ -123,7 +151,8 @@ impl Device {
 
     /// Set Memory Space Enable and Bus Master Enable in COMMAND. Without
     /// memory decode the BARs do not respond; `vfio-pci` enables the device
-    /// on open in recent kernels, but being explicit costs nothing.
+    /// on open (COMMAND read 0x0006 at first contact, 2026-09-13), so this
+    /// is normally a no-op. Returns the register after the write.
     pub fn enable_memory_and_bus_master(&self) -> Result<u16> {
         let cmd = self.read_config_u16(pci_cfg::COMMAND)?;
         let want = cmd | pci_cfg::COMMAND_MEMORY | pci_cfg::COMMAND_BUS_MASTER;
@@ -157,22 +186,29 @@ impl Device {
 
     /// Route vectors `start..start+eventfds.len()` of IRQ index `index` to
     /// the given eventfds (`VFIO_IRQ_SET_DATA_EVENTFD | ACTION_TRIGGER`).
-    /// Enables the interrupt mode (MSI-X allocation happens here).
+    /// Enables the interrupt mode (MSI-X allocation happens here). An
+    /// eventfd of -1 leaves that vector unrouted.
     pub fn set_irq_eventfds(&self, index: u32, start: u32, eventfds: &[RawFd]) -> Result<()> {
+        let count =
+            u32::try_from(eventfds.len()).map_err(|_| Error::Os("VFIO_DEVICE_SET_IRQS", io::Error::from(io::ErrorKind::InvalidInput)))?;
+        let data_len = std::mem::size_of_val(eventfds);
         let hdr = VfioIrqSetHeader {
-            argsz: (std::mem::size_of::<VfioIrqSetHeader>() + eventfds.len() * 4) as u32,
+            argsz: (std::mem::size_of::<VfioIrqSetHeader>() + data_len) as u32,
             flags: VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER,
             index,
             start,
-            count: eventfds.len() as u32,
+            count,
         };
+        // The kernel copies the buffer with copy_from_user, so a byte vector
+        // (alignment 1) is an acceptable stand-in for the flexible struct.
         let mut buf = Vec::with_capacity(hdr.argsz as usize);
-        // SAFETY: VfioIrqSetHeader is repr(C) plain data; viewing it as bytes is sound.
+        // SAFETY: VfioIrqSetHeader is repr(C) plain data without padding
+        // (five u32); viewing it as bytes is sound.
         buf.extend_from_slice(unsafe {
             std::slice::from_raw_parts(&hdr as *const _ as *const u8, std::mem::size_of::<VfioIrqSetHeader>())
         });
         for fd in eventfds {
-            buf.extend_from_slice(&fd.to_le_bytes());
+            buf.extend_from_slice(&fd.to_ne_bytes());
         }
         // SAFETY: buffer laid out exactly as struct vfio_irq_set with data[].
         unsafe { ioctl_ptr(self.fd.as_fd(), VFIO_DEVICE_SET_IRQS, buf.as_mut_ptr()) }.map_err(|e| Error::Os("VFIO_DEVICE_SET_IRQS", e))?;
@@ -194,9 +230,14 @@ impl Device {
         Ok(())
     }
 
-    /// Function-level or bus reset via VFIO. The Phi has no FLR; VFIO falls
-    /// back to a secondary bus reset, which is allowed because the card is
-    /// alone on its bus. Prefer the SBOX `RGCR` reset in normal operation.
+    /// Reset through VFIO (`VFIO_DEVICE_RESET`): the kernel uses a
+    /// function-level reset when the device advertises one, else a
+    /// secondary bus reset, which is available here because the card is the
+    /// only function on its bus (`docs/hardware.md`). Whether the 3120A
+    /// advertises FLR has not been recorded. Neither Intel's mainline
+    /// driver nor MPSS used a PCI reset; prefer the SBOX `RGCR` reset in
+    /// `phi-hw`, which returns the card to its bootstrap without retraining
+    /// the link.
     pub fn reset(&self) -> Result<()> {
         ioctl_int(self.fd.as_fd(), VFIO_DEVICE_RESET, 0).map_err(|e| Error::Os("VFIO_DEVICE_RESET", e))?;
         Ok(())
