@@ -1,0 +1,13 @@
+[package]
+name = "phitop"
+description = "Remote resource viewer for the Xeon Phi 3120A: per-thread load, temperatures, memory, PCIe traffic and processes, from the host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phi-rpc = { path = "../phi-rpc" }
+clap.workspace = true
+anyhow.workspace = true
+libc.workspace = true

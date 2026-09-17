@@ -28,3 +28,11 @@ cover MMIO. All access goes through the methods here.
 `memfd` stands in for a BAR so the alignment paths of `write_bytes` and
 `read_bytes` are exercised on real memory without the card. An out-of-bounds
 access is checked to panic rather than fault.
+
+## Traffic counters (2026-09-17)
+
+`read_bytes` and `write_bytes` add their lengths to
+`traffic::APERTURE_FROM_CARD` and `traffic::APERTURE_TO_CARD`
+(`traffic.md`), so every bulk copy through the aperture is counted for
+`phictl traffic` and `phitop`. The 8, 32 and 64-bit accessors are not
+counted.

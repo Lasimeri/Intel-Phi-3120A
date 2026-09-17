@@ -14,6 +14,7 @@
 //! daemon draining the card's replies until that session ends, so the next
 //! client starts clean. See serve.md.
 
+use std::collections::VecDeque;
 use std::ffi::CString;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -30,7 +31,7 @@ use phi_hw::ringmem::ApertureRegion;
 use phi_hw::Card;
 use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
-use phi_rpc::{Decoder, Msg};
+use phi_rpc::{Decoder, Msg, Traffic};
 
 /// Control socket path when the daemon runs as root.
 pub const ROOT_SOCKET: &str = "/run/phictl/control.sock";
@@ -114,8 +115,6 @@ fn ends_session(m: &Msg) -> bool {
     matches!(m, Msg::Exit(_) | Msg::Error(_) | Msg::GetEnd { .. } | Msg::Pong { .. })
 }
 
-/// Relay frames between one local client at a time and the card's rpc
-/// channel until the process ends.
 /// The card's sensors as text, read from the SBOX through the MMIO BAR:
 /// die and board temperatures, core voltage and clock (decoding in
 /// `phi_regs::sbox::sensors`, from Intel's RAS module).
@@ -175,6 +174,141 @@ pub fn sensors_text(card: &Card) -> String {
     s
 }
 
+/// Most simultaneous connections to the control socket.
+const MAX_CLIENTS: usize = 16;
+
+/// What the card is doing for the session holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Session {
+    /// A command; whether the client has yet to close its input.
+    Exec { stdin_open: bool },
+    /// A file coming in; whether `PutClose` has been sent.
+    Put { closed: bool },
+    /// A file going out, or a ping: nothing more comes from the client.
+    Other,
+}
+
+/// One connection to the control socket.
+struct Client {
+    id: u64,
+    stream: UnixStream,
+    dec: Decoder,
+    /// Session frames decoded while another client holds the card.
+    pending: VecDeque<Msg>,
+    dead: bool,
+}
+
+impl Client {
+    fn send(&mut self, m: &Msg) {
+        if self.stream.write_all(&m.encode()).is_err() {
+            self.dead = true;
+        }
+    }
+}
+
+/// The relay's bookkeeping: who holds the card, who waits for a sample.
+#[derive(Default)]
+struct Relay {
+    clients: Vec<Client>,
+    next_id: u64,
+    /// The client whose session the card is in, while it is connected.
+    holder: Option<u64>,
+    /// The session the card is in, until the frame that ends it arrives;
+    /// the holder may have left by then.
+    session: Option<Session>,
+    /// Clients awaiting a `StatReply`, in the order their requests went out.
+    stat_queue: VecDeque<u64>,
+    /// Bytes for the card not yet in the ring.
+    to_card: Vec<u8>,
+}
+
+impl Relay {
+    /// A frame from client `i`: answered here, queued for the card, or held
+    /// until the card is free.
+    fn handle(&mut self, i: usize, m: Msg, card: &Card) {
+        let id = self.clients[i].id;
+        match m {
+            Msg::Sensors => self.clients[i].send(&Msg::SensorsReply { text: sensors_text(card) }),
+            Msg::Traffic => self.clients[i].send(&Msg::TrafficReply(traffic_now())),
+            Msg::Stat => {
+                self.to_card.extend_from_slice(&Msg::Stat.encode());
+                self.stat_queue.push_back(id);
+            }
+            m if self.holder == Some(id) => self.forward(m),
+            m => self.clients[i].pending.push_back(m),
+        }
+    }
+
+    /// A session frame to the card, tracking what the session now expects.
+    fn forward(&mut self, m: Msg) {
+        match &m {
+            Msg::Exec { .. } => self.session = Some(Session::Exec { stdin_open: true }),
+            Msg::StdinEof => {
+                if let Some(Session::Exec { stdin_open }) = &mut self.session {
+                    *stdin_open = false;
+                }
+            }
+            Msg::PutOpen { .. } => self.session = Some(Session::Put { closed: false }),
+            Msg::PutClose => {
+                if let Some(Session::Put { closed }) = &mut self.session {
+                    *closed = true;
+                }
+            }
+            Msg::Get { .. } | Msg::Ping => self.session = Some(Session::Other),
+            _ => {}
+        }
+        self.to_card.extend_from_slice(&m.encode());
+    }
+
+    /// A frame from the card: a sample to whoever asked first, anything
+    /// else to the session holder.
+    fn deliver(&mut self, m: Msg) {
+        if matches!(m, Msg::StatReply(_)) {
+            if let Some(id) = self.stat_queue.pop_front() {
+                if let Some(c) = self.clients.iter_mut().find(|c| c.id == id) {
+                    c.send(&m);
+                }
+            }
+            return;
+        }
+        let ends = ends_session(&m);
+        let holder = self.holder;
+        if let Some(c) = holder.and_then(|id| self.clients.iter_mut().find(|c| c.id == id)) {
+            c.send(&m);
+        }
+        if ends {
+            self.session = None;
+            self.holder = None;
+        }
+    }
+
+    /// A departed holder: close what it left open so the card's session ends.
+    fn abandon(&mut self) {
+        self.holder = None;
+        match self.session {
+            Some(Session::Exec { stdin_open: true }) => self.forward(Msg::StdinEof),
+            Some(Session::Put { closed: false }) => self.forward(Msg::PutClose),
+            _ => {}
+        }
+    }
+}
+
+/// The daemon's PCIe byte counters as a message.
+fn traffic_now() -> Traffic {
+    let [dma_to_card, dma_from_card, aperture_to_card, aperture_from_card] = phi_vfio::traffic::snapshot();
+    Traffic {
+        dma_to_card,
+        dma_from_card,
+        aperture_to_card,
+        aperture_from_card,
+    }
+}
+
+/// Relay frames between local clients and the card's rpc channel until the
+/// process ends. One client at a time holds the card's session (a command,
+/// a transfer, a ping) and the others wait their turn; `Stat` requests from
+/// any client are interleaved with the session and their replies routed
+/// back in order; `Sensors` and `Traffic` are answered here.
 pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, owner: u32) -> Result<()> {
     if !wait_for_init(card, Duration::from_secs(120)) {
         eprintln!("[phictl] serve: the card did not reach init; not relaying");
@@ -191,82 +325,90 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, 
     };
     eprintln!("[phictl] serve: control socket ready for uid {owner} (and root)");
 
-    let mut client: Option<UnixStream> = None;
-    let mut from_client = Decoder::new();
+    let mut relay = Relay::default();
     let mut from_card = Decoder::new();
-    let mut in_exec = false;
-    let mut to_card: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 65536];
     loop {
         let mut idle = true;
-        if client.is_none() {
+        // New connections.
+        loop {
             match listener.accept() {
                 Ok((stream, _)) => match peer_uid(&stream) {
                     Ok(uid) if uid == 0 || uid == owner => {
-                        stream.set_read_timeout(Some(Duration::from_millis(1)))?;
-                        client = Some(stream);
-                        from_client = Decoder::new();
+                        if relay.clients.len() >= MAX_CLIENTS {
+                            eprintln!("[phictl] serve: refused a connection: {MAX_CLIENTS} clients already");
+                            continue;
+                        }
+                        stream.set_nonblocking(true)?;
+                        relay.next_id += 1;
+                        relay.clients.push(Client {
+                            id: relay.next_id,
+                            stream,
+                            dec: Decoder::new(),
+                            pending: VecDeque::new(),
+                            dead: false,
+                        });
                     }
                     Ok(uid) => eprintln!("[phictl] serve: refused a connection from uid {uid}"),
                     Err(e) => eprintln!("[phictl] serve: {e:#}"),
                 },
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e).context("accept"),
             }
         }
-        // Client to card.
-        if let Some(stream) = client.as_mut() {
-            match stream.read(&mut chunk) {
-                Ok(0) => {
-                    client = None;
-                    if in_exec {
-                        to_card.extend_from_slice(&Msg::StdinEof.encode());
-                    }
-                }
+        // Clients to card. A client waiting for the card keeps its later
+        // frames in its socket until its turn.
+        for i in 0..relay.clients.len() {
+            let c = &relay.clients[i];
+            if c.dead || (!c.pending.is_empty() && relay.holder != Some(c.id)) {
+                continue;
+            }
+            match relay.clients[i].stream.read(&mut chunk) {
+                Ok(0) => relay.clients[i].dead = true,
                 Ok(n) => {
                     idle = false;
-                    from_client.push(&chunk[..n]);
+                    relay.clients[i].dec.push(&chunk[..n]);
                     loop {
-                        match from_client.next_frame() {
-                            Ok(Some(Msg::Sensors)) => {
-                                // Answered here; the card never sees it.
-                                let reply = Msg::SensorsReply { text: sensors_text(card) };
-                                if let Some(stream) = client.as_mut() {
-                                    if stream.write_all(&reply.encode()).is_err() {
-                                        client = None;
-                                    }
-                                }
-                                break;
-                            }
-                            Ok(Some(m)) => {
-                                if matches!(m, Msg::Exec { .. }) {
-                                    in_exec = true;
-                                }
-                                to_card.extend_from_slice(&m.encode());
-                            }
+                        match relay.clients[i].dec.next_frame() {
+                            Ok(Some(m)) => relay.handle(i, m, card),
                             Ok(None) => break,
                             Err(e) => {
-                                eprintln!("[phictl] serve: bad frame from the client: {e}");
-                                client = None;
+                                eprintln!("[phictl] serve: bad frame from a client: {e}");
+                                relay.clients[i].dead = true;
                                 break;
                             }
                         }
                     }
                 }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {}
-                Err(_) => client = None,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+                Err(_) => relay.clients[i].dead = true,
             }
         }
-        if !to_card.is_empty() {
-            let free = producer.free(&mem) as usize;
-            let n = to_card.len().min(free);
-            if n > 0 {
-                let written = producer.push(&mut mem, &to_card[..n]);
-                to_card.drain(..written);
+        if relay.clients.iter().any(|c| c.dead && relay.holder == Some(c.id)) {
+            relay.abandon();
+        }
+        relay.clients.retain(|c| !c.dead);
+        // The card is free: the next client waiting for it.
+        if relay.session.is_none() {
+            if let Some(i) = relay.clients.iter().position(|c| !c.pending.is_empty()) {
+                relay.holder = Some(relay.clients[i].id);
+                let pending: Vec<Msg> = relay.clients[i].pending.drain(..).collect();
+                for m in pending {
+                    relay.forward(m);
+                }
                 idle = false;
             }
         }
-        // Card to client.
+        if !relay.to_card.is_empty() {
+            let free = producer.free(&mem) as usize;
+            let n = relay.to_card.len().min(free);
+            if n > 0 {
+                let written = producer.push(&mut mem, &relay.to_card[..n]);
+                relay.to_card.drain(..written);
+                idle = false;
+            }
+        }
+        // Card to clients.
         let avail = consumer.available(&mem) as usize;
         if avail > 0 {
             idle = false;
@@ -275,16 +417,7 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, 
             from_card.push(&chunk[..n]);
             loop {
                 match from_card.next_frame() {
-                    Ok(Some(m)) => {
-                        if ends_session(&m) {
-                            in_exec = false;
-                        }
-                        if let Some(stream) = client.as_mut() {
-                            if stream.write_all(&m.encode()).is_err() {
-                                client = None;
-                            }
-                        }
-                    }
+                    Ok(Some(m)) => relay.deliver(m),
                     Ok(None) => break,
                     Err(e) => {
                         eprintln!("[phictl] serve: bad frame from the card: {e}; discarding pending bytes");
@@ -294,7 +427,7 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, listener: UnixListener, 
                 }
             }
         }
-        if idle && client.is_none() {
+        if idle {
             thread::sleep(Duration::from_millis(1));
         }
     }

@@ -229,6 +229,12 @@ enum Cmd {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
+    /// Bytes the daemon has moved over PCIe since it started, by path (DMA
+    /// engine, aperture) and direction.
+    Traffic {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 fn parse_mode(s: &str) -> std::result::Result<u32, String> {
@@ -367,6 +373,7 @@ fn main() -> Result<()> {
         Cmd::Get { socket, src, dst } => client::get(&socket.unwrap_or_else(|| serve::default_socket(false)), src, &dst),
         Cmd::Status { socket } => client::status(&socket.unwrap_or_else(|| serve::default_socket(false))),
         Cmd::Sensors { socket } => client::sensors(&socket.unwrap_or_else(|| serve::default_socket(false))),
+        Cmd::Traffic { socket } => client::traffic(&socket.unwrap_or_else(|| serve::default_socket(false))),
     }
 }
 

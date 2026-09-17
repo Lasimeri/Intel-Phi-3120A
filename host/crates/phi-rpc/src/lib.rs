@@ -63,6 +63,18 @@ pub enum Msg {
     Sensors,
     /// Host daemon to client: the sensors as text, one reading per line.
     SensorsReply { text: String },
+    /// Host to card: sample the card's load, memory, sensors and processes.
+    /// The agent answers at once, also while a command or a transfer runs,
+    /// so the daemon interleaves it with a session and routes the reply
+    /// back to whoever asked.
+    Stat,
+    /// Card to host: one sample.
+    StatReply(Box<Stat>),
+    /// Client to the host daemon only: the bytes the daemon has moved over
+    /// PCIe since it started; answered with `TrafficReply`.
+    Traffic,
+    /// Host daemon to client: cumulative byte counts by path and direction.
+    TrafficReply(Traffic),
 }
 
 /// Why a frame could not be decoded.
@@ -105,6 +117,174 @@ const TAG_PING: u8 = 14;
 const TAG_PONG: u8 = 15;
 const TAG_SENSORS: u8 = 16;
 const TAG_SENSORS_REPLY: u8 = 17;
+const TAG_STAT: u8 = 18;
+const TAG_STAT_REPLY: u8 = 19;
+const TAG_TRAFFIC: u8 = 20;
+const TAG_TRAFFIC_REPLY: u8 = 21;
+
+/// One sample of the card's state, as the agent reads it from /proc and
+/// sysfs. Counters are cumulative; the receiver differences two samples.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stat {
+    /// Milliseconds since the card's kernel booted (/proc/uptime).
+    pub uptime_ms: u64,
+    /// One entry per CPU, in /proc/stat order.
+    pub cpus: Vec<CpuStat>,
+    /// /proc/meminfo, in kB.
+    pub mem: MemStat,
+    /// Load averages over 1, 5 and 15 minutes, in hundredths.
+    pub load: [u16; 3],
+    /// Runnable tasks and all tasks (the fourth field of /proc/loadavg).
+    pub running: u32,
+    pub tasks: u32,
+    /// hwmon temperatures temp1.. in degrees C, -1 where a sensor is absent.
+    pub temps: Vec<i16>,
+    /// Highest die temperature recorded since boot (temp*_max), -1 if unknown.
+    pub temp_peak: i16,
+    /// Core voltage in mV and clock in MHz (hwmon in0_input, core_mhz).
+    pub vcore_mv: u32,
+    pub core_mhz: u32,
+    /// Block devices: bytes read and written (/proc/diskstats sectors times 512).
+    pub disks: Vec<DevStat>,
+    /// Network interfaces: bytes received and sent (/proc/net/dev).
+    pub nets: Vec<DevStat>,
+    /// Every user process, and each kernel thread whose CPU time moved
+    /// since the agent's previous sample.
+    pub procs: Vec<ProcStat>,
+    /// All processes in /proc, and how many of them are kernel threads.
+    pub nprocs: u32,
+    pub nkthreads: u32,
+}
+
+/// One CPU's counters from /proc/stat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuStat {
+    /// Physical core (sysfs topology/core_id).
+    pub core: u16,
+    /// Ticks (USER_HZ, 100 per second) spent busy: user, nice, system, irq,
+    /// softirq and steal.
+    pub busy: u32,
+    /// Ticks spent idle or waiting for I/O.
+    pub idle: u32,
+}
+
+/// /proc/meminfo, in kB.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemStat {
+    pub total_kb: u64,
+    pub avail_kb: u64,
+    pub buffers_kb: u64,
+    pub cached_kb: u64,
+    pub swap_total_kb: u64,
+    pub swap_free_kb: u64,
+}
+
+/// A device's two byte counters: read and written, or received and sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DevStat {
+    pub name: String,
+    pub read: u64,
+    pub written: u64,
+}
+
+/// One process from /proc/[pid]/stat.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcStat {
+    pub pid: u32,
+    /// The state letter (R, S, D, Z, T and so on).
+    pub state: u8,
+    /// PF_KTHREAD in the flags field.
+    pub kthread: bool,
+    /// utime plus stime, in ticks.
+    pub ticks: u64,
+    /// Resident set, in kB.
+    pub rss_kb: u64,
+    pub threads: u32,
+    pub comm: String,
+}
+
+/// Bytes the host daemon has moved over PCIe, cumulative since it started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traffic {
+    pub dma_to_card: u64,
+    pub dma_from_card: u64,
+    pub aperture_to_card: u64,
+    pub aperture_from_card: u64,
+}
+
+fn put_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// A list count, clamped to what a u16 holds; returns the count written.
+fn put_count(out: &mut Vec<u8>, n: usize) -> usize {
+    let n = n.min(u16::MAX as usize);
+    put_u16(out, n as u16);
+    n
+}
+
+fn put_devs(out: &mut Vec<u8>, list: &[DevStat]) {
+    let n = put_count(out, list.len());
+    for d in &list[..n] {
+        put_str(out, &d.name);
+        put_u64(out, d.read);
+        put_u64(out, d.written);
+    }
+}
+
+fn put_stat(out: &mut Vec<u8>, s: &Stat) {
+    put_u64(out, s.uptime_ms);
+    let n = put_count(out, s.cpus.len());
+    for c in &s.cpus[..n] {
+        put_u16(out, c.core);
+        put_u32(out, c.busy);
+        put_u32(out, c.idle);
+    }
+    for v in [
+        s.mem.total_kb,
+        s.mem.avail_kb,
+        s.mem.buffers_kb,
+        s.mem.cached_kb,
+        s.mem.swap_total_kb,
+        s.mem.swap_free_kb,
+    ] {
+        put_u64(out, v);
+    }
+    for l in s.load {
+        put_u16(out, l);
+    }
+    put_u32(out, s.running);
+    put_u32(out, s.tasks);
+    let n = put_count(out, s.temps.len());
+    for t in &s.temps[..n] {
+        put_u16(out, *t as u16);
+    }
+    put_u16(out, s.temp_peak as u16);
+    put_u32(out, s.vcore_mv);
+    put_u32(out, s.core_mhz);
+    put_devs(out, &s.disks);
+    put_devs(out, &s.nets);
+    let n = put_count(out, s.procs.len());
+    for p in &s.procs[..n] {
+        put_u32(out, p.pid);
+        out.push(p.state);
+        out.push(p.kthread as u8);
+        put_u64(out, p.ticks);
+        put_u64(out, p.rss_kb);
+        put_u32(out, p.threads);
+        put_str(out, &p.comm);
+    }
+    put_u32(out, s.nprocs);
+    put_u32(out, s.nkthreads);
+}
 
 fn put_str(out: &mut Vec<u8>, s: &str) {
     let b = s.as_bytes();
@@ -143,6 +323,75 @@ impl<'a> Reader<'a> {
         let n = self.u16()? as usize;
         let b = self.take(n)?;
         String::from_utf8(b.to_vec()).map_err(|_| DecodeError::Malformed)
+    }
+    fn u8(&mut self) -> Result<u8, DecodeError> {
+        Ok(self.take(1)?[0])
+    }
+    fn i16(&mut self) -> Result<i16, DecodeError> {
+        Ok(self.u16()? as i16)
+    }
+    fn devs(&mut self) -> Result<Vec<DevStat>, DecodeError> {
+        let n = self.u16()? as usize;
+        let mut v = Vec::with_capacity(n.min(64));
+        for _ in 0..n {
+            v.push(DevStat {
+                name: self.str()?,
+                read: self.u64()?,
+                written: self.u64()?,
+            });
+        }
+        Ok(v)
+    }
+    fn stat(&mut self) -> Result<Stat, DecodeError> {
+        let mut s = Stat {
+            uptime_ms: self.u64()?,
+            ..Stat::default()
+        };
+        let n = self.u16()? as usize;
+        s.cpus.reserve(n.min(1024));
+        for _ in 0..n {
+            s.cpus.push(CpuStat {
+                core: self.u16()?,
+                busy: self.u32()?,
+                idle: self.u32()?,
+            });
+        }
+        s.mem = MemStat {
+            total_kb: self.u64()?,
+            avail_kb: self.u64()?,
+            buffers_kb: self.u64()?,
+            cached_kb: self.u64()?,
+            swap_total_kb: self.u64()?,
+            swap_free_kb: self.u64()?,
+        };
+        s.load = [self.u16()?, self.u16()?, self.u16()?];
+        s.running = self.u32()?;
+        s.tasks = self.u32()?;
+        let n = self.u16()? as usize;
+        for _ in 0..n {
+            s.temps.push(self.i16()?);
+        }
+        s.temp_peak = self.i16()?;
+        s.vcore_mv = self.u32()?;
+        s.core_mhz = self.u32()?;
+        s.disks = self.devs()?;
+        s.nets = self.devs()?;
+        let n = self.u16()? as usize;
+        s.procs.reserve(n.min(4096));
+        for _ in 0..n {
+            s.procs.push(ProcStat {
+                pid: self.u32()?,
+                state: self.u8()?,
+                kthread: self.u8()? != 0,
+                ticks: self.u64()?,
+                rss_kb: self.u64()?,
+                threads: self.u32()?,
+                comm: self.str()?,
+            });
+        }
+        s.nprocs = self.u32()?;
+        s.nkthreads = self.u32()?;
+        Ok(s)
     }
     fn rest(&mut self) -> Vec<u8> {
         let s = self.buf[self.pos..].to_vec();
@@ -222,6 +471,18 @@ impl Msg {
                 put_str(&mut body, text);
                 TAG_SENSORS_REPLY
             }
+            Msg::Stat => TAG_STAT,
+            Msg::StatReply(s) => {
+                put_stat(&mut body, s);
+                TAG_STAT_REPLY
+            }
+            Msg::Traffic => TAG_TRAFFIC,
+            Msg::TrafficReply(t) => {
+                for v in [t.dma_to_card, t.dma_from_card, t.aperture_to_card, t.aperture_from_card] {
+                    put_u64(&mut body, v);
+                }
+                TAG_TRAFFIC_REPLY
+            }
         };
         let mut out = Vec::with_capacity(5 + body.len());
         out.extend_from_slice(&((1 + body.len()) as u32).to_le_bytes());
@@ -274,6 +535,15 @@ impl Msg {
             TAG_PONG => Msg::Pong { version: r.str()? },
             TAG_SENSORS => Msg::Sensors,
             TAG_SENSORS_REPLY => Msg::SensorsReply { text: r.str()? },
+            TAG_STAT => Msg::Stat,
+            TAG_STAT_REPLY => Msg::StatReply(Box::new(r.stat()?)),
+            TAG_TRAFFIC => Msg::Traffic,
+            TAG_TRAFFIC_REPLY => Msg::TrafficReply(Traffic {
+                dma_to_card: r.u64()?,
+                dma_from_card: r.u64()?,
+                aperture_to_card: r.u64()?,
+                aperture_from_card: r.u64()?,
+            }),
             t => return Err(DecodeError::Tag(t)),
         };
         Ok(msg)
@@ -386,5 +656,91 @@ mod tests {
         let mut d = Decoder::new();
         d.push(&[2, 0, 0, 0, TAG_GET, 5]);
         assert_eq!(d.next_frame(), Err(DecodeError::Malformed));
+    }
+}
+
+#[cfg(test)]
+mod stat_tests {
+    use super::*;
+
+    #[test]
+    fn stat_and_traffic_round_trip() {
+        let stat = Stat {
+            uptime_ms: 123_456,
+            cpus: (0..228)
+                .map(|i| CpuStat {
+                    core: (i / 4) as u16,
+                    busy: i * 7,
+                    idle: 1_000_000 - i,
+                })
+                .collect(),
+            mem: MemStat {
+                total_kb: 5_805_088,
+                avail_kb: 5_424_336,
+                buffers_kb: 8612,
+                cached_kb: 18808,
+                swap_total_kb: 4_194_300,
+                swap_free_kb: 4_194_300,
+            },
+            load: [133, 39, 14],
+            running: 2,
+            tasks: 1507,
+            temps: vec![54, 53, 50, 46, 51, 46, 51, -1, -1, -1, -1, -1, -1, 0, -1],
+            temp_peak: 66,
+            vcore_mv: 1100,
+            core_mhz: 1100,
+            disks: vec![DevStat {
+                name: "phiblk0".into(),
+                read: 1 << 40,
+                written: 512,
+            }],
+            nets: vec![DevStat {
+                name: "phi0".into(),
+                read: 866,
+                written: 0,
+            }],
+            procs: vec![
+                ProcStat {
+                    pid: 1,
+                    state: b'S',
+                    kthread: false,
+                    ticks: 145,
+                    rss_kb: 556,
+                    threads: 1,
+                    comm: "init".into(),
+                },
+                ProcStat {
+                    pid: 12,
+                    state: b'R',
+                    kthread: true,
+                    ticks: 3,
+                    rss_kb: 0,
+                    threads: 1,
+                    comm: "ksoftirqd/1".into(),
+                },
+            ],
+            nprocs: 1507,
+            nkthreads: 1490,
+        };
+        let traffic = Traffic {
+            dma_to_card: 1,
+            dma_from_card: 2,
+            aperture_to_card: 3,
+            aperture_from_card: u64::MAX,
+        };
+        let msgs = vec![Msg::Stat, Msg::StatReply(Box::new(stat)), Msg::Traffic, Msg::TrafficReply(traffic)];
+        let mut stream = Vec::new();
+        for m in &msgs {
+            stream.extend_from_slice(&m.encode());
+        }
+        let mut d = Decoder::new();
+        let mut got = Vec::new();
+        for piece in stream.chunks(5) {
+            d.push(piece);
+            while let Some(m) = d.next_frame().unwrap() {
+                got.push(m);
+            }
+        }
+        assert_eq!(got, msgs);
     }
 }

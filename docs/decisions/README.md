@@ -9,5 +9,7 @@
 | [0005](0005-forward-port-mainline.md) | The card runs a mainline kernel with a KNC platform layer, not Intel's 2.6.38 tree |
 | [0006](0006-musl-libc.md) | musl is the card libc |
 | [0007](0007-rust-distro-rustc-patched-llvm.md) | Rust for the card is the distro rustc loading the patched LLVM; SSE removed by reverse implication, no rustc fork |
+| [0008](0008-direct-access-tool.md) | A local, socket-gated tool drives the card instead of SSH |
+| [0009](0009-telemetry-sideband.md) | Telemetry is a sideband on the rpc channel; the daemon serves several clients, one card session at a time |
 
 Format: Status, Context, Decision, Consequences, Alternatives rejected.

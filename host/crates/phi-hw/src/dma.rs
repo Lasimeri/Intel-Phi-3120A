@@ -12,6 +12,7 @@
 //! masked. Register layout and bit positions come from MPSS
 //! `dma/mic_dma_md.c` and `include/mic/mic_dma_md.h`; see dma.md.
 
+use phi_vfio::traffic;
 use std::ptr;
 use std::time::{Duration, Instant};
 
@@ -337,6 +338,11 @@ impl<'a> DmaChannel<'a> {
             };
             if seen == seq {
                 self.completed = seq;
+                if to_host {
+                    traffic::add(&traffic::DMA_FROM_CARD, len);
+                } else if src >= memory::SMPT_BASE {
+                    traffic::add(&traffic::DMA_TO_CARD, len);
+                }
                 return Ok(());
             }
             if start.elapsed() > Duration::from_secs(2) {

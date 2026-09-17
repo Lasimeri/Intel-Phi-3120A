@@ -21,6 +21,7 @@ pub mod group;
 pub mod ioctl;
 pub mod mapping;
 pub mod sysfs;
+pub mod traffic;
 
 use std::io;
 

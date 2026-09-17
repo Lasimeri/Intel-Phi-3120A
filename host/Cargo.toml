@@ -11,6 +11,7 @@ members = [
     "crates/phictl",
     "crates/phi-isa-audit",
     "crates/knc-mvex",
+    "crates/phitop",
 ]
 
 [workspace.package]

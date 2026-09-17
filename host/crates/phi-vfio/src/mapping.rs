@@ -5,6 +5,7 @@
 //! use the access width the device expects: the SBOX registers are 32-bit,
 //! the aperture accepts any width. Nothing here caches or buffers.
 
+use crate::traffic;
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::ptr::{self, NonNull};
@@ -98,6 +99,7 @@ impl Mapping {
     /// for the aperture (plain memory behind a BAR), not for registers.
     pub fn write_bytes(&self, off: usize, data: &[u8]) {
         self.check(off, data.len());
+        traffic::add(&traffic::APERTURE_TO_CARD, data.len());
         let mut i = 0;
         // Head: bytes until 8-aligned.
         while i < data.len() && !(off + i).is_multiple_of(8) {
@@ -121,6 +123,7 @@ impl Mapping {
     /// Copy `buf.len()` bytes out of the mapping at `off`, mirror of [`Self::write_bytes`].
     pub fn read_bytes(&self, off: usize, buf: &mut [u8]) {
         self.check(off, buf.len());
+        traffic::add(&traffic::APERTURE_FROM_CARD, buf.len());
         let mut i = 0;
         while i < buf.len() && !(off + i).is_multiple_of(8) {
             buf[i] = self.read8(off + i);

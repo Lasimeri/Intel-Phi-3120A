@@ -24,3 +24,18 @@ not messages); the tests feed the whole message set in 7-byte pieces.
 client and the host daemon: the daemon answers a `Sensors` request with
 the card's SBOX readings as text and never relays it to the card, so the
 agent does not see these tags. `phictl sensors` uses them.
+
+## Telemetry messages (2026-09-17)
+
+`Stat` (tag 18) asks the card for one sample; `StatReply` (tag 19)
+carries it as the `Stat` structure: per-CPU busy and idle ticks with the
+core id, memory, load averages, the hwmon temperatures, voltage and
+clock, per-device byte counters and the process table (fields documented
+on the structure; sizes are `u16` counts, integers little-endian, the
+process state a byte, temperatures `i16` with -1 for absent). Unlike a
+session request, `Stat` may be sent while a session is open: the agent
+answers it from every state, and the daemon routes replies to requesters
+in order (`phictl/src/serve.md`). `Traffic` (tag 20) and `TrafficReply`
+(tag 21) are host-only like `Sensors`: the daemon's PCIe byte counters,
+four `u64`. `phitop` is the consumer of both; `phictl traffic` prints
+the counters.

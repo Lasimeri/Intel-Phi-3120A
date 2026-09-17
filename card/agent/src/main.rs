@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use phi_rpc::{Decoder, Msg};
 
+mod stat;
+
 const DEVICE: &str = "/dev/phirpc";
 /// Bytes per Stdout/Stderr/GetData frame.
 const CHUNK: usize = 32768;
@@ -66,7 +68,14 @@ fn exit_code(child: &mut Child) -> i32 {
 
 /// Run one command: relay Stdin frames until StdinEof or the command ends;
 /// return once Exit has been sent.
-fn run_exec(reader: &mut Reader, link: &Link, argv: Vec<String>, env: Vec<(String, String)>, cwd: Option<String>) -> io::Result<()> {
+fn run_exec(
+    reader: &mut Reader,
+    link: &Link,
+    sampler: &mut stat::Sampler,
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    cwd: Option<String>,
+) -> io::Result<()> {
     let Some(program) = argv.first() else {
         return link.send(&Msg::Error("empty argv".into()));
     };
@@ -88,16 +97,15 @@ fn run_exec(reader: &mut Reader, link: &Link, argv: Vec<String>, env: Vec<(Strin
     let out = pump(child.stdout.take().expect("piped"), link.clone(), Msg::Stdout, abandoned.clone());
     let err = pump(child.stderr.take().expect("piped"), link.clone(), Msg::Stderr, abandoned.clone());
     let mut stdin = child.stdin.take();
-    // Feed input while the command runs. A command that exits with input
-    // still pending simply stops reading; the host learns from Exit.
+    // Feed input while the command runs, and keep reading frames after the
+    // host closed its input: Stat requests arrive at any time and a command
+    // may run for hours. A command that exits with input still pending
+    // simply stops reading; the host learns from Exit.
     loop {
-        if stdin.is_none() {
-            break;
-        }
         if child.try_wait()?.is_some() {
             break;
         }
-        match reader.next_timeout(50)? {
+        match reader.next_timeout(20)? {
             Some(Msg::Stdin(d)) => {
                 if let Some(s) = stdin.as_mut() {
                     if s.write_all(&d).is_err() {
@@ -106,6 +114,7 @@ fn run_exec(reader: &mut Reader, link: &Link, argv: Vec<String>, env: Vec<(Strin
                 }
             }
             Some(Msg::StdinEof) => stdin = None,
+            Some(Msg::Stat) => link.send(&Msg::StatReply(Box::new(sampler.sample())))?,
             Some(other) => {
                 let _ = link.send(&Msg::Error(format!("unexpected {other:?} during a command")));
             }
@@ -126,7 +135,7 @@ fn run_exec(reader: &mut Reader, link: &Link, argv: Vec<String>, env: Vec<(Strin
     link.send(&Msg::Exit(code))
 }
 
-fn run_put(reader: &mut Reader, link: &Link, path: String, mode: u32) -> io::Result<()> {
+fn run_put(reader: &mut Reader, link: &Link, sampler: &mut stat::Sampler, path: String, mode: u32) -> io::Result<()> {
     let mut file = match OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(&path) {
         Ok(f) => f,
         Err(e) => return link.send(&Msg::Error(format!("{path}: {e}"))),
@@ -144,6 +153,7 @@ fn run_put(reader: &mut Reader, link: &Link, path: String, mode: u32) -> io::Res
                     Err(e) => link.send(&Msg::Error(format!("{path}: {e}"))),
                 };
             }
+            Msg::Stat => link.send(&Msg::StatReply(Box::new(sampler.sample())))?,
             other => return link.send(&Msg::Error(format!("unexpected {other:?} during put"))),
         }
     }
@@ -237,10 +247,15 @@ fn main() {
         buf: vec![0u8; 65536],
     };
     eprintln!("phi-agent {} listening on {DEVICE}", env!("CARGO_PKG_VERSION"));
+    let mut sampler = stat::Sampler::default();
     loop {
         let result = match reader.next_blocking() {
-            Ok(Msg::Exec { argv, env, cwd }) => run_exec(&mut reader, &link, argv, env, cwd),
-            Ok(Msg::PutOpen { path, mode }) => run_put(&mut reader, &link, path, mode),
+            Ok(Msg::Exec { argv, env, cwd }) => run_exec(&mut reader, &link, &mut sampler, argv, env, cwd),
+            Ok(Msg::PutOpen { path, mode }) => run_put(&mut reader, &link, &mut sampler, path, mode),
+            Ok(Msg::Stat) => link.send(&Msg::StatReply(Box::new(sampler.sample()))),
+            // Stream frames that outlived their session (the daemon closes a
+            // departed client's input after the fact): nothing to answer.
+            Ok(Msg::Stdin(_)) | Ok(Msg::StdinEof) | Ok(Msg::PutData(_)) | Ok(Msg::PutClose) => Ok(()),
             Ok(Msg::Get { path }) => run_get(&link, path),
             Ok(Msg::Ping) => link.send(&Msg::Pong { version: env!("CARGO_PKG_VERSION").into() }),
             Ok(other) => link.send(&Msg::Error(format!("unexpected {other:?} outside a session"))),

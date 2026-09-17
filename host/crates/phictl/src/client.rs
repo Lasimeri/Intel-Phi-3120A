@@ -204,3 +204,22 @@ pub fn sensors(socket: &Path) -> Result<()> {
         other => bail!("unexpected reply {other:?}"),
     }
 }
+
+/// `phictl traffic`: the bytes the daemon has moved over PCIe since it
+/// started, by path and direction (`phi_vfio::traffic`).
+pub fn traffic(socket: &Path) -> Result<()> {
+    let mut conn = Conn::open(socket)?;
+    conn.send(&Msg::Traffic)?;
+    match conn.recv()? {
+        Msg::TrafficReply(t) => {
+            println!("dma: {} bytes to the card, {} bytes from it", t.dma_to_card, t.dma_from_card);
+            println!(
+                "aperture: {} bytes to the card, {} bytes from it",
+                t.aperture_to_card, t.aperture_from_card
+            );
+            Ok(())
+        }
+        Msg::Error(e) => bail!("{e}"),
+        other => bail!("unexpected reply {other:?}"),
+    }
+}

@@ -16,3 +16,9 @@ sends one request and relays the reply:
 `--socket` selects the daemon (default `/run/phictl/control.sock`). The
 connection refuses with a hint when no daemon runs or the caller is not the
 socket's owner.
+
+## `phictl traffic` (2026-09-17)
+
+Sends `Traffic` and prints the four cumulative counters from
+`phi_vfio::traffic`: DMA to the card, DMA from it, aperture to it,
+aperture from it. Host-only, like `sensors`.

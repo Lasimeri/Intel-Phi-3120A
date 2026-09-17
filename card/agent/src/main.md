@@ -23,3 +23,15 @@ frame resets the decoder. The agent runs as root on a RAM-only system that
 the host resets at will; the security boundary is the daemon's socket on
 the host (`host/crates/phictl/src/serve.md`), not this program. Started by
 `/init` with its messages on the console.
+
+## Samples for phitop (2026-09-17)
+
+`Stat` is answered from every state: outside a session, inside a running
+command, and while a file comes in. The command loop therefore keeps
+reading frames after the host closed the command's input (it used to
+stop and block in `wait`), polling the child every 20 ms; input frames
+that arrive after that are dropped. Stray `Stdin`, `StdinEof`, `PutData`
+and `PutClose` frames outside a session are ignored rather than answered
+with `Error`, because the daemon closes a departed client's input after
+the fact and such a frame may land after the session already ended. The
+sample itself is `stat.rs` (`stat.md`).

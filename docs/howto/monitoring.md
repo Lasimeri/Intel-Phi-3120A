@@ -4,7 +4,9 @@
 | --- | --- | --- |
 | temperatures, voltage, clock, from the host | daemon reads the SBOX | `host/target/debug/phictl sensors` |
 | the same on the card | hwmon `knc` (patch 0027) | `cat /sys/class/hwmon/hwmon0/temp1_input` (millidegrees), `..._label`, `in0_input` (mV), `core_mhz` |
+| the card live from the host: every hardware thread's load on a core grid, die temperatures, memory and swap, PCIe rates, disk and network rates, processes | `phitop` (host, `host/crates/phitop`) | `host/target/debug/phitop`, `phitop --batch 3` for plain text; keys q, c, m, k, +, - |
 | load per CPU, memory | busybox, htop, glances | `htop`, `glances` (htop-phi, glances-phi repos, pushed onto the disk) |
+| bytes the daemon moved over PCIe, cumulative | `phictl traffic` | `host/target/debug/phictl traffic` |
 | hardware counters around a command | `phiperf` (`card/examples/phiperf.c`) | `./phiperf ./program args`, `./phiperf -n -r 0x10cb,0x10cc ./program` |
 | disk and host-memory traffic | the host tool's console | `[phictl] disk:` lines in `$XDG_RUNTIME_DIR/phictl/console.log` |
 | service state | systemd | `systemctl --user status phi.service`, `journalctl --user -u phi.service` |

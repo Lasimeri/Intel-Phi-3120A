@@ -32,3 +32,10 @@ Register offsets and descriptor bit positions are in `phi-regs` (`sbox`),
 taken from MPSS `dma/mic_dma_md.c` and `include/mic/mic_dma_md.h`
 (vendor tree, reference only). Used by `phictl boot --disk` for the block
 device's data path; see `docs/results/2026-09-16-dma.md` for the numbers.
+
+## Traffic counters (2026-09-17)
+
+A completed copy adds its length to `phi_vfio::traffic::DMA_FROM_CARD`
+when the destination is host memory and to `DMA_TO_CARD` when the
+source is; a copy within card memory (the self-test's pattern moves)
+counts as neither. `phictl traffic` and `phitop` read the counters.
