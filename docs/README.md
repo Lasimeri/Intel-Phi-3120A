@@ -57,7 +57,7 @@ output and a reading. In date order:
 | [2026-09-15-vpu.md](results/2026-09-15-vpu.md) | The vector unit: encoder, kernel state save/restore, 1.47x the host's AVX2 on the iteration pass |
 | [2026-09-16-storage.md](results/2026-09-16-storage.md) | `/dev/phiblk0` from a host disk image; the torn-index bug; aperture-bound rates |
 | [2026-09-16-dma.md](results/2026-09-16-dma.md) | The DMA engine: coherence settled, completion by status descriptor, 846 MB/s disk reads |
-| [2026-09-16-autoboot.md](results/2026-09-16-autoboot.md) | `phi.service` at login; host key pinning and file modes |
+| [2026-09-16-autoboot.md](results/2026-09-16-autoboot.md) | `phi.service` at login (superseded by boot-without-login, below); host key pinning and file modes |
 | [2026-09-16-sensors.md](results/2026-09-16-sensors.md) | hwmon on the card, `phictl sensors`, the core clock from `COREFREQ`, PMU counters with `phiperf` |
 | [2026-09-17-phitop.md](results/2026-09-17-phitop.md) | The viewer under load; PCIe rates against the card's own counters; the one direct-read stall |
 | [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
