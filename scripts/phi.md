@@ -59,16 +59,35 @@ in the command is expanded on the card, not on the host.
 ## What `phi status` says about reach
 
 The access surface is part of the status output because it is the thing
-worth keeping an eye on:
+worth keeping an eye on. Each line names the **command**, not just the
+address:
 
-- the control socket, mode 0600 in a 0700 directory, checked with
-  `SO_PEERCRED` on every connection, so only the owning user and root;
-- `127.0.0.1:2222` when the daemon runs the forwarder, which binds loopback
-  and nothing else;
-- a warning line if anything is listening on port 2222 beyond loopback;
-- a line naming a host TAP device if one exists, because that is the one
-  configuration in which the card is reachable from outside this machine
-  (a root boot with `--net`, which nothing here does by default).
+```
+ways in (all of them local to this host):
+  phi run CMD            control socket /run/user/1000/phictl/control.sock
+                         mode 0600 in a 0700 dir, SO_PEERCRED per connection
+  phi sh                 SSH with a pty, through the forwarder on 127.0.0.1:2222
+  ssh phi                the same, through your ~/.ssh/config stanza
+```
+
+It used to print a bare `127.0.0.1:2222`, which reads like something you
+can hand to ssh. It is not: ssh takes `-p PORT` and a plain hostname, never
+`host:port` (that is scp and rsync syntax), so `ssh root@127.0.0.1:2222`
+fails with "Could not resolve hostname". The third line appears only when a
+`Host ... phi ...` stanza exists in `~/.ssh/config`; without one the status
+prints the `-p 2222` form instead, so the output is always a command that
+works as shown.
+
+Two more lines appear when they apply:
+
+- a warning if anything is listening on port 2222 beyond loopback;
+- a host TAP device if one exists, because that is the one configuration in
+  which the card is reachable from outside this machine (a root boot with
+  `--net`, which nothing here does by default).
+
+The `starts` line reports whether the unit comes up at host boot (lingering
+on) or at the first login, which is the difference between a card that is
+there at the greeter and one that waits for you.
 
 ## Why a wrapper and not aliases
 

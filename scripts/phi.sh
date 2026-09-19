@@ -149,13 +149,21 @@ status)
         printf 'agent     not reachable (card down)\n'
     fi
     echo
-    echo 'reachable from:'
-    printf '  %-30s %s\n' "$sock" 'control socket, this user only (0600 in a 0700 dir)'
+    # Name the command, not just the address. A bare "127.0.0.1:2222" reads
+    # like something you can hand to ssh, and ssh does not take host:port.
+    echo 'ways in (all of them local to this host):'
+    printf '  %-22s %s\n' 'phi run CMD' "control socket $sock"
+    printf '  %-22s %s\n' '' 'mode 0600 in a 0700 dir, SO_PEERCRED per connection'
     if ss -ltn 2>/dev/null | grep -q '127.0.0.1:2222'; then
-        printf '  %-30s %s\n' '127.0.0.1:2222' 'SSH, loopback only (forwarder inside the daemon)'
+        printf '  %-22s %s\n' 'phi sh' 'SSH with a pty, through the forwarder on 127.0.0.1:2222'
+        if grep -qE '^Host .*\bphi\b' "$HOME/.ssh/config" 2>/dev/null; then
+            printf '  %-22s %s\n' 'ssh phi' 'the same, through your ~/.ssh/config stanza'
+        else
+            printf '  %-22s %s\n' 'ssh -p 2222 ...' 'root@127.0.0.1; ssh takes -p, never host:port'
+        fi
     fi
     if ip -o link show phi0 > /dev/null 2>&1 || ip -o link show type bridge 2>/dev/null | grep -q phi; then
-        printf '  %-30s %s\n' 'phi0 (host TAP)' 'a host TAP exists: the card is on a host network'
+        printf '  %-22s %s\n' 'phi0 (host TAP)' 'a host TAP exists: the card is on a host network'
     fi
     ss -ltn 2>/dev/null | awk '$4 !~ /^127\.0\.0\.1:|^\[::1\]:/ && $4 ~ /:2222$/ {
         print "  WARNING: SSH forward is bound beyond loopback: " $4 }'
