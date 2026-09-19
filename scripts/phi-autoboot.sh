@@ -44,9 +44,11 @@ Type=simple
 Environment=PHICTL_SOCKET=%t/phictl/control.sock
 ExecStartPre=/usr/bin/mkdir -p -m 700 %t/phictl
 ExecStart="$P" boot --kernel "$kernel" --initrd "$initrd" --cmdline "earlyprintk=phiring console=ttyPHI0" --serve %t/phictl/control.sock --forward 2222:22$diskarg
-# Stop: ask the card to power off (its disk unmounts), then end phictl, which
-# releases VFIO and resets the card.
-ExecStop=/bin/sh -c 'PHICTL_SOCKET=%t/phictl/control.sock timeout 5 "$P" exec -- sh -c "poweroff -f >/dev/null 2>&1 &" >/dev/null 2>&1; sleep 2'
+# Stop: a plain poweroff, which signals the card's PID 1 so init stops the
+# services, releases swap and unmounts /data; then end phictl, which releases
+# VFIO and resets the card. Waiting for the agent to stop answering is how we
+# know init got that far.
+ExecStop=/bin/sh -c 'PHICTL_SOCKET=%t/phictl/control.sock; export PHICTL_SOCKET; timeout 5 "$P" exec -- sh -c "poweroff >/dev/null 2>&1 &" >/dev/null 2>&1; for _ in 1 2 3 4 5 6 7 8; do timeout 2 "$P" status >/dev/null 2>&1 || break; sleep 1; done'
 KillSignal=SIGINT
 TimeoutStopSec=20
 Restart=on-failure

@@ -1,89 +1,240 @@
 #!/bin/sh
-# init: first process on the card. Mounts the pseudo filesystems, brings up
-# the ring network device, starts the SSH server when the image has one,
-# reports what it runs on, and supervises an interactive shell on the
-# console. PID 1 stays this script: busybox's poweroff/halt/reboot signal
-# PID 1 (SIGUSR2/SIGUSR1/SIGTERM), the trap turns that into the kernel's
-# power off (the KNC platform layer writes POST "KH" and halts), and a shell
-# that exits is replaced instead of taking init down with it. See build.md.
-/bin/busybox mkdir -p /proc /sys /dev /tmp
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
-/bin/busybox mount -t tmpfs tmpfs /tmp
-/bin/busybox mkdir -p /dev/pts
-/bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null
-/bin/busybox hostname phi
-# Persistent storage: /dev/phiblk0 is a disk image on the host served over
-# the ring (kernel patch 0025, phictl boot --disk). It appears once the host
-# answers the driver's identify request, shortly after init starts.
+# init: first process on the card. Brings up a small but ordinary Linux
+# system: the pseudo filesystems, the persistent disk, a persistent /etc and
+# /var, host RAM as swap, the ring network device, the system log, the SSH
+# server and the host control agent, then an interactive shell on the
+# console.
+#
+# PID 1 stays this script. busybox's poweroff/halt/reboot signal PID 1
+# (SIGUSR2/SIGUSR1/SIGTERM); the trap runs an orderly shutdown (stop the
+# services, swapoff, unmount the disk) and only then asks the kernel to power
+# off, which the KNC platform layer answers with POST "KH". A shell that
+# exits is replaced instead of taking init down with it. See build.md.
+PATH=/opt/phi/bin:/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+BB=/bin/busybox
+
+# ---------------------------------------------------------------- filesystems
+$BB mkdir -p /proc /sys /dev /tmp /run /var /etc /mnt
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sysfs /sys
+$BB mount -t devtmpfs devtmpfs /dev 2>/dev/null
+$BB mount -t tmpfs -o mode=1777 tmpfs /tmp
+$BB mount -t tmpfs -o mode=0755,size=64m tmpfs /run
+$BB mkdir -p /dev/pts /dev/shm
+$BB mount -t devpts devpts /dev/pts 2>/dev/null
+$BB mount -t tmpfs -o mode=1777 tmpfs /dev/shm 2>/dev/null
+
+# ------------------------------------------------------------- persistent disk
+# /dev/phiblk0 is a disk image on the host served over the ring (kernel patch
+# 0025, phictl boot --disk). It appears once the host answers the driver's
+# identify request, shortly after init starts.
 disk="no disk"
 i=0
-while [ $i -lt 5 ] && [ ! -b /dev/phiblk0 ]; do /bin/busybox sleep 1; i=$((i+1)); done
+while [ $i -lt 5 ] && [ ! -b /dev/phiblk0 ]; do $BB sleep 1; i=$((i+1)); done
 if [ -b /dev/phiblk0 ]; then
-	/bin/busybox mkdir -p /data
-	if /bin/busybox mount -t ext4 -o noatime /dev/phiblk0 /data 2>/dev/console; then
-		# /opt/phi, /root and /home live on the disk. Root's .ssh comes from
-		# the image on every boot, so a rebuilt image stays authoritative.
-		/bin/busybox mkdir -p /data/opt/phi /data/root /data/home /opt/phi /home
-		/bin/busybox cp -a /root/.ssh /data/root/
-		/bin/busybox mount --bind /data/opt/phi /opt/phi
-		/bin/busybox mount --bind /data/root /root
-		/bin/busybox mount --bind /data/home /home
-		disk="/dev/phiblk0 on /data, $(/bin/busybox df -h /data | /bin/busybox awk 'NR==2 {print $2" total, "$4" free"}')"
+	$BB mkdir -p /data
+	if $BB mount -t ext4 -o noatime /dev/phiblk0 /data 2>/dev/console; then
+		# The directories that hold state live on the disk and are bound
+		# over their mount points, so the image stays small and read-mostly.
+		$BB mkdir -p /data/etc /data/var /data/opt/phi /data/root /data/home
+		$BB mkdir -p /opt/phi /home
+		for d in etc var opt/phi root home; do
+			$BB mount --bind "/data/$d" "/$d"
+		done
+		disk="/dev/phiblk0 on /data, $($BB df -h /data | $BB awk 'NR==2 {print $2" total, "$4" free"}')"
 	else
 		disk="/dev/phiblk0 present but not mounted"
 	fi
 fi
-# Host memory as swap: /dev/phiblk1 is host RAM served over the ring (kernel
-# patch 0026, phictl boot --host-mem). Volatile, so it is formatted at every
-# boot; it extends the card's 6 GB.
+
+# ------------------------------------------------------------------------ /etc
+# The skeleton in the image is the source. Files that decide who may log in
+# are copied every boot, so a rebuilt image is always authoritative; the rest
+# is seeded once and then belongs to whoever edits it on the card.
+SKEL=/lib/phi/etc-skel
+if [ -d "$SKEL" ]; then
+	for f in passwd group shells os-release; do
+		[ -f "$SKEL/$f" ] && $BB cp -a "$SKEL/$f" /etc/
+	done
+	if [ -d "$SKEL/dropbear" ]; then
+		$BB rm -rf /etc/dropbear
+		$BB cp -a "$SKEL/dropbear" /etc/dropbear
+		$BB chmod 700 /etc/dropbear
+		$BB chmod 600 /etc/dropbear/*
+	fi
+	for f in hostname hosts profile fstab TZ resolv.conf; do
+		[ -f "$SKEL/$f" ] && [ ! -f "/etc/$f" ] && $BB cp -a "$SKEL/$f" /etc/
+	done
+fi
+[ -e /etc/mtab ] || $BB ln -sf /proc/mounts /etc/mtab
+# root's keys come from the image too, for the same reason.
+if [ -d "$SKEL/root-ssh" ]; then
+	$BB mkdir -p /root/.ssh
+	$BB cp -a "$SKEL/root-ssh/." /root/.ssh/
+	$BB chmod 700 /root /root/.ssh
+	$BB chmod 600 /root/.ssh/* 2>/dev/null
+fi
+if [ -r /etc/hostname ]; then
+	$BB hostname "$($BB cat /etc/hostname)"
+else
+	$BB hostname phi
+fi
+if [ -r /etc/TZ ]; then
+	TZ=$($BB cat /etc/TZ)
+	export TZ
+fi
+
+# ------------------------------------------------------------------------ /var
+# Ordinary places for state and logs. On the disk when there is one, in RAM
+# otherwise; either way the paths exist so programs do not have to care.
+$BB mkdir -p /var/log /var/lib /var/spool /var/cache /var/tmp /var/empty
+$BB chmod 1777 /var/tmp
+$BB mkdir -p /run/lock
+[ -e /var/run ] || $BB ln -sf /run /var/run
+[ -e /var/lock ] || $BB ln -sf /run/lock /var/lock
+
+# --------------------------------------------------------------- system log
+# syslogd writes /var/log/messages (persistent when the disk is mounted) and
+# klogd feeds the kernel ring buffer into it, which is how a kernel message
+# that scrolled past the console is found afterwards.
+log="no syslog"
+# Started through the applet symlinks, not as `busybox syslogd`: a process
+# started the second way has comm "busybox", so `killall syslogd` at shutdown
+# does not match it, syslogd keeps /var/log/messages open, and the read-only
+# remount of /data fails with EBUSY. Measured 2026-09-19.
+if /bin/syslogd -O /var/log/messages -s 2048 -b 4 2>/dev/console; then
+	/bin/klogd 2>/dev/console
+	log="syslogd and klogd on /var/log/messages"
+fi
+
+# ------------------------------------------------------- host memory as swap
+# /dev/phiblk1 is host RAM served over the ring (kernel patch 0026, phictl
+# boot --host-mem). Volatile, so it is formatted at every boot; it extends the
+# card's 6 GB of GDDR5.
 swap="no host memory"
 i=0
-while [ $i -lt 3 ] && [ ! -b /dev/phiblk1 ]; do /bin/busybox sleep 1; i=$((i+1)); done
+while [ $i -lt 3 ] && [ ! -b /dev/phiblk1 ]; do $BB sleep 1; i=$((i+1)); done
 if [ -b /dev/phiblk1 ]; then
-	if /bin/busybox mkswap /dev/phiblk1 > /dev/null 2>&1 && /bin/busybox swapon /dev/phiblk1 2>/dev/console; then
-		swap="host memory as swap on /dev/phiblk1 ($(/bin/busybox awk '/SwapTotal/ {printf "%d MiB", $2/1024}' /proc/meminfo))"
+	if $BB mkswap /dev/phiblk1 > /dev/null 2>&1 && $BB swapon /dev/phiblk1 2>/dev/console; then
+		swap="host memory as swap on /dev/phiblk1 ($($BB awk '/SwapTotal/ {printf "%d MiB", $2/1024}' /proc/meminfo))"
 	else
 		swap="/dev/phiblk1 present but swapon failed"
 	fi
 fi
-# phi0 is the Ethernet device over the host/card ring (kernel patch 0021);
-# the host side is phictl boot --net phi0, 10.9.0.1/24 by default.
-/bin/busybox ip link set lo up
-if /bin/busybox ip link show phi0 > /dev/null 2>&1; then
-	/bin/busybox ip addr add ${PHI_CARD_ADDR:-10.9.0.2/24} dev phi0
-	/bin/busybox ip link set phi0 up
-	net="phi0 $(/bin/busybox ip -4 -o addr show phi0 | /bin/busybox awk '{print $4}')"
+
+# --------------------------------------------------------------------- network
+# phi0 is the Ethernet device over the host/card ring (kernel patch 0021); the
+# host side is phictl boot --net phi0 (a TAP, needs root) or the userspace
+# forwarder in phictl boot --forward (no root). 10.9.0.1 is the host.
+$BB ip link set lo up
+card_addr=${PHI_CARD_ADDR:-10.9.0.2/24}
+if $BB ip link show phi0 > /dev/null 2>&1; then
+	$BB ip addr add "$card_addr" dev phi0
+	$BB ip link set phi0 up
+	net="phi0 $($BB ip -4 -o addr show phi0 | $BB awk '{print $4}')"
 else
 	net="no phi0 device"
 fi
-if [ -x /bin/dropbear ]; then
-	# -s: public keys only (root has no password); keys live in /etc/dropbear.
-	# Without syslog support it logs to stderr, kept on the console.
-	/bin/dropbear -s -p 22 2>/dev/console
-	sshd="dropbear on port 22"
-else
+
+# ------------------------------------------------------------------------- ssh
+# Public keys only (-s); root has no password, so without a key nothing can
+# log in. Bound to the card's own address rather than every address: the only
+# route to it is the host's forwarder or a host TAP, and binding narrowly
+# makes that explicit. No phi0 means no way in and no server.
+if [ ! -x /bin/dropbear ]; then
 	sshd="no SSH server in this image"
+elif [ "$net" = "no phi0 device" ]; then
+	sshd="dropbear not started (no phi0, so no way in)"
+else
+	# /bin/dropbear, not a busybox applet: it is its own static binary.
+	addr=${card_addr%%/*}
+	if /bin/dropbear -s -p "$addr:22" 2>/dev/console; then
+		sshd="dropbear on $addr:22 (keys only)"
+	else
+		sshd="dropbear failed to start"
+	fi
 fi
+
+# ----------------------------------------------------------------------- agent
+# The card end of phictl exec/put/get/status and of phitop's telemetry
+# (kernel patch 0022, ADR 0008, ADR 0009).
 if [ -x /bin/phi-agent ] && [ -c /dev/phirpc ]; then
-	# The card end of phictl exec/put/get/status (kernel patch 0022).
 	/bin/phi-agent 2>/dev/console &
 	agent="phi-agent on /dev/phirpc"
 else
 	agent="no phi-agent"
 fi
+
+# ---------------------------------------------------------------------- banner
 echo
-echo "Intel Phi 3120A: $(/bin/busybox uname -srm), $(/bin/busybox nproc) CPU(s) online"
-/bin/busybox grep -m1 "model name" /proc/cpuinfo
-/bin/busybox free -m | /bin/busybox head -2
+echo "$($BB cat /etc/hostname 2>/dev/null || echo phi): $($BB uname -srm), $($BB nproc) CPU(s) online"
+$BB grep -m1 "model name" /proc/cpuinfo
+$BB free -m | $BB head -2
 echo "network: $net; $sshd; $agent"
 echo "storage: $disk; $swap"
+echo "logging: $log"
 echo "type 'poweroff' to halt the card"
 echo
-trap '/bin/busybox poweroff -f' USR1 USR2 TERM
+
+# -------------------------------------------------------------------- shutdown
+# What a normal Linux shutdown does, in the order it does it: stop the
+# services, release swap, flush, unmount, then ask the kernel to stop. Without
+# the unmount the ext4 journal replays on the next boot.
+shutdown() {
+	trap '' USR1 USR2 TERM
+	echo
+	echo "shutting down"
+	# phi-agent stays up through the unmount. The host stops serving the block
+	# channel when phictl exits, and its stop sequence waits for the agent to
+	# stop answering; killing the agent first made that wait end while the
+	# superblock write was still in flight, so the next boot replayed the
+	# journal (measured 2026-09-19). The agent is stopped last, below.
+	$BB killall dropbear klogd syslogd 2>/dev/null
+	$BB sleep 1
+	$BB swapoff -a 2>/dev/null
+	$BB sync
+	# Lazily: the console shell's working directory is usually /root, which is
+	# a bind of the same filesystem, so a plain umount of it fails and leaves
+	# the superblock mounted and therefore dirty. -l detaches the bind from the
+	# tree and lets the last reference go.
+	for d in home root opt/phi var etc; do
+		$BB umount -l "/$d" 2>/dev/null
+	done
+	$BB sync
+	$BB sleep 1
+	# Read-only first, then unmount. A lazy umount returns before the last
+	# reference drops, so the superblock teardown that clears needs_recovery
+	# can still be in flight when the kernel halts; a read-only remount does
+	# the journal checkpoint and clears the flag synchronously, while every
+	# reference still exists. Measured 2026-09-19: without this the next boot
+	# replayed the journal even though the umount reported success.
+	if $BB mount -o remount,ro /data 2>/dev/null; then
+		$BB sync
+		if $BB umount /data 2>/dev/null; then
+			echo "/data clean and unmounted"
+		else
+			echo "/data clean, read-only (still referenced)"
+		fi
+	elif $BB umount /data 2>/dev/null; then
+		echo "/data unmounted"
+	else
+		echo "/data still busy: the journal will replay on the next boot"
+	fi
+	$BB sync
+	# Only now may the host stop: no further disk traffic is coming.
+	$BB killall phi-agent 2>/dev/null
+	$BB sleep 1
+	$BB poweroff -f
+}
+trap shutdown USR1 USR2 TERM
+
+# ------------------------------------------------------------- console shell
+# setsid plus cttyhack give the shell a controlling terminal, so job control
+# and Ctrl-C work over the ring. -l makes it a login shell, so it reads
+# /etc/profile like a shell on any other Linux box.
 while :; do
-	/bin/busybox setsid /bin/busybox cttyhack /bin/sh &
+	$BB setsid $BB cttyhack /bin/sh -l &
 	wait $!
 	echo "shell exited; starting another ('poweroff' halts the card)"
 done

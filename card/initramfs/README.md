@@ -3,7 +3,8 @@
 The card's whole root filesystem is a gzip cpio archive built on the host
 and placed at 128 MiB by `phictl boot --initrd`. There is no other root:
 the disk image (`/dev/phiblk0`) is mounted on top of it at `/data`, and
-bind mounts move `/opt/phi`, `/root` and `/home` onto the disk.
+bind mounts move `/etc`, `/var`, `/opt/phi`, `/root` and `/home` onto the
+disk, so configuration, logs and the on-card toolchain persist.
 
 | File | Role |
 | --- | --- |
@@ -18,13 +19,19 @@ bind mounts move `/opt/phi`, `/root` and `/home` onto the disk.
 /bin/busybox          the card busybox, plus 394 applet symlinks (one per applet)
 /bin/phi-agent        card/agent/build.sh, the card end of phictl exec/put/get/status
 /bin/dropbearmulti    plus links dropbear, dropbearkey, dbclient, scp, ssh
-/etc/passwd, group    root only, shell /bin/sh
-/etc/dropbear/        ed25519 and RSA host keys, generated once on the host
-/root/.ssh/authorized_keys   the user's public keys (PHI_SSH_PUBKEYS)
-/proc /sys /dev /tmp /sbin    empty; init mounts the first four, /sbin is
-                      created but busybox installs its links in /bin only
+/lib/phi/etc-skel/    the card's /etc: passwd, group, shells, os-release,
+                      hostname, hosts, profile, fstab, TZ, resolv.conf,
+                      dropbear/ host keys, root-ssh/authorized_keys
+/usr/{bin,sbin,lib}   empty; busybox installs its links in /bin only
+/etc /var /run /opt /home /root /srv /mnt /media /proc /sys /dev /tmp
+                      empty mount points and FHS directories
 <anything under extra/>       copied in at the same path
 ```
+
+The `/etc` skeleton is installed by `init`, not shipped at `/etc`, because
+`/etc` is a bind mount from the persistent disk by the time it is needed.
+`build.md` has the two categories: what is copied every boot (the files that
+decide who may log in) and what is seeded once and then belongs to the card.
 
 Built with `bsdtar --format newc --uid 0 --gid 0 | gzip -9`; the kernel
 config enables `RD_GZIP` only. The archive is `chmod 600` because it
@@ -48,23 +55,36 @@ never reaches the card.
 - No `/etc/phi`. The ring base, the card address and the host address all
   arrive on the kernel command line or as environment overrides
   (`PHI_CARD_ADDR`).
+- No `getty`, no `login`, no `crond`, no watchdog. Those exist on a standard
+  install for an unattended multi-user machine. The card runs only while its
+  owner is logged in to the host, and there are exactly two ways in: the
+  control socket and the loopback SSH forward.
 
 ## What init does
 
-In order: mount `proc`, `sysfs`, `devtmpfs`, `tmpfs` and `devpts`; set
-the hostname; wait up to 5 s for `/dev/phiblk0` and mount it ext4 on
-`/data` with the three bind mounts; wait up to 3 s for `/dev/phiblk1` and
-`mkswap`/`swapon` it (host memory is volatile, so it is reformatted every
-boot); bring up `lo` and `phi0`; start `dropbear -s -p 22` (public keys
-only, root has no password) when the image has it; start `phi-agent` on
-`/dev/phirpc`; print the kernel version, CPU count, model and memory;
-then supervise an interactive shell on the console through `setsid` and
-`cttyhack`, so job control and Ctrl-C work over the ring.
+In order: mount `proc`, `sysfs`, `devtmpfs`, `tmpfs`, `devpts`, `/run` and
+`/dev/shm`; wait up to 5 s for `/dev/phiblk0` and mount it ext4 on `/data`,
+then bind `/data/{etc,var,opt/phi,root,home}` over their mount points;
+install `/etc` from the skeleton and set the hostname and `TZ` from it;
+create the `/var` tree and link `/var/run` and `/var/lock` into `/run`;
+start `syslogd` and `klogd` on `/var/log/messages`; wait up to 3 s for
+`/dev/phiblk1` and `mkswap`/`swapon` it (host memory is volatile, so it is
+reformatted every boot); bring up `lo` and `phi0`; start `dropbear -s` bound
+to the card's own address (public keys only, root has no password) when the
+image has it and `phi0` exists; start `phi-agent` on `/dev/phirpc`; print
+the banner; then supervise an interactive login shell on the console through
+`setsid` and `cttyhack`, so job control and Ctrl-C work over the ring and
+`/etc/profile` is read.
 
-PID 1 stays the script. It traps the signals busybox's `poweroff`,
-`halt` and `reboot` send to PID 1 (USR2, USR1, TERM) and turns them into
-`poweroff -f`, which the KNC platform layer answers with POST `KH` and a
-halt; a shell that exits is respawned rather than taking init down.
+PID 1 stays the script. It traps the signals busybox's `poweroff`, `halt`
+and `reboot` send to PID 1 (USR2, USR1, TERM) and runs an orderly shutdown:
+stop the services, `swapoff`, detach the bind mounts, remount `/data`
+read-only and unmount it, stop the agent, and only then `poweroff -f`, which
+the KNC platform layer answers with POST `KH` and a halt. A shell that exits
+is respawned rather than taking init down. `build.md` explains why each step
+is in that order; `docs/results/2026-09-19-card-os.md` has the three bugs
+that stood between this and a filesystem that does not replay its journal on
+every boot.
 
 ## Build and boot
 

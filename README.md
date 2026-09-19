@@ -17,11 +17,16 @@ What it does today (2026-09-17, every item measured and recorded in
    (`phictl exec`).
 4. You compile C and C++ **on the card** with a native clang 22, on a
    persistent disk served from a host image (846 MB/s reads through the
-   card's DMA engine), with host RAM as swap.
-5. Sensors (die temperatures, core voltage and clock) read from the host and
+   card's DMA engine), with 6 GiB of host RAM as swap on top of the card's
+   6 GB of GDDR5 (8 GiB allocated and verified byte for byte, 2026-09-19).
+5. The card runs an ordinary Linux userland: FHS layout, a persistent `/etc`
+   and `/var/log`, `syslogd` and `klogd`, a login shell that reads
+   `/etc/profile`, and a shutdown that unmounts its disk cleanly. It boots
+   when you log in to the host and is reachable only from this machine.
+6. Sensors (die temperatures, core voltage and clock) read from the host and
    from the card (hwmon), hardware performance counters (`phiperf`), and a
    live resource viewer on the host (`phitop`).
-6. The 512-bit vector unit is reachable through a project encoder
+7. The 512-bit vector unit is reachable through a project encoder
    (`knc-mvex`); the Mandelbrot iteration on the VPU runs at 1.47x the host's
    16 AVX2 threads.
 
@@ -59,7 +64,7 @@ Dated measurements: [`docs/README.md`](docs/README.md#results) lists them.
 | `host/` | Rust workspace. Binaries: `phictl` (boot, console, control socket daemon, disk and host-memory service, SSH forwarder, sensors), `phitop` (live viewer), `phi-isa-audit` (flags KNC-illegal instructions in any x86-64 ELF), `knc-mvex-gen` (emits the vector-code files). Libraries: `phi-vfio` (VFIO device access, DMA mapping, PCIe byte counters), `phi-regs` (SBOX/DBOX register map, POST codes, bzImage header offsets), `phi-hw` (reset, boot, image loading, DMA engine), `phi-ring` (host side of the ring transport), `phi-rpc` (frames of the control channel, shared with the card agent), `knc-mvex` (MVEX encoder). |
 | `card/` | Everything that runs on the card: `kernel/` (28-patch series against v7.2.3, config fragment, build script), `agent/` (`phi-agent`, Rust, the card end of the control socket), `initramfs/` (`init` and the assembly script), `userland/components/` (busybox, dropbear, zlib, ncurses, CPython build scripts; clang packaging; gcc, tcc, QuickJS notes), `examples/` (benchmarks and probes compiled on the card), `drivers/phinet/include/phi_ring.h` (the C mirror of the ring layout). |
 | `toolchain/` | How code for the card is compiled: the LLVM patch series and build script (three variants), `knc-cc`/`knc-c++` wrappers, musl, compiler-rt, libunwind, libc++, the Rust target JSON and `build-std`, the phase P2 exit check. |
-| `scripts/` | Host setup (`setup-arch.sh`), card verification and VFIO binding, the card's daily drivers (`phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh`), reference fetching, documentation lint. Each script has a sibling `.md`. |
+| `scripts/` | `phi.sh`, the one command a person uses (`phi up/run/sh/top/status/down`), plus what it drives: host setup (`setup-arch.sh`), card verification and VFIO binding, the card's daily drivers (`phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh`), reference fetching, documentation lint. Each script has a sibling `.md`. |
 | `docs/` | `reproducibility.md` (the fresh-clone walkthrough), `hardware.md`, `plan.md`, `howto/` (build and run, direct access, monitoring, secure access), `spec/` (ring protocol, SBOX registers), `decisions/` (ADRs), `research/`, `results/` (dated measurements). |
 | `tools/` | Two C helpers compiled with `tcc`: the ring layout cross-check and a boot-path bisection stub. |
 | `vendor/` | Git-ignored. Reference material fetched by `scripts/fetch-vendor.sh` (MPSS 3.8.6 archives, Intel's k1om kernel tree, PDFs). Never committed, never linked into builds. |
@@ -91,13 +96,22 @@ Then the card side, in the order of `docs/reproducibility.md`: the toolchain
 and:
 
 ```sh
-scripts/phi-up.sh --ssh --disk /path/to/disk.img   # boot in the background, no root
-scripts/phi-run.sh nproc                            # 228
-ssh -p 2222 root@localhost                          # dropbear through the ring
-host/target/debug/phitop                            # the card live
-scripts/phi-down.sh                                 # halt and release
-scripts/phi-autoboot.sh install /path/to/disk.img 4G   # boot at every login instead
+scripts/phi-autoboot.sh install /path/to/disk.img 6G   # boot the card at every login
+scripts/phi.sh install-cli                             # ~/.local/bin/phi and fish completions
 ```
+
+After that one command drives everything, from any shell, without `sudo`:
+
+```sh
+phi status            # unit, card, memory, disk, and who can reach it
+phi run nproc         # 228; stdin, stdout, stderr and the exit status relayed
+phi sh                # an interactive login shell on the card
+phi top               # the live viewer
+phi up / phi down     # start and stop; down unmounts the card's disk first
+```
+
+`scripts/phi.md` lists the rest. The scripts underneath (`phi-up.sh`, `phi-run.sh`,
+`phi-down.sh`) still work on their own for a card booted by hand.
 
 ## Conventions
 

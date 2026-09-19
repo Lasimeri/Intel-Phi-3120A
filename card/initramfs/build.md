@@ -5,12 +5,13 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
 
 - `bin/busybox` plus one symlink per applet, laid out by the card binary
   itself (it runs on the host; same instruction subset).
-- `init` mounts proc, sysfs, devtmpfs and tmpfs, prints the kernel, CPU
-  count, model name and memory, and supervises a shell on the console (started through `setsid` and
-  `cttyhack`, so job control and Ctrl-C work over the ring); PID 1 stays the
-  script, traps busybox's poweroff, halt and reboot signals (USR2, USR1,
-  TERM) into `poweroff -f`, which the kernel answers with POST `KH` and a
-  halt, and respawns the shell when one exits.
+- `init` mounts the pseudo filesystems, installs `/etc` from the skeleton,
+  starts the system log, prints the kernel, CPU count, model name and
+  memory, and supervises a login shell on the console (started through
+  `setsid` and `cttyhack`, so job control and Ctrl-C work over the ring, and
+  with `-l` so it reads `/etc/profile`); PID 1 stays the script, traps
+  busybox's poweroff, halt and reboot signals (USR2, USR1, TERM) into the
+  orderly shutdown described below, and respawns the shell when one exits.
 - `init` also brings up `lo` and `phi0` (`10.9.0.2/24`, or `PHI_CARD_ADDR`),
   mounts devpts for SSH sessions, and starts dropbear when the image has it
   (`dropbear -s -p 22`: public-key logins only; root has no password).
@@ -27,7 +28,6 @@ Assembles `card/initramfs/build/initramfs.cpio.gz` from the card busybox
   directory is git-ignored except for its README. This is how programs
   built with the card toolchain reach the card until phase P5 brings a
   network (`docs/howto/build-and-run.md`).
-- `etc/passwd` and `etc/group` for root only.
 - Packed with `bsdtar --format newc` (libarchive, part of Arch base) and
   gzip; no Python anywhere.
 
@@ -57,3 +57,65 @@ When the host serves memory (`phictl boot --host-mem SIZE`, kernel patch
 `mkswap` and `swapon` on it every boot (host RAM is volatile), which
 extends the card's 6 GB by that size at DMA speed. `/dev/phihost` maps the
 same memory for direct access.
+
+## The /etc skeleton (2026-09-19)
+
+`build.sh` puts the card's `/etc` in the image at `/lib/phi/etc-skel`, not
+at `/etc`. `init` installs it after it has bound `/data/etc` over `/etc`,
+which is what lets the two categories behave differently:
+
+| Copied every boot | Seeded only when absent |
+| --- | --- |
+| `passwd`, `group`, `shells`, `os-release`, `dropbear/` (the host keys), and root's `authorized_keys` | `hostname`, `hosts`, `profile`, `fstab`, `TZ`, `resolv.conf` |
+
+The left column decides who may log in, so a rebuilt image has to win over
+whatever is on the disk. The right column is configuration a person edits on
+the card, so it survives. Both live on the persistent disk between boots.
+
+`profile` sets `PATH` to `/opt/phi/bin:/bin:/sbin:/usr/bin:/usr/sbin`, the
+prompt, `PAGER`, `EDITOR`, and `CC`/`CXX` when the card's clang is present.
+`TZ` holds a POSIX timezone string (`UTC0` by default): there is no zoneinfo
+database on the card, so `CST6CDT,M3.2.0,M11.1.0` is the form to write for
+US Central.
+
+## Filesystem layout (2026-09-19)
+
+The image carries `/usr/{bin,sbin,lib}`, `/var`, `/run`, `/srv`, `/mnt`,
+`/media`, `/opt` and `/home` as well as `/bin`, `/sbin` and `/etc`, so a
+program that hard-codes an FHS path finds it. busybox installs its applet
+links in `/bin` only; `/sbin` and `/usr` stay empty and exist for anything
+that looks there.
+
+`init` mounts `/run` and `/dev/shm` as tmpfs, links `/var/run` to `/run` and
+`/var/lock` to `/run/lock`, and creates `/var/{log,lib,spool,cache,tmp}`.
+With a disk, `/etc`, `/var`, `/opt/phi`, `/root` and `/home` are bind mounts
+from `/data`, so logs and configuration persist; without one they are
+directories in the initramfs and everything is as volatile as before.
+
+## System log (2026-09-19)
+
+`init` starts `/bin/syslogd -O /var/log/messages -s 2048 -b 4` and
+`/bin/klogd`, so kernel messages that scrolled past the console can be read
+afterwards, and the log persists on the disk. They are started through the
+applet symlinks and not as `busybox syslogd`: a process started the second
+way has `comm` `busybox`, and `killall syslogd` at shutdown then matches
+nothing, which left `/var/log/messages` open and the filesystem dirty
+(`docs/results/2026-09-19-card-os.md`).
+
+## Shutdown (2026-09-19)
+
+`poweroff` (without `-f`) on the card, or `phi down` on the host, signals
+PID 1, and `init` runs an ordinary shutdown: stop dropbear, klogd and
+syslogd; `swapoff -a`; `sync`; detach the five bind mounts with `umount -l`
+(the console shell's working directory is normally `/root`, a bind of the
+same filesystem, so a plain `umount` of it fails); `mount -o remount,ro
+/data`, which checkpoints the journal and clears `needs_recovery`
+synchronously; `umount /data`; then stop `phi-agent` and call `poweroff -f`.
+
+The agent is stopped last on purpose. The host's stop sequence waits for the
+agent to stop answering before it ends `phictl`, and `phictl` is what serves
+the block channel; killing the agent first ended that wait while the
+superblock write was still in flight.
+
+`poweroff -f` anywhere earlier in the chain defeats all of this: it calls
+`reboot(2)` from the calling process and never signals init.
