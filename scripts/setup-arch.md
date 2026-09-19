@@ -68,9 +68,35 @@ its disk and host memory.
 
 That binding came from `driver_override`, not from the module option: the
 module was already loaded when the file was written, and the option is read
-only at load time. So reboot survival is still unobserved here. Check it
-the first time with the `readlink` above rather than assuming the autoboot
-unit will come up on its own.
+only at load time. So it proved nothing about the next boot.
+
+## Reboot survival, observed 2026-09-19
+
+The host rebooted at 03:23:18 with the `modprobe.d` file in place, and the
+card came up bound with nothing run by hand:
+
+```
+$ readlink /sys/bus/pci/devices/0000:2e:00.0/driver
+../../../../bus/pci/drivers/vfio-pci
+$ cat /sys/bus/pci/devices/0000:2e:00.0/driver_override
+(null)
+```
+
+`driver_override` reading `(null)` is what makes this conclusive:
+`bind-vfio.sh` sets it, and sysfs does not carry it across a reboot, so the
+binding cannot have come from there. The kernel log shows where it did come
+from:
+
+```
+03:23:27.307  systemd-modules-load[399]: Inserted module 'vfio_pci'
+03:23:27.338  kernel: vfio_pci: add [8086:225d[ffffffff:ffffffff]] class 0x000000/00000000
+03:27:25.898  kernel: vfio-pci 0000:2e:00.0: enabling device (0000 -> 0002)
+```
+
+`modules-load.d` inserts the module nine seconds into the boot, the `ids`
+option makes it register the card's id at that moment, and `phi.service`
+opens the device four minutes later when the user's session starts. The
+whole path from cold host to a running card is unattended.
 
 ## What the card can do without root
 

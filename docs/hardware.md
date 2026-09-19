@@ -43,7 +43,7 @@ ID.
 | CPU | AMD Ryzen 7 5800X, 8 cores, 16 threads | `lscpu`, 2026-09-13 |
 | Chipset | AMD X570 (Matisse), CPU-direct PCIe x16 bifurcated x8/x8 | `lspci -tv` (bridges `00:03.1` and `00:03.2` under the CPU root complex), 2026-09-13 |
 | RAM | 64 GiB | `free -g`, 2026-09-13 |
-| Host kernel | 7.2.6-1-cachyos, Arch-based | `uname -r`, 2026-09-19. Was 7.2.3-1-cachyos from 2026-09-13 to 2026-09-17; every result before that date was taken on 7.2.3. Nothing in this project changed across the upgrade (ADR 0001), but the `vfio-pci` binding did not survive the reboot on this host: `scripts/setup-arch.md` |
+| Host kernel | 7.2.6-1-cachyos, Arch-based | `uname -r`, 2026-09-19. Was 7.2.3-1-cachyos from 2026-09-13 to 2026-09-17; every result before that date was taken on 7.2.3. Nothing in this project changed across the upgrade (ADR 0001). The `vfio-pci` binding did not survive the first reboot, because this host predated the `modprobe.d` file; with that file it does, observed 2026-09-19 (`scripts/setup-arch.md`) |
 | IOMMU | AMD-Vi enabled, interrupt remapping enabled, DMA domain lazy TLB invalidation | kernel log (`AMD-Vi` lines), 2026-09-13 |
 | Other GPU | NVIDIA RTX 3090 Ti on the sibling x8 bridge (`00:03.2`, bus `2f`) | `lspci`, 2026-09-13 |
 | Disk for the card image | WD Black SN850X 1 TB NVMe, xfs, at `/mnt/1TB-NVMe` | `results/2026-09-16-storage.md` |

@@ -60,8 +60,12 @@ re-run the script once to fix it. That happened on the development host on
 2026-09-19 and `scripts/setup-arch.md` records the symptom, the three
 checks and the repair. Note that the option leaves no sysfs file to
 inspect: use `modprobe --showconfig`, not
-`/sys/module/vfio_pci/parameters/ids`. Reboot survival with the file in
-place is still unobserved.
+`/sys/module/vfio_pci/parameters/ids`.
+
+With the file in place a reboot needs no binding step, observed on this
+host 2026-09-19: after a cold boot the card was on `vfio-pci` with
+`driver_override` empty, so the module option, not `bind-vfio.sh`, had
+claimed it (`scripts/setup-arch.md`).
 
 `PHI_RUSTUP=1 sudo scripts/setup-arch.sh` installs `rustup` instead of the
 distro `rust`; the project needs neither nightly nor rustup (ADR 0007), the

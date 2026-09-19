@@ -60,6 +60,6 @@ output and a reading. In date order:
 | [2026-09-16-autoboot.md](results/2026-09-16-autoboot.md) | `phi.service` at login; host key pinning and file modes |
 | [2026-09-16-sensors.md](results/2026-09-16-sensors.md) | hwmon on the card, `phictl sensors`, the core clock from `COREFREQ`, PMU counters with `phiperf` |
 | [2026-09-17-phitop.md](results/2026-09-17-phitop.md) | The viewer under load; PCIe rates against the card's own counters; the one direct-read stall |
-| [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, and a shutdown that leaves the filesystem clean |
+| [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.
