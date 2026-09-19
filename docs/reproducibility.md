@@ -248,20 +248,28 @@ while the card is up. A card that is a real interface on the host
 (`10.9.0.2` on a TAP device) needs a root boot with `--net phi0`; the
 forwarder is the default because it needs no root.
 
-## 13. Autoboot at login (recorded, 2026-09-16; verified against the live card)
+## 13. Autoboot (recorded, 2026-09-16; boot mode added 2026-09-19)
 
 ```sh
 scripts/phi-autoboot.sh install /path/to/disk.img 6G   # writes and starts ~/.config/systemd/user/phi.service
-systemctl --user status phi.service
-journalctl --user -u phi.service -f                     # the console
+scripts/phi-autoboot.sh at-boot                        # start at host boot, not at the first login
+phi status                                             # which mode is in effect
+phi log -f                                             # the console
 scripts/phi-autoboot.sh remove
 ```
 
 The unit runs the same `phictl boot` as `phi-up.sh` (socket, forwarder,
-disk, 6 GiB of host memory), starts with the user's first session and stops
-with the last one (a clean power-off through the socket, then the VFIO
-release resets the card). `phi-up.sh` refuses to start while the service
-holds the card; `systemctl --user stop phi.service` hands it back.
+disk, 6 GiB of host memory). By default it starts with the user's first
+session and stops with the last one (a clean power-off through the socket,
+then the VFIO release resets the card). `at-boot` turns on lingering, so
+`systemd-logind` starts the user's systemd instance at host boot instead:
+the card is then up at the greeter, at the lock screen and after logout.
+Lingering is per user, so every enabled user unit starts at boot as well;
+`at-boot` prints the list, and `at-login` reverses it
+(`docs/results/2026-09-19-boot-without-login.md`).
+
+`phi-up.sh` refuses to start while the service holds the card;
+`phi down` (or `systemctl --user stop phi.service`) hands it back.
 
 ## 14. Monitoring (verified against the live card)
 

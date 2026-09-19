@@ -32,13 +32,22 @@ cannot pose as the card. Re-pin after a dropbear key regeneration:
 `ssh-keyscan -p 2222 -t ed25519 127.0.0.1 >> ~/.ssh/known_hosts_phi`.
 
 Autoboot. `scripts/phi-autoboot.sh install DISK [HOSTMEM]` runs the boot as
-a systemd user service at login; it inherits every limit above because it
-is the same process. Stopping the service halts the card cleanly first
-(`poweroff -f` through the socket), then the VFIO release resets it.
+a systemd user service; it inherits every limit above because it is the
+same process. Stopping the service halts the card cleanly first (a plain
+`poweroff` through the socket, so the card's init unmounts its disk), then
+the VFIO release resets it.
+
+With `phi-autoboot.sh at-boot` (lingering) the card is up from host boot
+with nobody logged in, and stays up at the lock screen and after logout.
+That changes *how long* the card is reachable, not *by whom*: the socket is
+still mode 0600 owned by that user and checked with `SO_PEERCRED`, and the
+SSH forwarder still binds `127.0.0.1` only. The practical difference is
+that a card left running is a card that can be reached the moment someone
+unlocks a session or sits down at the machine, so it belongs to the same
+trust decision as leaving the host itself powered on.
 
 What this does not do: encrypt the disk image (the host filesystem's
-protection is what there is), isolate the card from a root user on the
-host (root can open the VFIO group and read card memory), or survive a
-host reboot without the service starting again at login. The agent runs as
+protection is what there is), or isolate the card from a root user on the
+host (root can open the VFIO group and read card memory). The agent runs as
 root on a card the host resets at will, so it is not a privilege the host
 lacks (ADR 0008).

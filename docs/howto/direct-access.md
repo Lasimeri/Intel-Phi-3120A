@@ -30,7 +30,8 @@ flag in the right position (`scripts/phi.md`). The underlying scripts
 The socket is `$XDG_RUNTIME_DIR/phictl/control.sock` (directory 0700,
 socket 0600), the console log `$XDG_RUNTIME_DIR/phictl/console.log`, the
 daemon's pid `boot.pid`. `scripts/phi-autoboot.sh install` runs the same
-boot as a systemd user unit at login (`scripts/phi-autoboot.md`), with the
+boot as a systemd user unit (`scripts/phi-autoboot.md`), at host boot or at
+the first login, with the
 socket at the same path, so every command below works unchanged.
 
 ## The client commands

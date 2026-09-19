@@ -1,11 +1,33 @@
 # phi-autoboot.sh
 
-Boots the card at login. `install [DISK]` writes
-`~/.config/systemd/user/phi.service`, a user unit wanted by
-`default.target`, so the user's systemd instance starts it when the first
-session opens and stops it when the last one closes (no lingering: the
-card is reset by VFIO when the process ends, so "up while logged in" is
-the honest description). The unit runs the same `phictl boot` as
+Runs the card from a systemd user service. `install [DISK [HOSTMEM]]`
+writes `~/.config/systemd/user/phi.service`, a user unit wanted by
+`default.target`. When it starts depends on one setting:
+
+| Mode | Command | Lifetime |
+| --- | --- | --- |
+| At login (default) | `phi-autoboot.sh at-login` | Starts when the first session opens, stops when the last one closes. The card is reset by VFIO when the process ends, so "up while logged in" is the honest description |
+| At host boot | `phi-autoboot.sh at-boot` | Starts during boot with nobody logged in, survives logout, and keeps running at the lock screen and the greeter |
+
+`at-boot` works by turning on lingering (`loginctl enable-linger`), which
+makes `systemd-logind` start this user's systemd instance at host boot
+instead of at the first login. That is what lets a *user* unit behave like
+a boot service without granting it root, which keeps ADR 0001's model:
+the daemon runs as the owning user, the socket stays at
+`$XDG_RUNTIME_DIR/phictl/control.sock` mode 0600, and the card is still
+reachable only through that socket or the loopback SSH forwarder.
+
+**Lingering is per user, not per unit.** Every enabled user unit starts at
+boot as well, not only this one. `at-boot` prints the list so the cost is
+visible; on this machine it is wireplumber, pipewire and its two sockets,
+p11-kit-server, xdg-user-dirs and two timers. If one of those should not
+run headless, disable that unit rather than lingering.
+
+`at-login` reverses it. `remove` deletes the unit and deliberately leaves
+lingering alone, since it is a property of the user account rather than of
+this project.
+
+The unit runs the same `phictl boot` as
 `phi-up.sh`: control socket at `$XDG_RUNTIME_DIR/phictl/control.sock`
 (so `phictl exec`, `phi-run.sh` and the other scripts work unchanged),
 the SSH forwarder on 127.0.0.1:2222 and the persistent disk.

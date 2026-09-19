@@ -123,6 +123,13 @@ status)
     if have_unit; then
         printf 'unit      %s (%s)\n' "$(systemctl --user is-active "$unit")" \
             "$(systemctl --user is-enabled "$unit" 2>/dev/null || echo 'not enabled')"
+        # Lingering is the difference between "up at boot" and "up at login":
+        # with it, logind starts this user's manager before anyone logs in.
+        if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = yes ]; then
+            printf 'starts    at host boot, runs with nobody logged in (linger on)\n'
+        else
+            printf 'starts    at the first login, stops with the last session (phi-autoboot.sh at-boot)\n'
+        fi
     else
         printf 'unit      not installed (scripts/phi-autoboot.sh install)\n'
     fi

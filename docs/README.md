@@ -25,7 +25,7 @@ howtos, `spec/ring-protocol.md`, then `research/isa-deletions.md`,
 | --- | --- |
 | card | the Xeon Phi 3120A: 57 cores, 228 hardware threads, 6 GB GDDR5, its own Linux kernel |
 | host | the PC it is plugged into; runs the Rust tools |
-| daemon | the `phictl boot --serve` process: it holds the VFIO device, tails the console, serves the control socket, the disk, host memory and the SSH forwarder; `phi.service` runs it at login |
+| daemon | the `phictl boot --serve` process: it holds the VFIO device, tails the console, serves the control socket, the disk, host memory and the SSH forwarder; `phi.service` runs it, at host boot when lingering is on and otherwise at the first login |
 | agent | `phi-agent` on the card: answers the daemon's rpc frames (run a program, copy a file, report a sample) |
 | aperture | PCIe BAR0, 16 GiB, through which the host reads and writes card memory directly (uncached, slow) |
 | ring | a single-producer single-consumer byte ring in a reserved region of card memory; the transport of every channel |
@@ -60,6 +60,7 @@ output and a reading. In date order:
 | [2026-09-16-autoboot.md](results/2026-09-16-autoboot.md) | `phi.service` at login; host key pinning and file modes |
 | [2026-09-16-sensors.md](results/2026-09-16-sensors.md) | hwmon on the card, `phictl sensors`, the core clock from `COREFREQ`, PMU counters with `phiperf` |
 | [2026-09-17-phitop.md](results/2026-09-17-phitop.md) | The viewer under load; PCIe rates against the card's own counters; the one direct-read stall |
+| [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.

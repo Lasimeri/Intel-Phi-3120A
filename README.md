@@ -21,8 +21,9 @@ What it does today (2026-09-17, every item measured and recorded in
    6 GB of GDDR5 (8 GiB allocated and verified byte for byte, 2026-09-19).
 5. The card runs an ordinary Linux userland: FHS layout, a persistent `/etc`
    and `/var/log`, `syslogd` and `klogd`, a login shell that reads
-   `/etc/profile`, and a shutdown that unmounts its disk cleanly. It boots
-   when you log in to the host and is reachable only from this machine.
+   `/etc/profile`, and a shutdown that unmounts its disk cleanly. It comes
+   up during host boot with nobody logged in, and is reachable only from
+   this machine either way.
 6. Sensors (die temperatures, core voltage and clock) read from the host and
    from the card (hwmon), hardware performance counters (`phiperf`), and a
    live resource viewer on the host (`phitop`).
@@ -96,7 +97,8 @@ Then the card side, in the order of `docs/reproducibility.md`: the toolchain
 and:
 
 ```sh
-scripts/phi-autoboot.sh install /path/to/disk.img 6G   # boot the card at every login
+scripts/phi-autoboot.sh install /path/to/disk.img 6G   # run the card from a user service
+scripts/phi-autoboot.sh at-boot                        # ...starting at host boot, not at login
 scripts/phi.sh install-cli                             # ~/.local/bin/phi and fish completions
 ```
 
