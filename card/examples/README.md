@@ -14,6 +14,7 @@ to produce the numbers in `docs/results/`, not as a library.
 | `vpu_state.c` | That kernel patch 0024 saves and restores vector state across context switches: 32 zmm plus 8 mask registers per thread, compared after every sleep | `docs/results/2026-09-15-vpu.md` (0 mismatches in 3.7 M checks) |
 | `phiperf.c` | Hardware performance counters through `perf_event_open` against the mainline KNC PMU driver, since the `perf` tool is not built for the card | `docs/results/2026-09-16-sensors.md` |
 | `memhog.c` | That host RAM as swap works under real pressure: 8 GiB allocated, touched and read back on a card with 5669 MiB of GDDR5, 0 mismatches | `docs/results/2026-09-19-card-os.md` |
+| `membw.c` | Reachable GDDR5 read bandwidth: 80.5 GB/s at 2 threads per core, against 35.7 GB/s on the host. The one axis where the card wins without hand-written MVEX | `card/examples/membw.md` |
 
 The two `.S` files are generated, not written: `knc-mvex-gen mandel` and
 `knc-mvex-gen probe` emit them from the encoder in
