@@ -66,6 +66,11 @@ if [ -d "$SKEL" ]; then
 	for f in hostname hosts profile fstab TZ resolv.conf; do
 		[ -f "$SKEL/$f" ] && [ ! -f "/etc/$f" ] && $BB cp -a "$SKEL/$f" /etc/
 	done
+	# Configuration that is a directory (fastfetch's config.jsonc). Seeded
+	# once, like the files above, so an edit made on the card survives.
+	for d in fastfetch; do
+		[ -d "$SKEL/$d" ] && [ ! -d "/etc/$d" ] && $BB cp -a "$SKEL/$d" /etc/
+	done
 fi
 [ -e /etc/mtab ] || $BB ln -sf /proc/mounts /etc/mtab
 # root's keys come from the image too, for the same reason.
@@ -83,6 +88,26 @@ fi
 if [ -r /etc/TZ ]; then
 	TZ=$($BB cat /etc/TZ)
 	export TZ
+fi
+
+# ----------------------------------------------------- software on the disk
+# Anything installed under /opt/phi/bin is linked into /usr/bin so it is on
+# the *default* PATH, not only the one /etc/profile sets. Without this,
+# `ssh phi htop` fails with "not found" while an interactive `ssh phi` works:
+# a non-login shell never reads /etc/profile, and dropbear gives it
+# /usr/sbin:/usr/bin:/sbin:/bin. A program on the card should behave like a
+# program on any other Linux, which means the shell finds it either way.
+# /usr/bin is in the initramfs, so the links are rebuilt every boot and
+# always match what is actually installed.
+if [ -d /opt/phi/bin ]; then
+	n=0
+	for f in /opt/phi/bin/*; do
+		[ -f "$f" ] && [ -x "$f" ] || continue
+		$BB ln -sf "$f" "/usr/bin/$($BB basename "$f")" && n=$((n+1))
+	done
+	installed="$n program(s) from /opt/phi/bin on the default PATH"
+else
+	installed="nothing installed in /opt/phi/bin"
 fi
 
 # ------------------------------------------------------------------------ /var
@@ -174,6 +199,7 @@ $BB free -m | $BB head -2
 echo "network: $net; $sshd; $agent"
 echo "storage: $disk; $swap"
 echo "logging: $log"
+echo "software: $installed"
 echo "type 'poweroff' to halt the card"
 echo
 

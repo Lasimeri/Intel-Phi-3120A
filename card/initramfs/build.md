@@ -119,3 +119,53 @@ superblock write was still in flight.
 
 `poweroff -f` anywhere earlier in the chain defeats all of this: it calls
 `reboot(2)` from the calling process and never signals init.
+
+## Programs on the persistent disk, and the default PATH (2026-09-19)
+
+`/opt/phi/bin` holds everything installed on the card that is not busybox:
+the native clang (`card/userland/components/clang-push.sh`) and whatever the
+sibling repositories push there (htop, fastfetch, glances and its CPython).
+`/etc/profile` puts it first on `PATH`, which is enough for an interactive
+login shell and for `phictl exec`.
+
+It is not enough for everything, and the gap is the kind a user hits
+immediately:
+
+```
+$ ssh phi              # interactive: a login shell, reads /etc/profile
+phi:~$ fastfetch       # works
+
+$ ssh phi fastfetch    # one command: a non-login shell, never reads it
+sh: fastfetch: not found
+```
+
+`ssh host command` runs a non-login shell, and dropbear hands it
+`/usr/sbin:/usr/bin:/sbin:/bin`. So `init` symlinks every executable in
+`/opt/phi/bin` into `/usr/bin`, which is on that default. A program on the
+card then behaves like a program on any other Linux: the shell finds it
+whatever kind of shell it is. `/usr/bin` is in the initramfs, so the links
+are rebuilt on every boot and always match what is actually installed; the
+boot banner reports how many there were.
+
+The links shadow busybox applets of the same name (`ar`, `nm`, `strip` and
+so on), which is what a real toolchain installation does too, and matches
+the order `/etc/profile` already set for login shells.
+
+## The fastfetch configuration
+
+`card/initramfs/etc-skel/fastfetch.jsonc` is installed as
+`/etc/fastfetch/config.jsonc`, seeded once like the other editable files, so
+a change made on the card survives. It is versioned here rather than in the
+`fastfetch-phi` repository because it describes the card, not the program.
+
+It is plain ASCII: the card's locale is `C` and its console is a tty over
+the ring, so box-drawing characters would be noise there even though they
+render over SSH. Beyond the usual modules it adds `command` modules that
+read the card's hwmon device (kernel patch 0027) for the die temperature,
+its recorded peak, the core clock and the core voltage, and it labels swap
+as what it is: host RAM over PCIe, not a disk.
+
+Note for anyone editing the build script: `chmod 644 "$skel"/*` must run
+before the `fastfetch/` directory is created. `chmod 644` on a directory
+strips its traverse bit and everything under it becomes unreachable, which
+is what happened the first time.

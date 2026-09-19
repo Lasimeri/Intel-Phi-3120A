@@ -93,7 +93,18 @@ PS1="$(hostname):\w\$ "
 export PS1
 umask 022
 PROFILE
+# Plain files first: the glob must not see a directory, because chmod 644
+# on one strips the traverse bit and everything under it becomes
+# unreachable (which is exactly what happened the first time).
 chmod 644 "$skel"/*
+# Configuration that is a directory rather than a file. fastfetch looks for
+# /etc/fastfetch/config.jsonc; the file is versioned in the repository
+# because it describes the card, not the machine that built the image.
+mkdir -p "$skel/fastfetch"
+cp "$phi_root/card/initramfs/etc-skel/fastfetch.jsonc" "$skel/fastfetch/config.jsonc"
+chmod 755 "$skel/fastfetch"
+chmod 644 "$skel/fastfetch/config.jsonc"
+
 
 # Extra files: the tree under card/initramfs/extra/ lands at the same paths
 # on the card (extra/opt/hello becomes /opt/hello). Every ELF file in it is

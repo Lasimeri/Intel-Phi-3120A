@@ -1,0 +1,79 @@
+// The card's system-wide fastfetch configuration, installed by
+// card/initramfs/build.sh as /etc/fastfetch/config.jsonc. fastfetch itself
+// is built by the sibling repository fastfetch-phi and installed into
+// /opt/phi; this file only decides what it prints, so shipping it on a card
+// without fastfetch costs nothing.
+//
+// Everything here is plain ASCII on purpose: the card's locale is C and the
+// console is a tty over the ring, so box-drawing characters would come out
+// as noise there even though they render over SSH.
+//
+// The Command modules read the card's own hwmon device (kernel patch 0027),
+// which is the only place the die temperature, core clock and core voltage
+// come from. `phi sensors` reads the same registers from the host side
+// instead, and answers even when the card's kernel is not running.
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+
+    "logo": {
+        "type": "data",
+        "source": "$2   .--------------------------.\n$2   | $1[] [] [] [] [] [] [] []$2  |\n$2   |    .------------------.  |\n$2   |    |$3  XEON PHI 3120A  $2|  |\n$2   |    |$3  Knights Corner  $2|  |\n$2   |    |$3   57 x 4 = 228   $2|  |\n$2   |    '------------------'  |\n$2   | $1[] [] [] [] [] [] [] []$2  |\n$2   '-+----------------------+-'\n$2     $1||||||||||$2  $1||||||||||$2",
+        "color": { "1": "green", "2": "blue", "3": "cyan" },
+        "padding": { "top": 1, "right": 3 }
+    },
+
+    "display": {
+        "separator": "  ",
+        "color": { "keys": "cyan", "title": "blue" },
+        "size": { "binaryPrefix": "iec" },
+        "percent": { "type": 3 }
+    },
+
+    "modules": [
+        { "type": "title", "format": "{user-name} on the coprocessor" },
+        "separator",
+
+        { "type": "os",        "key": "os     " },
+        { "type": "kernel",    "key": "kernel " },
+        { "type": "uptime",    "key": "uptime " },
+        { "type": "initsystem","key": "init   " },
+
+        "break",
+
+        // 57 physical cores, 4 hardware threads each. fastfetch reads the
+        // count from /proc/cpuinfo, which the KNC platform layer fills from
+        // the SFI CPU table.
+        { "type": "cpu",  "key": "cpu    ", "format": "Xeon Phi 3120A [{name}], {cores-physical} cores x 4 = {cores-logical} threads @ {freq-base}" },
+        { "type": "custom", "key": "vector ", "format": "512-bit VPU per core, 32 zmm, MVEX encoded (not AVX-512)" },
+
+        // Die temperature and the peak the SBOX has recorded since power-on.
+        // Nine die sensors exist; two read 0 because they are unfused.
+        { "type": "command", "key": "temp   ",
+          "text": "H=$(grep -l knc /sys/class/hwmon/hwmon*/name 2>/dev/null | head -1); H=${H%/name}; [ -n \"$H\" ] && printf '%d C on the die  (peak %d C since power-on)' $(( $(cat $H/temp1_input)/1000 )) $(( $(cat $H/temp1_max)/1000 )) || echo 'no hwmon (kernel patch 0027)'" },
+
+        { "type": "command", "key": "clock  ",
+          "text": "H=$(grep -l knc /sys/class/hwmon/hwmon*/name 2>/dev/null | head -1); H=${H%/name}; [ -n \"$H\" ] && printf '%s MHz core at %s mV' \"$(cat $H/core_mhz)\" \"$(cat $H/in0_input)\" || echo unknown" },
+
+        "break",
+
+        { "type": "memory", "key": "gddr5  ", "format": "{used} / {total} ({percentage})" },
+        // Swap here is not a disk: it is host RAM served over the PCIe ring
+        // as /dev/phiblk1 (kernel patch 0026), so saying so avoids a wrong
+        // mental model about what paging costs on this machine.
+        { "type": "swap",   "key": "swap   ", "format": "{used} / {total} on host RAM over PCIe" },
+        { "type": "disk",   "key": "disk   ", "folders": "/data" },
+        { "type": "loadavg","key": "load   " },
+
+        "break",
+
+        // The card has exactly one network device and one route off itself,
+        // both of which exist only while the host's daemon is running.
+        { "type": "command", "key": "link   ",
+          "text": "printf 'PCIe Gen2 x8 to the host (slot-limited); phi0 %s' \"$(ip -4 -o addr show phi0 2>/dev/null | awk '{print $4}' || echo down)\"" },
+        { "type": "command", "key": "access ",
+          "text": "printf 'host only: phictl control socket, and ssh on the host loopback'" },
+
+        "break",
+        { "type": "colors", "paddingLeft": 8, "symbol": "circle" }
+    ]
+}

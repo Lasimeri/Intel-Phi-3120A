@@ -104,3 +104,27 @@ phictl boot --kernel card/kernel/build/out/arch/x86/boot/bzImage \
 `card/initramfs/build` is a symlink into `~/.cache/intel-phi-3120a-build`
 (`toolchain/env.md` explains why the build trees are not in the source
 tree).
+
+## Programs installed on the card
+
+Nothing beyond busybox, dropbear and `phi-agent` is in the image. Everything
+else lives on the persistent disk under `/opt/phi`, which is a bind mount
+from `/data`, and is put there once per disk rather than once per boot:
+
+| Program | Installed by |
+| --- | --- |
+| clang, lld, the LLVM binutils | `card/userland/components/clang-push.sh` |
+| htop | the sibling repository `htop-phi`, `push.sh` |
+| fastfetch | the sibling repository `fastfetch-phi`, `push.sh` |
+| glances, CPython 3.14.7, psutil | the sibling repository `glances-phi`, `push.sh` |
+
+`init` symlinks every executable in `/opt/phi/bin` into `/usr/bin` at boot,
+so they are on the default `PATH` and not only on the one `/etc/profile`
+sets. Without that, `ssh phi htop` fails with "not found" while an
+interactive `ssh phi` works, because only a login shell reads the profile.
+`build.md` has the detail.
+
+`fastfetch` reads `/etc/fastfetch/config.jsonc`, which this repository
+ships (`etc-skel/fastfetch.jsonc`): a card-specific layout that reads the
+die temperature, core clock and core voltage from the hwmon device and
+labels swap as host RAM over PCIe.
