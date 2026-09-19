@@ -2,7 +2,7 @@
 
 The walkthrough from a fresh clone to a booted card with SSH, in the order
 the pieces depend on each other. Every command is one that exists in the
-repository today (2026-09-17) with the flags shown; steps marked
+repository today (2026-09-19) with the flags shown; steps marked
 **(recorded)** were run on this machine and their output is in
 `docs/results/`, steps marked **(verified against the live card)** were
 checked on 2026-09-17 against a card booted by `phi.service`, and steps
@@ -78,8 +78,10 @@ output on this host is in `scripts/verify-card.md`.
 
 ## 4. Bind the card to vfio-pci (recorded)
 
-After step 2 and a reboot the card is already bound (`driver vfio-pci` in
-step 3). Before that reboot, or after `unbind`:
+With `/etc/modprobe.d/phi-vfio.conf` in place from step 2, a reboot should
+leave the card already bound (`driver vfio-pci` in step 3). Check it rather
+than assume it: `readlink /sys/bus/pci/devices/<BDF>/driver`. Before that
+reboot, when the file is missing, or after `unbind`:
 
 ```sh
 sudo scripts/bind-vfio.sh           # uses the detected BDF, or PHI_BDF, or an argument

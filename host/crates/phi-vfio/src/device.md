@@ -26,8 +26,12 @@ state for logging.
 `set_irq_eventfds` builds the variable-length `struct vfio_irq_set` by hand:
 a 20-byte header followed by one `i32` eventfd per vector. Passing MSI-X
 index 2 with N eventfds makes the kernel allocate N MSI-X vectors and route
-each to its eventfd; the daemon (phase P6) polls the eventfds. `disable_irqs`
-tears the mode down.
+each to its eventfd. `disable_irqs` tears the mode down.
+
+Nothing calls this yet. Every channel on the ring polls (`docs/spec/
+ring-protocol.md`, Signaling), so the card has never raised an interrupt
+at the host. The code is here because the ioctl shape is the part that is
+easy to get wrong, and it is unit-tested against the header layout.
 
 ## Reset
 

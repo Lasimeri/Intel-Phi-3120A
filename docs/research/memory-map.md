@@ -40,9 +40,11 @@ reserved ranges reported for IOMMU group 30 on this host:
 | BAR4 | MEMBAR1 | 0xfce00000, 128 KiB | DBOX at offset 0, SBOX at offset 0x10000. The POST code register is at BAR4 offset 0x242c (DBOX side, read directly, mainline `mic_x100_get_postcode`). |
 
 Host CPU accesses through BAR0 are uncached MMIO writes over PCIe: adequate
-for loading a 40 MB boot image (seconds) and for the console ring, not for
-bulk data. Bulk data uses the card's DMA engine, which is out of scope until
-phase P6.
+for loading a boot image (the built one is 8.4 MB of bzImage plus 1.4 MB of
+initramfs, a few seconds) and for the console ring, not for bulk data.
+Bulk data uses the card's DMA engine, built on 2026-09-16
+(`docs/results/2026-09-16-dma.md`, 3.58 GB/s memory to memory against the
+aperture's tens of MB/s).
 
 ## Coherence
 

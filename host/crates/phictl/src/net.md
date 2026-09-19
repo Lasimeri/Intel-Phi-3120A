@@ -25,4 +25,5 @@ The card side is `arch/x86/kernel/knc_net.c` in the kernel series (patch
 when they changed. Throughput is bounded by the aperture copies (8-byte
 volatile accesses over PCIe) and the two polling intervals; it is meant for
 SSH and file transfer, not bulk data. Interrupt signalling (SBOX doorbells)
-is the planned step beyond that (`docs/spec/ring-protocol.md`, v2).
+would be the step beyond that; it is sketched in `docs/spec/ring-protocol.md`
+under Signaling and has not been built.

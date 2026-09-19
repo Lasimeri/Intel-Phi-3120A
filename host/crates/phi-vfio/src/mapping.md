@@ -15,7 +15,9 @@ A BAR mapping with volatile accessors and bounds checks.
   block may not accept.
 - The aperture (BAR0) is ordinary memory behind a BAR: `write_bytes` uses
   8-byte stores for throughput and byte stores for the ragged ends. This is
-  how the 40 MB boot image gets into card memory.
+  how the boot image gets into card memory: 8.4 MB of bzImage plus 1.4 MB
+  of initramfs, a few seconds at aperture rates. Bulk data after boot goes
+  through the DMA engine instead (`phi-hw/src/dma.rs`).
 
 ## Not a general-purpose abstraction
 

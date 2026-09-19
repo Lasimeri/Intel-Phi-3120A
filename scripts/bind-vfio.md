@@ -18,12 +18,21 @@ mechanism, or releases it. Root required (sysfs writes).
 `unbind` reverses it and clears `driver_override`, leaving the card with no
 driver, exactly the state a fresh boot leaves it in.
 
-## Why no persistent binding
+## Its relationship to the persistent binding
 
-A persistent `vfio-pci.ids=8086:225d` on the kernel command line would also
-work. It is not done by default so that a host reboot always starts from the
-known state (no driver, card in bootstrap), and so the oracle VM path (QEMU
-passthrough) stays available without fighting a binding.
+Since 2026-09-14 `setup-arch.sh` writes `/etc/modprobe.d/phi-vfio.conf`
+(`options vfio-pci ids=8086:225d`), so `vfio-pci` claims the card when it
+loads at boot and this script is not part of the routine. It stays for
+three cases:
+
+- A host set up before that change, or one where the file was removed:
+  `vfio-pci` loads with no ids and the card comes up with no driver
+  (`scripts/setup-arch.md` has the symptom and the checks).
+- Handing the card back: `unbind` clears `driver_override` and leaves it
+  with no driver, the state a fresh boot used to leave it in. That is what
+  the QEMU passthrough path (the oracle VM, never needed in the end) would
+  want.
+- Binding without a reboot after changing either file.
 
 ## Measured on this host
 

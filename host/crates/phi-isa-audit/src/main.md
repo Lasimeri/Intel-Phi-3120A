@@ -22,7 +22,9 @@ Exit status is the contract for build scripts: 0 clean, 1 hits, 2 error.
 
 - Phase P2 exit criterion: a static `hello` in C and Rust from the card
   toolchain must report `0 illegal`.
-- Phase P3: `vmlinux` of the card kernel, plus every `.ko`.
+- Phase P3: `vmlinux` of the card kernel. There are no `.ko` files: the
+  project builds no modules, so the audit sees the whole kernel at once
+  (`card/kernel/build.sh audit`).
 - Phase P4 onward: every binary that goes into the initramfs, run from the
   initramfs build script.
 

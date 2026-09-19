@@ -19,7 +19,9 @@ is validated. Rust's `std` for musl targets works with `crt-static`.
 
 - Programs that assume glibc-isms need patches or are skipped.
 - `getaddrinfo`, locales, and `dlopen` behave the musl way.
-- CPython, dropbear, busybox, QuickJS, tcc all build against musl upstream.
+- dropbear, busybox, zlib, ncurses and CPython build against musl upstream
+  with no source patches (verified 2026-09-13 to 2026-09-14). QuickJS and
+  tcc are expected to and have not been built.
 
 ## Alternatives rejected
 
