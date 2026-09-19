@@ -1,9 +1,10 @@
 # toolchain/llvm
 
-One LLVM (for clang and rustc) with four small changes, applied by
+One LLVM (for clang and rustc) with nine small changes, applied by
 `build.sh` from `patches/` onto the pinned tag `llvmorg-22.1.8` (the version
-Arch ships, so the host clang builds it). What the sources showed on
-inspection, versus the design notes written before the tree was cloned:
+Arch ships, so the host clang builds it and so rustc can load the dylib
+variant). What the sources showed on inspection, versus the design notes
+written before the tree was cloned:
 
 | Patch | File | Change | What inspection showed |
 | --- | --- | --- | --- |
@@ -41,10 +42,17 @@ toolchain/llvm/build.sh all      # fetch, patch, configure, build, install, chec
 Runtimes (`compiler-rt`, `libunwind`, `libc++`) are built afterwards with
 `knc-cc` against the musl sysroot; they are not part of this step.
 
-## rustc
+## Dylib variant, for rustc
 
-rustc is built with `llvm-config` pointing at this install
-(`[target.x86_64-unknown-linux-gnu] llvm-config = ...` in `bootstrap.toml`)
-so that the custom target's codegen is the patched one. Until then, a stock
-nightly with `-Zbuild-std` can compile the card target for integer-only
-code, but any `f64` return would hit the unpatched diagnostic.
+`PHI_LLVM_VARIANT=dylib` builds `libLLVM.so.22.1` with the options Arch's
+`llvm-libs` uses, linked against a static libstdc++ so its symbol versions
+match the distro rustc. No clang is built or installed in this variant.
+
+rustc is **not** rebuilt. ADR 0007 records the decision and the
+measurement: the distro `rust` package loads this dylib through
+`LD_LIBRARY_PATH`, and with the patched backend an
+`extern "C" fn(f64, f64) -> f64` compiles to `fldl 8(%rsp); fmull
+16(%rsp); ret`, the same convention clang produces. `RUSTC_BOOTSTRAP=1`
+unlocks `-Zbuild-std` and JSON targets on the stable compiler, so no
+nightly and no rustup are involved. The dylib's major.minor must stay the
+one rustc links (22.1).

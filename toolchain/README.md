@@ -49,8 +49,11 @@ P7); `card/userland/components/clang-push.sh` then loads the result onto a
 running card without SSH.
 
 One `sse2` warning per crate during step 7 is expected output, not a
-failure: rustc notes that the target JSON disables a feature its
-`std_detect` still references.
+failure: "target feature `sse2` must be enabled to ensure that the ABI of
+the current target can be implemented correctly"
+(rust-lang/rust#116344). The patched LLVM implements that ABI without
+SSE2, which is the whole point; ADR 0007 records the measurement and the
+escape hatch for the day the warning becomes an error.
 ## What the audit flags in correct output
 
 Nothing in linked executables, by construction: `knc-cc` and the Rust

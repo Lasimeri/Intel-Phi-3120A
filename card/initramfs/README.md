@@ -15,14 +15,15 @@ bind mounts move `/opt/phi`, `/root` and `/home` onto the disk.
 
 ```
 /init                 the shell script in this directory, mode 0755
-/bin/busybox          the card busybox, plus 399 applet symlinks
+/bin/busybox          the card busybox, plus 394 applet symlinks (one per applet)
 /bin/phi-agent        card/agent/build.sh, the card end of phictl exec/put/get/status
 /bin/dropbearmulti    plus links dropbear, dropbearkey, dbclient, scp, ssh
-/sbin                 more applet symlinks
 /etc/passwd, group    root only, shell /bin/sh
 /etc/dropbear/        ed25519 and RSA host keys, generated once on the host
 /root/.ssh/authorized_keys   the user's public keys (PHI_SSH_PUBKEYS)
-/proc /sys /dev /tmp /opt     empty mount points
+/proc /sys /dev /tmp /sbin    empty; init mounts the first four, /sbin is
+                      created but busybox installs its links in /bin only
+<anything under extra/>       copied in at the same path
 ```
 
 Built with `bsdtar --format newc --uid 0 --gid 0 | gzip -9`; the kernel
@@ -38,10 +39,12 @@ never reaches the card.
 - No kernel modules. The project builds none: the tty, netdev, rpc and
   block devices are kernel patches 0016, 0021, 0022, 0025 and 0026
   (`card/drivers/phinet/README.md` explains the directory name).
-- No compilers, no interpreters. clang, gcc, tcc, QuickJS and CPython
-  live on the persistent disk under `/opt/phi`, pushed there once by
-  `card/userland/components/clang-push.sh`. Keeping them out is what
-  holds the image near 1.4 MB.
+- No compiler. The card's clang lives on the persistent disk under
+  `/opt/phi`, pushed there once by
+  `card/userland/components/clang-push.sh` (84 MB of tarball). Keeping it
+  out is what holds the image near 1.4 MB. gcc, tcc and QuickJS are not
+  built at all, and the static CPython is a component for a sibling
+  project, not part of any image (`docs/plan.md`, P8 and P9).
 - No `/etc/phi`. The ring base, the card address and the host address all
   arrive on the kernel command line or as environment overrides
   (`PHI_CARD_ADDR`).

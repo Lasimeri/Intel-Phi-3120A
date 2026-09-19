@@ -13,6 +13,7 @@ the build reads `vendor/`; it exists so a reader can check every citation in
 | `docs/datasheet-328209.pdf` | intel.com | small |
 | `docs/k1om-psabi-1.0.pdf` | community.intel.com attachment | 0.5 MB |
 | `mpss-3.8.6/*.tar` | archive.org item `intel-mpss-3.8.6` | 300 MB + k1om + src |
+| `mpss-3.8.6/mpss-modules-3.8.6/` | extracted from the source RPM inside the host tarball with `bsdtar` | small |
 | `linux-5.9-mic/mic/` | GitHub tag v5.9 tarball, extracted subtree | 180 MB download, small result |
 | `solros/phi-kernel/` | GitHub, sparse checkout | a full 2.6.38 tree |
 
@@ -29,5 +30,3 @@ without naming which tarball, so it is not used here.
 
 Idempotent: existing files are kept and re-verified. Delete a file to
 re-download it.
-
-| `mpss-3.8.6/mpss-modules-3.8.6/` | extracted from the source RPM inside the host tarball with `bsdtar` | small |
