@@ -99,7 +99,7 @@ and:
 ```sh
 scripts/phi-autoboot.sh install /path/to/disk.img 6G   # run the card from a user service
 scripts/phi-autoboot.sh at-boot                        # ...starting at host boot, not at login
-scripts/phi.sh install-cli                             # ~/.local/bin/phi and fish completions
+scripts/phi.sh install-cli                             # phi, phitop, phictl on PATH; fish completions
 ```
 
 After that one command drives everything, from any shell, without `sudo`:
