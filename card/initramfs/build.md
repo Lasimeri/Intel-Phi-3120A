@@ -169,3 +169,15 @@ Note for anyone editing the build script: `chmod 644 "$skel"/*` must run
 before the `fastfetch/` directory is created. `chmod 644` on a directory
 strips its traverse bit and everything under it becomes unreachable, which
 is what happened the first time.
+
+## `phitop` on the card
+
+`usr/bin/phitop` in the image is not the viewer. The viewer is a host
+program: it reads the card through the PCIe control socket, which is the
+whole reason it needs no SSH session. Typing `phitop` after `ssh phi` is a
+natural mistake, so the image answers it with where the program actually
+lives and what the card-side equivalent is (`htop`) instead of leaving a
+bare "not found".
+
+`init` links `/opt/phi/bin` over `/usr/bin`, so a real `phitop` installed on
+the disk would take precedence over this note, which is the right order.

@@ -29,6 +29,30 @@ cp "$busybox" "$root/bin/busybox"
 find "$root/bin" -type l | while read -r l; do ln -sfn busybox "$l"; done
 cp "$phi_root/card/initramfs/init" "$root/init"
 chmod 755 "$root/init"
+
+# phitop is a host program: it reads this card through the PCIe control
+# socket, which is the whole reason it needs no SSH session. Typing it on
+# the card is a natural mistake, so answer it instead of leaving a bare
+# "not found". init links /opt/phi/bin over /usr/bin, so a real phitop
+# installed there would replace this, which is the right precedence.
+cat > "$root/usr/bin/phitop" <<'PHITOP'
+#!/bin/sh
+# Installed by card/initramfs/build.sh. See card/initramfs/build.md.
+echo "phitop runs on the host, not on the card." >&2
+echo >&2
+echo "It watches this card over the PCIe control socket, so it needs no SSH" >&2
+echo "session at all. From a terminal on the host:" >&2
+echo >&2
+echo "    phitop          (or: phi top)" >&2
+echo >&2
+if [ -x /usr/bin/htop ] || [ -x /opt/phi/bin/htop ]; then
+	echo "Here on the card, htop shows the same per-core load and processes." >&2
+else
+	echo "Here on the card, 'top' shows per-core load and processes." >&2
+fi
+exit 1
+PHITOP
+chmod 755 "$root/usr/bin/phitop"
 # The /etc skeleton. init installs it over /etc on every boot: passwd, group,
 # shells, os-release and the dropbear keys are copied every time, so the image
 # stays authoritative for who may log in; hostname, hosts, profile, fstab, TZ

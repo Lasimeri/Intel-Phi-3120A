@@ -108,7 +108,7 @@ After that one command drives everything, from any shell, without `sudo`:
 phi status            # unit, card, memory, disk, and who can reach it
 phi run nproc         # 228; stdin, stdout, stderr and the exit status relayed
 phi sh                # an interactive login shell on the card
-phi top               # the live viewer
+phi top               # the live viewer (or just: phitop)
 phi up / phi down     # start and stop; down unmounts the card's disk first
 ```
 

@@ -76,6 +76,10 @@ phi: drive the Intel Xeon Phi 3120A from this host.
   phi help              this
 
 Anything after `up` is passed to `phictl boot`, so `phi up --no-dma` works.
+
+`phi install-cli` also puts the binaries themselves on PATH, so `phitop`,
+`phictl`, `phi-isa-audit` and `knc-mvex-gen` work by name. `phitop` runs on
+this host and talks to the daemon; it is not a card program.
 USAGE
 }
 
@@ -254,6 +258,18 @@ install-cli)
     mkdir -p "$HOME/.local/bin"
     ln -sfn "$root/scripts/phi.sh" "$HOME/.local/bin/phi"
     echo "installed $HOME/.local/bin/phi -> $root/scripts/phi.sh"
+    # The binaries too, not only the wrapper. `phi top` and `phitop` should
+    # both work: a tool you can name is a tool you can find, and a wrapper
+    # that hides its own binaries is the reason `phitop` said "not found"
+    # while `phi top` worked.
+    for b in phitop phictl phi-isa-audit knc-mvex-gen; do
+        if [ -x "$root/host/target/debug/$b" ]; then
+            ln -sfn "$root/host/target/debug/$b" "$HOME/.local/bin/$b"
+            echo "installed $HOME/.local/bin/$b"
+        else
+            echo "skipped $b (not built; make build)" >&2
+        fi
+    done
     if [ -d "$HOME/.config/fish" ]; then
         mkdir -p "$HOME/.config/fish/completions"
         # Symlinked, not copied, so an edit in the repository takes effect
