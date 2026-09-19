@@ -56,9 +56,12 @@ applies (`id` must list `phi`).
 The `modprobe.d` file was added on 2026-09-14. A host set up before that
 has the `modules-load.d` file but not this one, so `vfio-pci` loads at
 boot with no ids, claims nothing, and the card comes up with no driver;
-re-run the script once to fix it. `scripts/setup-arch.md` has the symptom
-and the three checks. Reboot survival with the file in place has not been
-observed on the development host yet.
+re-run the script once to fix it. That happened on the development host on
+2026-09-19 and `scripts/setup-arch.md` records the symptom, the three
+checks and the repair. Note that the option leaves no sysfs file to
+inspect: use `modprobe --showconfig`, not
+`/sys/module/vfio_pci/parameters/ids`. Reboot survival with the file in
+place is still unobserved.
 
 `PHI_RUSTUP=1 sudo scripts/setup-arch.sh` installs `rustup` instead of the
 distro `rust`; the project needs neither nightly nor rustup (ADR 0007), the

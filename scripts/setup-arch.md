@@ -11,7 +11,7 @@ Prepares an Arch Linux host. Root required. Idempotent.
 | `/etc/udev/rules.d/80-phi-vfio.rules` | `/dev/vfio/<N>` owned by `phi`, mode 0660 | Same |
 | `/etc/security/limits.d/80-phi.conf` | Unlimited memlock for `@phi` | VFIO DMA mappings pin memory (phase P6) |
 | `/etc/modules-load.d/phi-vfio.conf` | `vfio-pci`, `vfio_iommu_type1` at boot | Both modules present before anything wants them |
-| `/etc/modprobe.d/phi-vfio.conf` | `options vfio-pci ids=8086:225d` | Added 2026-09-14. vfio-pci claims the card the moment it loads, so a rebooted host needs no binding step and `bind-vfio.sh` becomes a repair tool rather than part of the routine |
+| `/etc/modprobe.d/phi-vfio.conf` | `options vfio-pci ids=8086:225d` | Added 2026-09-14. vfio-pci claims the card the moment it loads, so a rebooted host needs no binding step and `bind-vfio.sh` becomes a repair tool rather than part of the routine. Read only at module load; it leaves no sysfs file (see below) |
 
 ## What it deliberately does not do
 
@@ -38,8 +38,8 @@ and the autoboot unit sits in `activating (auto-restart)` forever.
 Check, in this order:
 
 ```sh
-ls -l /etc/modprobe.d/phi-vfio.conf     # must exist
-cat /sys/module/vfio_pci/parameters/ids # must contain 8086:225d
+ls -l /etc/modprobe.d/phi-vfio.conf                 # must exist
+modprobe --showconfig | grep vfio_pci               # must show: options vfio_pci ids=8086:225d
 readlink /sys/bus/pci/devices/0000:2e:00.0/driver   # must end in vfio-pci
 ```
 
@@ -48,16 +48,29 @@ The `ids` parameter is read only when `vfio-pci` loads. If
 the module at boot but with no ids, so it claims nothing and the card is
 left with no driver.
 
-That is the state of the host this was written on (2026-09-19, kernel
-7.2.6-1-cachyos): `/etc/modules-load.d/phi-vfio.conf` is dated 2026-09-13
-and `/etc/modprobe.d/phi-vfio.conf` does not exist, because this host was
-set up before the 2026-09-14 change that writes it. Re-running
-`sudo scripts/setup-arch.sh` writes the file; `sudo scripts/bind-vfio.sh`
-binds the card without a reboot.
+Do not look for `/sys/module/vfio_pci/parameters/ids`. That file does not
+exist whether the option is set or not: `vfio-pci` declares the parameter
+with permission 0 (`module_param_string(ids, ids, sizeof(ids), 0)`), so no
+sysfs entry is created. `modinfo vfio-pci` lists the parameter,
+`modprobe --showconfig` shows whether the option is registered (as
+`vfio_pci`, with the dash normalised to an underscore), and the binding
+itself is the only evidence that it took effect. Checked on this host,
+2026-09-19, kernel 7.2.6-1-cachyos.
 
-Reboot survival with the file in place has not been observed on this host
-yet. Verify it the first time by rebooting and checking `readlink` above
-before assuming the autoboot unit will come up on its own.
+That is what happened on the development host on 2026-09-19. It had been
+set up on 2026-09-13, before the change that writes the `modprobe.d` file,
+so after the reboot to kernel 7.2.6-1-cachyos `vfio-pci` was loaded by
+`modules-load.d` with no ids, claimed nothing, and `phi.service` restarted
+every 10 s. `sudo scripts/setup-arch.sh` wrote the file (`modprobe
+--showconfig` now shows the option) and `sudo scripts/bind-vfio.sh` bound
+the card in place, after which the unit came up and the card booted with
+its disk and host memory.
+
+That binding came from `driver_override`, not from the module option: the
+module was already loaded when the file was written, and the option is read
+only at load time. So reboot survival is still unobserved here. Check it
+the first time with the `readlink` above rather than assuming the autoboot
+unit will come up on its own.
 
 ## What the card can do without root
 
