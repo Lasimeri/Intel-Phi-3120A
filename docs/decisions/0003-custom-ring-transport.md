@@ -30,6 +30,23 @@ Host side: `phi-ring` (Rust, hardware-independent, unit-tested). Card side:
 - Both sides share one `#[repr(C)]`/`struct` layout, cross-checked by a
   `tcc`-compiled helper.
 
+## What was actually built (2026-09-19)
+
+The decision held; three details of the implementation sketch did not.
+
+- The card side is not a module. `phinet` was never written: the console
+  has to work before a module could be loaded, and everything after it
+  reuses the console's ring code, so the tty, the netdev, the rpc stream
+  and the two block devices are kernel patches 0016, 0021, 0022, 0025 and
+  0026. `card/drivers/phinet/` keeps only the shared C header.
+- Doorbells were never plumbed. Both sides still poll, which the sketch
+  allowed for bring-up and which turned out to be sufficient; interrupts
+  remain the open item in phase P6.
+- The channel list grew from two to five: console, network, rpc, block,
+  host memory. The region grew with it, 1 MiB to 2 MiB to 16 MiB, and the
+  block channel added a data area after its rings. None of that changed
+  the header or ring layout the two sides agree on.
+
 ## Alternatives rejected
 
 - Port `micvcons`/`micvnet`: Intel code, tied to 2.6.38 internals.

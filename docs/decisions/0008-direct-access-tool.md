@@ -41,6 +41,10 @@ The trust model:
   while `sudo phictl boot --serve` runs (typically in tmux).
 - One client at a time; concurrency is a later step (session ids are not
   in the frame format).
+  Superseded 2026-09-17 by `0009-telemetry-sideband.md`: the daemon now
+  multiplexes up to 16 clients over the one channel by holding a single
+  session and queueing the rest, without adding session ids to the frame
+  format. `phitop` is why.
 - Throughput is that of the polled rings (about the same as the network
   channel); fine for builds and file transfer of megabytes, not for bulk
   data.

@@ -48,9 +48,17 @@ Idempotent. It installs the packages listed in `scripts/setup-arch.md`,
 creates the `phi` group and adds the invoking user to it, installs the udev
 rule that gives `/dev/vfio/<group>` to that group, raises `memlock` for the
 group (VFIO pins DMA memory), loads `vfio-pci` and `vfio_iommu_type1` at
-boot and tells `vfio-pci` to claim `8086:225d` at load time (so a rebooted
-host needs no binding step). **Log out and back in** so the group applies
-(`id` must list `phi`).
+boot (`/etc/modules-load.d/phi-vfio.conf`) and tells `vfio-pci` to claim
+`8086:225d` at load time (`/etc/modprobe.d/phi-vfio.conf`), so a rebooted
+host should need no binding step. **Log out and back in** so the group
+applies (`id` must list `phi`).
+
+The `modprobe.d` file was added on 2026-09-14. A host set up before that
+has the `modules-load.d` file but not this one, so `vfio-pci` loads at
+boot with no ids, claims nothing, and the card comes up with no driver;
+re-run the script once to fix it. `scripts/setup-arch.md` has the symptom
+and the three checks. Reboot survival with the file in place has not been
+observed on the development host yet.
 
 `PHI_RUSTUP=1 sudo scripts/setup-arch.sh` installs `rustup` instead of the
 distro `rust`; the project needs neither nightly nor rustup (ADR 0007), the

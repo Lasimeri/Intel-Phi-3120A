@@ -7,10 +7,13 @@ install can reproduce every result here without asking anyone.
 
 - **Rust** for everything that can be Rust: all host-side software, all tooling
   that runs on the host, and card userland where the toolchain permits.
-- **C** only where Rust is not an option: the card kernel and its modules,
-  patches to third-party C projects (tcc, QuickJS, CPython, musl), and small
-  layout-check helpers that must see the C headers as C sees them. Those
-  helpers are compiled and run with `tcc`.
+- **C** only where Rust is not an option: the card kernel patches (they amend
+  C and must read as kernel code), patches to third-party C projects (tcc,
+  QuickJS, CPython, musl), the shared ring header, and small helpers under
+  `tools/` that must see the C headers as C sees them. Those helpers are
+  compiled and run with `tcc`. The project builds no kernel modules: every
+  card device is a patch, because the console must exist before a module
+  could be loaded.
 - **Shell** (`sh`, POSIX where practical, `bash` when arrays are needed) for
   setup and glue scripts that orchestrate system tools.
 - **Never Python** for project tooling. CPython is a *product* this project
@@ -40,8 +43,12 @@ install can reproduce every result here without asking anyone.
 
 - Anything that touches the system (packages, udev, modules, limits) lives in
   `scripts/` and is idempotent.
-- Anything downloaded is fetched by `scripts/fetch-vendor.sh` into `vendor/`
-  with a pinned URL and a SHA-256 that is checked. `vendor/` is git-ignored.
+- Anything downloaded has a pinned URL and a checked SHA-256. Build inputs
+  (musl, busybox, dropbear, zlib, ncurses, CPython) go through
+  `toolchain/fetch.sh` against `toolchain/SHA256SUMS`; LLVM is a depth-1
+  clone of a pinned tag. Reference material (MPSS archives, Intel's k1om
+  tree, PDFs) goes through `scripts/fetch-vendor.sh` into `vendor/`, which
+  is git-ignored and never linked into a build.
 - Hardware-dependent tests are behind the `hardware` Cargo feature or an
   explicit `PHI_BDF` environment variable, so `cargo test` passes on a machine
   without the card.

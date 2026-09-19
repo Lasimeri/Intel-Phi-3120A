@@ -96,10 +96,10 @@ fn now_ns() -> u64 {
 
 /// The command line parameters that tell the kernel where the ring is and
 /// how much memory it may use. `memmap=<size>$<base>` marks the ring region
-/// reserved; `phi.ring=` is read by the KNC platform code and by `phinet`;
-/// `mem=` caps the kernel at the card's GDDR, as Intel's loader did with the
-/// aperture size, so that nothing the bootstrap lists above it (register
-/// blocks, the SMPT window onto host memory) is ever treated as RAM.
+/// reserved; `phi.ring=` is read by the KNC platform code and by the in-kernel
+/// ring drivers; `mem=` caps the kernel at the card's GDDR, as Intel's loader
+/// did with the aperture size, so that nothing the bootstrap lists above it
+/// (register blocks, the SMPT window onto host memory) is ever treated as RAM.
 pub fn ring_cmdline_params(base: u64, size: u64) -> String {
     format!(
         "memmap={}K${:#x} phi.ring={:#x},{:#x} mem={}M",

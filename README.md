@@ -79,7 +79,7 @@ git clone https://github.com/Lasimeri/Intel-Phi-3120A.git "Intel Phi 3120A"
 cd "Intel Phi 3120A"
 sudo scripts/setup-arch.sh          # packages, phi group, udev rule, memlock, vfio-pci claims the card at boot
 scripts/verify-card.sh              # the card, its link, BARs, IOMMU group
-sudo scripts/bind-vfio.sh           # only before the first reboot after setup
+sudo scripts/bind-vfio.sh           # bind now; after a reboot vfio-pci should claim it itself (setup-arch.md)
 make build                          # cargo build of the host workspace
 host/target/debug/phictl info       # first contact: POST code and scratchpads (needs the card unheld)
 ```

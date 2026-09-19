@@ -7,38 +7,50 @@ by one patched LLVM) and `docs/decisions/0007-rust-distro-rustc-patched-llvm.md`
 
 | Entry | Contents |
 | --- | --- |
-| `env.sh` | Paths shared by every script: the space-free alias of the repository, the real build root under `~/.cache`, `PHI_LLVM`, `PHI_SYSROOT`, and `knc-cc` on `PATH`. Source it in `bash`. |
-| `llvm/` | The LLVM/clang patch series (`llvm/patches/`; `llvm/README.md` explains every patch) and `build.sh` for the two variants: the static X86-only clang+lld that compiles C, and the `libLLVM.so` that rustc loads. |
-| `clang/` | `knc-cc` and `knc-c++`, driver wrappers that bake in the flags. |
-| `musl/` | musl 1.2.5 built with `knc-cc` into the sysroot, with one source patch and the drop rule for SSE assembly. |
-| `compiler-rt/` | The builtins archive without SSE (patch 0007), installed into clang's resource directory. |
-| `libunwind/` | LLVM libunwind for the card, installed into the sysroot; required by Rust's `std` and later by C++. |
+| `env.sh` | Paths shared by every script: the space-free alias of the repository, the real build root under `~/.cache`, `PHI_LLVM`, `PHI_SYSROOT`, and `knc-cc` on `PATH`. Source it in `bash`. `env.md` explains why the build trees are not in the source tree. |
+| `fetch.sh` | `phi_fetch NAME URL`: downloads a tarball into the cache once and checks it against `SHA256SUMS`. The six component scripts that download a tarball all go through it, so no build depends on whatever upstream serves today. LLVM is pinned differently: `llvm/build.sh` does a depth-1 clone of the tag in `PHI_LLVM_TAG`, `llvmorg-22.1.8`. |
+| `SHA256SUMS` | The six pinned tarballs: musl 1.2.5, busybox 1.37.0, dropbear 2025.88, zlib 1.3.1, ncurses 6.5, Python 3.14.7. |
+| `llvm/` | The nine-patch LLVM/clang series (`llvm/patches/`, `llvm/README.md` explains each one) and `build.sh` for three variants: the default static X86-only clang+lld that compiles C for the card, `dylib` (`libLLVM.so` for rustc to load), and `card` (the same compiler rebuilt to run on the card). |
+| `clang/` | `knc-cc` and `knc-c++`, driver wrappers that bake in the feature flags so no caller can forget them. |
+| `musl/` | musl 1.2.5 built with `knc-cc` into the sysroot, with one source patch (`patches/0001-x86_64-a_spin-without-pause.patch`) and the drop rule for SSE assembly. |
+| `compiler-rt/` | The builtins archive without SSE (LLVM patch 0007), installed into clang's resource directory. |
+| `libunwind/` | LLVM libunwind for the card, installed into the sysroot; required by Rust's `std` and by C++. |
+| `libcxx/` | `libc++.a` and `libc++abi.a` against musl, needed to build clang itself for the card. |
 | `rust/` | The generated target `x86_64-knc-linux-musl.json`, its generator, and `build-std.sh`. |
 | `check/` | The phase P2 exit test: `hello.c` plus the `hello_rs` staticlib; `run.sh` compiles, audits, and runs it. |
 
-## Build order (phase P2)
+## Build order
 
-Every script sources `env.sh`, can be rerun, and prints what it audits.
-Build products live under `~/.cache/intel-phi-3120a-build/toolchain/`
-(reachable as `toolchain/build/`); `env.md` explains why those paths carry
-no spaces. Times are for a 16-thread desktop.
+Every script sources `env.sh`, can be rerun, and audits what it produces
+with `phi-isa-audit`. Build products live under
+`~/.cache/intel-phi-3120a-build/toolchain/` (reachable as
+`toolchain/build/`). Durations are measured on a 16-thread desktop and
+recorded in `docs/results/2026-09-13-p2-*.md`; the same table with its
+result column is `docs/reproducibility.md` section 6.
 
-1. `toolchain/llvm/build.sh all` (about 1 hour): patched clang and lld, X86
-   only, installed to `toolchain/build/llvm/`.
-2. `toolchain/musl/build.sh` (minutes): the sysroot at `toolchain/build/sysroot/`.
-3. `toolchain/compiler-rt/build.sh` (minutes): builtins for `knc-cc`.
-4. `toolchain/libunwind/build.sh` (a minute): `libunwind.a` in the sysroot.
-5. `toolchain/check/run.sh`: the C half must print `phase P2 check: PASS`.
-6. `PHI_LLVM_VARIANT=dylib toolchain/llvm/build.sh all` (about 40 minutes):
-   `libLLVM.so.22.1` for rustc, installed to `toolchain/build/llvm-dylib/`.
-7. `toolchain/rust/gen-target.sh` (after every rustc upgrade), then
-   `toolchain/rust/build-std.sh` (under a minute): `core`, `alloc`, `std`
-   and the `hello_rs` staticlib for the card, using the distro `rust` and
-   `rust-src` packages. No rustup, no nightly.
-8. `toolchain/check/run.sh` again: it now links the Rust half; expected
-   output includes `rust_hypot=5` and an audit of the linked binary with
-   zero illegal instructions.
+| Step | Command | Time |
+| --- | --- | --- |
+| 1 | `toolchain/llvm/build.sh all` | 55 min first time, 15 min clean rebuild |
+| 2 | `toolchain/musl/build.sh` | minutes |
+| 3 | `toolchain/compiler-rt/build.sh` | 2 min |
+| 4 | `toolchain/libunwind/build.sh` | 1 min |
+| 5 | `toolchain/check/run.sh` | seconds; must print `phase P2 check: PASS` |
+| 6 | `PHI_LLVM_VARIANT=dylib toolchain/llvm/build.sh all` | 12 min clean |
+| 7 | `toolchain/rust/gen-target.sh`, then `toolchain/rust/build-std.sh` | under a minute |
+| 8 | `toolchain/check/run.sh` again | seconds; now links the Rust half, expects `rust_hypot=5` |
+| 9 | `toolchain/libcxx/build.sh` | a few minutes |
+| 10 | `PHI_LLVM_VARIANT=card toolchain/llvm/build.sh configure`, then `build` | not recorded |
+| 11 | `card/userland/components/clang.sh` | not recorded; produces `phi-clang.tar.gz`, 84 MB |
 
+Steps 1 to 8 are what the kernel and the initramfs need. Step 6 needs the
+distro `rust` and `rust-src` packages; step 7 is rerun after every rustc
+upgrade. Steps 9 to 11 exist only to compile on the card itself (phase
+P7); `card/userland/components/clang-push.sh` then loads the result onto a
+running card without SSH.
+
+One `sse2` warning per crate during step 7 is expected output, not a
+failure: rustc notes that the target JSON disables a feature its
+`std_detect` still references.
 ## What the audit flags in correct output
 
 Nothing in linked executables, by construction: `knc-cc` and the Rust

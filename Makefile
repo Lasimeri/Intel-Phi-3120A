@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 HOST := host
 
-.PHONY: help setup verify bind build test check fmt clippy audit vendor docs-check clean
+.PHONY: help setup verify bind build test check fmt clippy audit vendor docs-check layout-check clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -30,7 +30,7 @@ fmt: ## Check formatting
 clippy: ## Lint
 	cd $(HOST) && cargo clippy --all-targets -- -D warnings
 
-docs-check: ## Enforce sibling .md files and the no-em-dash rule
+docs-check: ## Enforce sibling .md files, the no-dash rule and relative links
 	scripts/check-docs.sh
 
 check: docs-check fmt clippy build test layout-check ## Everything CI would run (also rebuilds the binaries)

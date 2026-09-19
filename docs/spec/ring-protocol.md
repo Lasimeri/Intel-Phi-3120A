@@ -15,9 +15,9 @@ that Intel's loader used. (v1 first placed it at 32 MiB, below the download
 address; bulk writes there reset the host on 2026-09-14, see
 `docs/results/2026-09-13-p3-kernel-build.md`. Nothing of Intel's ever wrote
 below the download address.) The card kernel reserves it with
-`memmap=1M$0x10000000` on its command line (written by the host loader) and
-the `phinet` module `ioremap_cache`s it. The host reaches it at BAR0 offset
-`PHI_RING_REGION_BASE`.
+`memmap=16384K$0x10000000` on its command line (written by the host loader
+from the `--ring-base` and `--ring-size` defaults) and the in-kernel ring
+code maps it. The host reaches it at BAR0 offset `PHI_RING_REGION_BASE`.
 
 ## Layout
 
@@ -67,12 +67,19 @@ Console channel carries raw bytes. Network channel carries frames as
 
 ## Signaling
 
-v1: both sides poll. Host polls at 1 kHz for console, on demand for network.
-Card polls from a kernel thread with `schedule_timeout`.
+Both sides poll. No interrupt of any kind is used, on either side, for any
+channel; this is the largest open item in phase P6 (`docs/plan.md`).
 
-v2 (phase P6): host to card, write `APICICRn` with a vector registered by
-`phinet`; card to host, write `RDMASR0`, delivered as MSI-X vector 0 to the
-host's eventfd.
+| Side | Rate |
+| --- | --- |
+| Host | 1 kHz for the console, the rpc channel and the block channels; on demand for the network channel |
+| Card, tty | every 10 ms (`KNC_TTY_POLL_MS`, patch 0016) |
+| Card, network and rpc | every jiffy, so 1 ms at `CONFIG_HZ=1000` (patch 0021, patch 0022) |
+
+The interrupt path that was sketched for v2 and never built: host to card,
+write `APICICRn` with a vector the card registers; card to host, write
+`RDMASR0`, delivered as MSI-X vector 0 to the host eventfd `phi-vfio`
+already knows how to arm.
 
 ## Ordering
 
@@ -85,10 +92,11 @@ host's eventfd.
 
 ## Bring-up use
 
-The kernel's early console (`card/kernel/platform/knc_earlycon.c`) writes
-into the console `c2h` ring directly, before `phinet` loads, using the same
-layout. The host's `phictl console` command tails it. This is how the first
-kernel message reaches the host.
+The kernel's early console (`arch/x86/kernel/knc_earlycon.c`, kernel patch
+0011) writes into the console `c2h` ring directly, using the same layout,
+from the moment `earlyprintk=phiring` is parsed. The tty driver (patch
+0016) takes over the same ring later. The host's `phictl console` tails it
+throughout. This is how the first kernel message reaches the host.
 
 ## Rpc channel (kind 3)
 
@@ -106,14 +114,17 @@ empty for none), 2 Stdin (bytes), 3 StdinEof, 4 Stdout (bytes), 5 Stderr
 (bytes), 6 Exit (u32 status), 7 PutOpen (path string, u32 mode), 8 PutData
 (bytes), 9 PutClose, 10 Get (path string), 11 GetData (bytes), 12 GetEnd
 (u64 size), 13 Error (string), 14 Ping, 15 Pong (version string). Frames are
-at most 1 MiB. One session at a time: the host sends a request (Exec,
-PutOpen, Get or Ping) and the card answers with frames ending in Exit,
-GetEnd, Pong or Error.
+at most 1 MiB. One session at a time on the wire: the host sends a request
+(Exec, PutOpen, Get or Ping) and the card answers with frames ending in
+Exit, GetEnd, Pong or Error. The daemon multiplexes several local clients
+onto that one session by queueing them (ADR 0009).
 
 On the card the channel is `/dev/phirpc` (kernel patch 0022); on the host
 `phictl boot --serve` reads and writes the rings through `phi-ring`. The
 default plan gives the channel 256 KiB per direction, which is why the
-region grew from 1 MiB to 2 MiB (`phictl --ring-size` default `0x200000`).
+region grew: 1 MiB in v1, 2 MiB when the rpc channel was added, and 16 MiB
+since the block channel needed a data area for its bounce slots
+(`phictl boot --ring-size` default `0x1000000`).
 
 ## Block channel (kind 4)
 

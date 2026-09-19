@@ -1,13 +1,13 @@
 # card/kernel
 
-A mainline Linux kernel for Knights Corner: a twenty-three-patch series against
+A mainline Linux kernel for Knights Corner: a twenty-eight-patch series against
 a pinned stable tag (`patches/SERIES`), a Kconfig fragment
 (`config/knc.config`), and `build.sh`, which fetches, patches, configures,
 builds with the project's patched clang and audits the result.
 
 ## The series (v7.2.3)
 
-Twenty-three patches. Each patch is a reviewable commit whose message cites the SSDG section
+Twenty-eight patches. Each patch is a reviewable commit whose message cites the SSDG section
 (`docs/research/os-limitations.md`), the ISA reference appendix
 (`docs/research/isa-deletions.md`), Intel's card kernel, or a measurement.
 
@@ -42,10 +42,20 @@ Twenty-three patches. Each patch is a reviewable commit whose message cites the 
 | 0027 | `x86/knc: the card's sensors as a hwmon device` | `kernel/knc_hwmon.c`, `kernel/knc.c`, `asm/knc.h` | die (9), board and TMU temperatures, core voltage (VR12 SVID) and clock (PLL ratio) from the SBOX as hwmon "knc"; decoding from Intel's RAS module; the platform layer decodes COREFREQ for the core clock when CURRENT_CLK_RATIO reads 0; the ratio register is CURRENTRATIO at 0x402C (KNC), not the KNF offset 0x3004 the merged MPSS header lists |
 | 0028 | `x86/knc: blk: report a request the host has not completed` | `kernel/knc_blk.c` | a blk-mq timeout operation: after 30 s without a completion it logs the tag, operation, size, sector, outstanding records and both rings' indices, then keeps waiting (the pages belong to the host's DMA engine until the completion arrives) |
 
-Not in the series, deliberately: SMP bring-up. Intel's card kernel used
-the standard INIT/SIPI sequence (`arch/x86/kernel/smpboot.c` in the k1om
-tree only parallelizes it), so mainline's is expected to work; the first
-boot decides.
+Not in the series, deliberately: every card device is a patch rather than a
+module, because the console has to exist before a module could be loaded
+and the rest reuse its ring code (`CONFIG_MODULES` is on, but the project
+builds none). `kexec`, `CRASH_DUMP`, suspend and hibernation are off in
+`config/knc.config`, and the x86 SIMD crypto library is excluded by patch
+0014 rather than taught about the ISA deletions.
+
+SMP bring-up was originally expected to need no patches, on the grounds
+that Intel's k1om tree only parallelized the standard INIT/SIPI sequence.
+The first boot with `nosmp` removed disproved that: the APIC ID and ICR
+destination fields are wider on this part, the trampoline lock spins on a
+`pause` that does not exist, and 227 APs released at once starve on it.
+Patches 0017, 0019 and 0020 are the result; all 228 threads have been
+online since 2026-09-14 (`docs/results/2026-09-14-p4-tty-smp.md`).
 
 ## Build
 
@@ -60,12 +70,31 @@ card/kernel/build.sh build && card/kernel/build.sh audit
 
 ## What the host sees while it boots
 
-POST codes (`phictl postcode`, decoded by `phi-regs`): `K0` decompressor
-entered, `K1` decompressed, `K2` platform layer, `K3` SFI parsed, `K4`
-timer init, `K5` CPUs and I/O APIC registered, `K6` ring console
-attached, `K7` late initcalls done, `KH` halted, `KP` panic, `KE` no SFI
-tables. Console lines arrive in the ring (`phictl console`) from the
-moment `earlyprintk=phiring` is parsed, which is before `K2`.
+Console lines arrive in the ring (`phictl console`) from the moment
+`earlyprintk=phiring` is parsed, which is before `K2`. Before that, and
+whenever the console is gone, the only signal is the POST code in the
+DBOX scratch register: `phictl postcode` reads it and `phi-regs` decodes
+it. Codes below `K0` come from the card's own bootstrap and are listed in
+`host/crates/phi-regs/src/postcode.md`.
+
+| Code | Meaning |
+| --- | --- |
+| `K0`, `K1` | decompressor entered; kernel decompressed |
+| `K8`, `KF`, `KG`, `KJ`, `KL`, `KM`, `KN` | `startup_64`: entered, `verify_cpu` passed, page tables built, new CR3 loaded, running at the virtual address, stack and GS base set, bringup IDT loaded |
+| `KO`, `KQ`, `KR`, `K9` | first C code entered, bss cleared, early exception handlers installed, `x86_64_start_kernel` |
+| `KA`, `KB`, `KC`, `KD` | `setup_arch` entered, early CPU init, memory map, early parameters parsed |
+| `K2`, `K3`, `K4`, `K5`, `K6` | platform layer running, SFI tables parsed, timer init, CPUs and I/O APIC registered, ring console attached |
+| `S0` to `S6` | BSP bringing up one AP: kicking, INIT asserted, assert delivered, INIT deasserted, SIPI 1, SIPI 2, sequence done (patch 0019) |
+| `A1` to `A8` | that AP answering: 32-bit protected mode, long mode, `start_secondary`, released by the BSP, `cpu_init` and FPU, local APIC, TSC sync passed, idle (patch 0019) |
+| `K7` | late initcalls done, starting init |
+| `KH`, `KP`, `KE` | halted (restart or power off), panic, fatal error before the console (no SFI tables) |
+| `K-` | the boot mark was never written |
+
+The `S` and `A` marks exist because the parallel path gave no signal at
+all: the boot log stopped at `smpboot: x86: Booting SMP configuration:`
+and the POST code never moved (`docs/results/2026-09-14-p4-tty-smp.md`,
+test 5). Patch 0019 added the marks so the next attempt could be traced;
+patch 0020 then made serial bring-up the default.
 
 ## Boot path recap
 

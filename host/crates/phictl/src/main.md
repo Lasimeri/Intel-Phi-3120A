@@ -26,8 +26,8 @@ full (card not consuming), the push retries with a short sleep.
 `earlyprintk=phiring,keep loglevel=8`. `phiring` is the early console the
 KNC kernel registers into the ring (card/kernel/patches, patch 0011); `keep`
 leaves it registered after boot consoles are normally dropped, since no
-other console exists until `phinet` provides a tty (phase P4, then
-`console=` names that tty). The `memmap=` and `phi.ring=` parameters are
+other console exists until the tty driver registers `ttyPHI0` (kernel patch
+0016, named by `console=ttyPHI0`). The `memmap=` and `phi.ring=` parameters are
 appended by `phi-hw::boot` unless `--raw-cmdline`.
 
 ## Exit conditions

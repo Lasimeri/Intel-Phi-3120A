@@ -17,7 +17,7 @@ Kconfig fragment merged onto `x86_64_defconfig`. Each block, and why:
 | Crypto SIMD variants off | They contain SSE/AVX code selected at runtime; the audit would flag them and they would never run. |
 | `HIGH_RES_TIMERS`, `NO_HZ_IDLE` | LAPIC timer is the only timer (SSDG 4.2.6); high-resolution mode makes the scheduler tick unnecessary on idle threads, which matters with 228 of them. |
 | initramfs decompressors, devtmpfs, tmpfs | The whole root is a ramdisk. |
-| NET/INET/UNIX/PACKET, `ETHERNET=n` | `phinet` provides the netdev; no real Ethernet drivers. |
+| NET/INET/UNIX/PACKET, `ETHERNET=n` | Kernel patch 0021 provides the netdev (`phi0`); no real Ethernet drivers. |
 | perf, MSR, CPUID, printk time, sysrq, modules | Debugging. `perf` uses the mainline KNC PMU driver. |
 
 Options the patch series introduces (`CONFIG_X86_KNC`) will not exist on

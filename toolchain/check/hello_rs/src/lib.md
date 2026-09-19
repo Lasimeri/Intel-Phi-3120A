@@ -1,9 +1,10 @@
 # toolchain/check/hello_rs
 
 The Rust half of the phase P2 exit test. Built as a `staticlib` for the
-custom target with `build-std` (see `../../rust/build-std.sh`), then
-linked into `hello.c` by `../run.sh` when `libhello_rs.a` exists, where
-`main` prints `rust_hypot=5` and the C-side weak stub is overridden.
+custom target with `build-std` (see `toolchain/rust/build-std.sh`), then
+linked into `hello.c` by `toolchain/check/run.sh` when `libhello_rs.a`
+exists, where `main` prints `rust_hypot=5` and the C-side weak stub is
+overridden.
 
 What it proves: `f64` crosses the C/Rust boundary in both directions with
 the same convention (stack in, `ST0` out), `std` compiles and links for the

@@ -23,3 +23,19 @@ On this machine: `scripts/phi-autoboot.sh install /mnt/1TB-NVMe/phi/disk.img 4G`
 (`docs/spec/ring-protocol.md`, host memory). Requirements: group `phi` (`sudo scripts/setup-arch.sh`
 once), the host tools built, the kernel and initramfs built, the disk
 image created (`scripts/phi-disk.sh create`).
+
+## When the unit will not come up
+
+`Restart=on-failure` with a 10 s delay means a permanent fault shows as
+`activating (auto-restart)` rather than `failed`; `systemctl --user status
+phi.service` is the only place the reason appears. The two that have been
+seen:
+
+| Status line | Cause | Fix |
+| --- | --- | --- |
+| `is not bound to vfio-pci` | The card came up with no driver after a host reboot | `sudo scripts/bind-vfio.sh` now; `sudo scripts/setup-arch.sh` so it sticks (`scripts/setup-arch.md`) |
+| `No such file or directory` on the kernel or initramfs path | The build tree under `~/.cache` was cleared, or the symlinks point at a different user | Rebuild: `card/kernel/build.sh all`, `card/initramfs/build.sh` |
+
+The unit holds the card for as long as the session lasts, so a failing
+unit that keeps restarting also keeps resetting the card through VFIO.
+Stop it (`systemctl --user stop phi.service`) before diagnosing by hand.
