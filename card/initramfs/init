@@ -209,7 +209,10 @@ shutdown() {
 	# the journal checkpoint and clears the flag synchronously, while every
 	# reference still exists. Measured 2026-09-19: without this the next boot
 	# replayed the journal even though the umount reported success.
-	if $BB mount -o remount,ro /data 2>/dev/null; then
+	# With no disk there is nothing mounted here and nothing to report.
+	if ! $BB mountpoint -q /data 2>/dev/null; then
+		:
+	elif $BB mount -o remount,ro /data 2>/dev/null; then
 		$BB sync
 		if $BB umount /data 2>/dev/null; then
 			echo "/data clean and unmounted"

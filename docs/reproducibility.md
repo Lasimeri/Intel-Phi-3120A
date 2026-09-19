@@ -188,29 +188,40 @@ reboots. Set `PHI_DISK=/path/to/disk.img` in the environment or pass
 
 ## 11. First boot, from an unprivileged shell (recorded, 2026-09-14 to 09-16)
 
+Install the CLI once, then use it for everything:
+
 ```sh
-scripts/phi-up.sh --ssh --disk /path/to/disk.img    # or PHI_DISK; --toolchain also loads clang
-scripts/phi-run.sh nproc                            # 228
-scripts/phi-run.sh sh -c 'cat /proc/mounts | grep phiblk0'
-tail -f "$XDG_RUNTIME_DIR/phictl/console.log"       # the card's console
-scripts/phi-down.sh                                 # poweroff (POST "KH"), then release
+scripts/phi.sh install-cli                          # ~/.local/bin/phi, fish completions
+phi up --ssh --disk /path/to/disk.img               # or PHI_DISK; --toolchain also loads clang
+phi run nproc                                       # 228
+phi run sh -c 'cat /proc/mounts | grep phiblk0'
+phi console                                         # the card's console
+phi down                                            # poweroff through init, then release
 ```
 
-`phi-up.sh` starts `phictl boot` in the background with the kernel and
-initramfs above, the control socket in `$XDG_RUNTIME_DIR/phictl/`, the SSH
-forwarder on `127.0.0.1:2222` (`--ssh`) and the disk, and waits for the
-agent (about 15 s: 9.5 s of GDDR training after the VFIO open, 4 s of
-kernel, then init). `--toolchain` pushes `phi-clang.tar.gz` through the
-socket (25 s); with a disk image this is needed once per image, not per
-boot. Extra arguments go to `phictl boot` (`--host-mem 4G` gives the card
-4 GiB of host RAM as swap, `--no-dma` serves the disk through the
-aperture). The manual, foreground equivalent is in
-`docs/howto/build-and-run.md`.
+`phi up` with arguments runs `scripts/phi-up.sh`, which starts `phictl
+boot` in the background with the kernel and initramfs above, the control
+socket in `$XDG_RUNTIME_DIR/phictl/`, the SSH forwarder on
+`127.0.0.1:2222` (`--ssh`), the disk, and 6 GiB of host RAM as swap
+(`PHI_HOST_MEM` or `--host-mem` to change it, `--no-host-mem` to leave the
+card on its GDDR5 alone), then waits for the agent (about 15 s: 9.5 s of
+GDDR training after the VFIO open, 4 s of kernel, then init).
+`--toolchain` pushes `phi-clang.tar.gz` through the socket (25 s); with a
+disk image this is needed once per image, not per boot. Anything else is
+passed to `phictl boot` (`--no-dma` serves the disk through the aperture).
+The manual, foreground equivalent is in `docs/howto/build-and-run.md`.
+
+`phi down` sends a plain `poweroff`, so the card's init stops its services,
+releases swap and unmounts `/data` before the kernel halts (POST "KH");
+the next mount then needs no journal replay
+(`docs/results/2026-09-19-card-os.md`).
 
 ## 12. SSH (recorded, 2026-09-15)
 
 ```sh
-ssh -p 2222 root@localhost 'uname -a; nproc'       # through the forwarder, no root anywhere
+phi sh                                             # interactive login shell on the card
+phi sh 'uname -a; nproc'                           # one command, in a login shell
+ssh -p 2222 root@localhost 'uname -a; nproc'       # the same thing, spelled out
 scp -P 2222 file root@localhost:/tmp/
 ```
 
@@ -236,14 +247,14 @@ forwarder is the default because it needs no root.
 ## 13. Autoboot at login (recorded, 2026-09-16; verified against the live card)
 
 ```sh
-scripts/phi-autoboot.sh install /path/to/disk.img 4G   # writes and starts ~/.config/systemd/user/phi.service
+scripts/phi-autoboot.sh install /path/to/disk.img 6G   # writes and starts ~/.config/systemd/user/phi.service
 systemctl --user status phi.service
 journalctl --user -u phi.service -f                     # the console
 scripts/phi-autoboot.sh remove
 ```
 
 The unit runs the same `phictl boot` as `phi-up.sh` (socket, forwarder,
-disk, 4 GiB of host memory), starts with the user's first session and stops
+disk, 6 GiB of host memory), starts with the user's first session and stops
 with the last one (a clean power-off through the socket, then the VFIO
 release resets the card). `phi-up.sh` refuses to start while the service
 holds the card; `systemctl --user stop phi.service` hands it back.

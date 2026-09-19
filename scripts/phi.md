@@ -1,9 +1,9 @@
 # phi.sh
 
 One command for everything a person does with the card from this host.
-`phi.sh install-cli` symlinks it as `~/.local/bin/phi` and copies the fish
-completions in `phi.fish` to `~/.config/fish/completions/`, so `phi <tab>`
-lists the subcommands.
+`phi.sh install-cli` symlinks it as `~/.local/bin/phi` and symlinks the fish
+completions in `phi.fish` into `~/.config/fish/completions/`, so `phi <tab>`
+lists the subcommands and an edit in the repository takes effect at once.
 
 Everything it does works from an unprivileged shell in the `phi` group.
 Nothing here needs `sudo`.
@@ -18,7 +18,7 @@ Nothing here needs `sudo`.
 | `phi sh [CMD]` | An interactive login shell on the card over the loopback SSH forward, or one command in a login shell |
 | `phi put`, `phi get` | Copy a file in or out through the control socket |
 | `phi top` | `phitop`, the live viewer |
-| `phi sensors`, `phi traffic` | Answered by the daemon; `sensors` works even while the card is down |
+| `phi sensors`, `phi traffic` | Answered by the daemon itself, so they work while the card's kernel is booting, hung or halted. They do need the daemon running: it is the process holding the VFIO device |
 | `phi console` | Follows the card's console: the log file for an unprivileged boot, the journal for the unit |
 | `phi log` | The unit's journal, or the console log |
 | `phi disk ARGS` | `scripts/phi-disk.sh` (create, check, usage) |

@@ -37,13 +37,15 @@ for files you push yourself, this step is yours.
 With the card up (`scripts/phi-up.sh --ssh`, or `phi.service`):
 
 ```
-host/target/debug/phictl put hello /tmp/hello         # mode kept; /data/... persists across boots
-scripts/phi-run.sh /tmp/hello                         # stdin, stdout, stderr and the exit status relayed
-scp -P 2222 hello root@localhost:/tmp/ && ssh -p 2222 root@localhost /tmp/hello
+phi put hello /tmp/hello          # mode kept; /data/... persists across boots
+phi run /tmp/hello                # stdin, stdout, stderr and the exit status relayed
+phi sh /tmp/hello                 # the same thing over SSH, with a pty
+scp -P 2222 hello root@localhost:/tmp/
 ```
 
-`/tmp` is a tmpfs in GDDR and vanishes at power-off; `/data`, `/root`,
-`/home` and `/opt/phi` live on the disk image (`scripts/phi-disk.md`).
+`/tmp` is a tmpfs in GDDR and vanishes at power-off; `/data`, `/etc`,
+`/var`, `/root`, `/home` and `/opt/phi` live on the disk image
+(`scripts/phi-disk.md`), so configuration and logs persist too.
 The control socket moves files at 6 to 9 MB/s, the forwarder at about
 0.6 MB/s (`docs/results/2026-09-14-p5-net-rpc.md`).
 
@@ -60,9 +62,9 @@ steps 9 to 11) is pushed once per disk image with
 (25 s) and lives in `/opt/phi`:
 
 ```
-host/target/debug/phictl put prog.c /tmp/prog.c
-host/target/debug/phictl exec -- sh -c 'cd /tmp && cc -O2 -o prog prog.c && ./prog'
-host/target/debug/phictl get /tmp/prog ./prog.card          # optional: audit on the host
+phi put prog.c /tmp/prog.c
+phi run sh -c 'cd /tmp && cc -O2 -o prog prog.c && ./prog'
+phi get /tmp/prog ./prog.card          # optional: audit on the host
 ```
 
 `cc`, `c++`, `ld`, `ar`, `nm`, `objdump`, `strip` are in `/opt/phi/bin`

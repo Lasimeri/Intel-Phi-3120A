@@ -14,11 +14,18 @@ With the `phi` group (from `sudo scripts/setup-arch.sh`, once) the whole
 cycle runs from a normal shell:
 
 ```
-scripts/phi-up.sh --toolchain --ssh  # boot in the background, wait for the agent, load clang, forward SSH
-scripts/phi-run.sh nproc             # any command; stdin, stdout, stderr, exit status relayed
-scripts/phi-run.sh sh -c 'cd /tmp && cc -O2 -o x x.c && ./x'
-scripts/phi-down.sh                  # halt and release the card
+scripts/phi.sh install-cli           # once: ~/.local/bin/phi and the fish completions
+phi up --toolchain --ssh             # boot in the background, wait for the agent, load clang, forward SSH
+phi run nproc                        # any command; stdin, stdout, stderr, exit status relayed
+phi run sh -c 'cd /tmp && cc -O2 -o x x.c && ./x'
+phi status                           # what is up, and every path that can reach the card
+phi down                             # halt (through init, so the disk unmounts) and release
 ```
+
+`phi` is a thin front for what follows: it resolves the control socket
+itself, so none of the commands below need `PHICTL_SOCKET` or a `--socket`
+flag in the right position (`scripts/phi.md`). The underlying scripts
+(`phi-up.sh`, `phi-run.sh`, `phi-down.sh`) still work on their own.
 
 The socket is `$XDG_RUNTIME_DIR/phictl/control.sock` (directory 0700,
 socket 0600), the console log `$XDG_RUNTIME_DIR/phictl/console.log`, the
@@ -29,15 +36,23 @@ socket at the same path, so every command below works unchanged.
 ## The client commands
 
 ```
-host/target/debug/phictl status                       # agent version, or an error
-host/target/debug/phictl exec -- nproc                # run a program
+phi status                                 # agent version, card, memory, disk, access surface
+phi run nproc                              # run a program
+phi run sh -c 'echo $PWD; id'
+echo 'main(){puts("hi");}' | phi run sh -c 'cat > /tmp/x.c; wc -c /tmp/x.c'
+phi put ./prog /tmp/prog                   # copy in (mode kept)
+phi run /tmp/prog
+phi get /tmp/out.txt ./out.txt             # copy out
+phi sensors                                # answered by the daemon from the SBOX
+phi traffic                                # PCIe bytes the daemon moved, by path
+```
+
+Spelled out, without the wrapper (`--cwd` and `--mode` have no `phi`
+shorthand, so reach for `phictl` when you need them):
+
+```
 host/target/debug/phictl exec --cwd /tmp -- sh -c 'echo $PWD; id'
-echo 'main(){puts("hi");}' | host/target/debug/phictl exec -- sh -c 'cat > /tmp/x.c; wc -c /tmp/x.c'
-host/target/debug/phictl put ./prog /tmp/prog         # copy in (mode kept; --mode 755 to set one)
-host/target/debug/phictl exec -- /tmp/prog
-host/target/debug/phictl get /tmp/out.txt ./out.txt   # copy out
-host/target/debug/phictl sensors                      # answered by the daemon from the SBOX
-host/target/debug/phictl traffic                      # PCIe bytes the daemon moved, by path
+host/target/debug/phictl put ./prog /tmp/prog --mode 755
 ```
 
 `exec` relays stdin, stdout, stderr and returns the program's exit status

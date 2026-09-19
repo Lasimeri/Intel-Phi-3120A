@@ -19,12 +19,14 @@ log="$dir/console.log"
 pidfile="$dir/boot.pid"
 kernel="$root/card/kernel/build/out/arch/x86/boot/bzImage"
 initrd="$root/card/initramfs/build/initramfs.cpio.gz"
-toolchain=0; ssh=0; disk="${PHI_DISK:-}"
+toolchain=0; ssh=0; disk="${PHI_DISK:-}"; hostmem="${PHI_HOST_MEM:-6G}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --toolchain) toolchain=1; shift ;;
         --ssh) ssh=1; shift ;;
         --disk) disk="$2"; shift 2 ;;
+        --host-mem) hostmem="$2"; shift 2 ;;
+        --no-host-mem) hostmem=""; shift ;;
         *) break ;;
     esac
 done
@@ -34,6 +36,10 @@ if [ -n "$disk" ]; then
     [ -f "$disk" ] || { echo "phi-up.sh: disk image $disk not found (scripts/phi-disk.sh create PATH SIZE)" >&2; exit 1; }
     diskarg=(--disk "$disk")
 fi
+# Host RAM as swap, the same 6G the autoboot unit passes, so a card booted by
+# hand has the same memory as one booted at login. PHI_HOST_MEM or --host-mem
+# changes it; --no-host-mem leaves the card on its GDDR5 alone.
+[ -n "$hostmem" ] && diskarg+=(--host-mem "$hostmem")
 [ -x "$P" ] || { echo "phi-up.sh: build the host tools first (cd host && cargo build)" >&2; exit 1; }
 [ -s "$kernel" ] && [ -s "$initrd" ] || { echo "phi-up.sh: kernel or initramfs missing" >&2; exit 1; }
 id -nG | tr ' ' '\n' | grep -qx phi || { echo "phi-up.sh: not in group phi (sudo scripts/setup-arch.sh, then log in again)" >&2; exit 1; }

@@ -67,7 +67,7 @@ phi: drive the Intel Xeon Phi 3120A from this host.
   phi put SRC DST       copy a file to the card
   phi get SRC DST       copy a file from the card
   phi top [ARGS]        live viewer: per-thread load, temps, memory, PCIe rates
-  phi sensors           temperatures, core voltage and clock (answers while the card is down)
+  phi sensors           temperatures, core voltage and clock (works while the card kernel is down)
   phi traffic           PCIe bytes moved, by path and direction
   phi console           follow the card's console
   phi log [ARGS]        the daemon's journal (systemd unit) or its console log
@@ -202,6 +202,13 @@ top)
     ;;
 
 sensors|traffic)
+    # Answered by the daemon itself, so they work while the card's kernel is
+    # booting, hung or halted. They still need the daemon: it is the process
+    # holding the VFIO device.
+    [ -S "$sock" ] || {
+        echo "phi $cmd: no daemon on $sock. Start one with: phi up" >&2
+        exit 1
+    }
     exec env PHICTL_SOCKET="$sock" "$P" "$cmd" "$@"
     ;;
 
@@ -234,7 +241,9 @@ install-cli)
     echo "installed $HOME/.local/bin/phi -> $root/scripts/phi.sh"
     if [ -d "$HOME/.config/fish" ]; then
         mkdir -p "$HOME/.config/fish/completions"
-        cp "$root/scripts/phi.fish" "$HOME/.config/fish/completions/phi.fish"
+        # Symlinked, not copied, so an edit in the repository takes effect
+        # without reinstalling.
+        ln -sfn "$root/scripts/phi.fish" "$HOME/.config/fish/completions/phi.fish"
         echo "installed $HOME/.config/fish/completions/phi.fish"
     fi
     case ":$PATH:" in
