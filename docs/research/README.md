@@ -14,4 +14,5 @@ rather than a documented fact it is labeled as such.
 | [prior-art.md](prior-art.md) | Who has done what with this card since Intel dropped it? |
 | [intel-card-kernel.md](intel-card-kernel.md) | What did Intel's own card kernel (linux-2.6.38.8+mpss3.5.1) actually do, hook by hook? The hardware contract the forward-port had to reproduce. |
 | [runtimes.md](runtimes.md) | Can gcc, tcc, Bun, Python actually run on the card? |
+| [compression-on-knc.md](compression-on-knc.md) | Which compression algorithms suit a machine with no byte vector instructions? Why LZ77 loses and columnar bit-packing should not |
 | [sources.md](sources.md) | Every URL and document number used |
