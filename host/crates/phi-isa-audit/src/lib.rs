@@ -191,8 +191,10 @@ pub fn allowed_despite_feature(m: Mnemonic) -> bool {
 /// reference 327364-001, section 3.3, and Intel's k1om kernel macros) and
 /// 1 for EVEX, which iced-x86 would decode as AVX-512. The length is the
 /// prefix, the opcode, ModRM, an optional SIB and displacement as in every
-/// x86 instruction, and an immediate byte for the 0F3A map and for the
-/// compares (0F C2). The disp8*N compression changes no lengths.
+/// x86 instruction, and an immediate byte where the opcode takes one. In
+/// the 0F map that is `C2` (the compares), `70` (`vpshufd`) and `72` (the
+/// immediate-count shifts, `/6` `/2` `/4`); the whole 0F3A map takes one;
+/// no 0F38 opcode does. The disp8*N compression changes no lengths.
 pub fn mvex_length(b: &[u8]) -> Option<usize> {
     if b.len() < 6 || b[0] != 0x62 || b[2] & 0x04 != 0 {
         return None;
@@ -216,7 +218,7 @@ pub fn mvex_length(b: &[u8]) -> Option<usize> {
             _ => 4,
         };
     }
-    if map == 3 || (map == 1 && opcode == 0xc2) {
+    if map == 3 || (map == 1 && matches!(opcode, 0x70 | 0x72 | 0xc2)) {
         len += 1;
     }
     (b.len() >= len).then_some(len)
@@ -429,6 +431,21 @@ mod knc_vector_tests {
         assert_eq!(mvex_length(&code), Some(10));
         assert_eq!(mvex_length(&code[14..]), Some(7));
         assert_eq!(mvex_length(&code[21..]), Some(6));
+        // The immediate-count shifts are opcode 72 in the 0F map with an
+        // opcode extension in ModRM.reg and an imm8; without the imm8 the
+        // decoder loses sync and reports rubbish for the rest of the
+        // section. Bytes from card/examples/vpu_int.S, run on the card
+        // (docs/results/2026-09-20-mvex-integer.md).
+        assert_eq!(
+            mvex_length(&[0x62, 0xf1, 0x69, 0x08, 0x72, 0xd0, 0x0b, 0x90]),
+            Some(7),
+            "vpsrld zmm2, zmm0, 11"
+        );
+        assert_eq!(
+            mvex_length(&[0x62, 0xf1, 0x69, 0x08, 0x72, 0xb7, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x90]),
+            Some(11),
+            "vpslld zmm2, [rdi+0], 11: disp32 and imm8"
+        );
         assert_eq!(
             mvex_length(&[0x62, 0xf1, 0x7d, 0x48, 0x28, 0x07]),
             None,

@@ -15,12 +15,12 @@ blocks, values compared against the originals before anything is timed.
 
 | bits | pass | stream M/s | lanes M/s | vpu M/s | vs stream |
 | --- | --- | --- | --- | --- | --- |
-| 5 | hot | 47.8 | 26.1 | **2257.1** | **47.3x** |
-| 5 | streaming | 41.9 | 24.6 | 360.2 | 8.6x |
-| 11 | hot | 42.8 | 24.5 | **1970.9** | **46.0x** |
-| 11 | streaming | 38.7 | 23.1 | 312.8 | 8.1x |
-| 16 | hot | 51.7 | 27.2 | **2985.1** | **57.7x** |
-| 16 | streaming | 45.1 | 25.2 | 294.5 | 6.5x |
+| 5 | hot | 47.8 | 125.5 | **2259.3** | **47.2x** |
+| 5 | streaming | 42.0 | 98.9 | 370.3 | 8.8x |
+| 11 | hot | 42.9 | 118.1 | **1972.2** | **46.0x** |
+| 11 | streaming | 38.8 | 91.4 | 320.7 | 8.3x |
+| 16 | hot | 51.8 | 131.0 | **2985.6** | **57.6x** |
+| 16 | streaming | 45.3 | 96.2 | 305.7 | 6.8x |
 
 `stream` is scalar over a contiguous bitstream, the ordinary layout.
 `lanes` is scalar over the interleaved layout. `vpu` is `knc_unpack_bN`.
@@ -36,13 +36,20 @@ musl. The difference is that bit-unpacking is entirely 32-bit lane
 arithmetic with compile-time-constant shift counts, no control flow and no
 cross-lane movement, which is the exact shape the prediction named.
 
-**The interleaved layout on its own is a loss.** `lanes` is consistently
-slower than `stream` in scalar, 24 to 27 M/s against 42 to 52. The layout
-costs scalar code a multiply and a strided access per value and buys it
-nothing. FastLanes reports the opposite on modern hardware, where the
-compiler auto-vectorises the scalar form; nothing auto-vectorises to MVEX
-here, so on this card the layout is purely a vector-unit enabler and is
-worth adopting only together with hand-written kernels.
+**The interleaved layout is worth 2.5x before any vector code.** `lanes`
+runs at 118 to 131 M/s against `stream`'s 43 to 52, because the shift
+counts become loop invariants and the inner loop is sixteen identical
+operations.
+
+**Correction.** The first version of this document said the opposite, that
+the layout was a loss at 24 to 27 M/s. That was a bad baseline, not a
+result: the `lanes` implementation looped over values and recovered the
+lane and position with a divide and a modulo per value, which measures the
+traversal rather than the layout. Rewriting it position-outer, lane-inner,
+which is how FastLanes writes it, moved it to 118 M/s against identical
+data. The `vpu` and `stream` columns were unaffected and are unchanged, so
+the headline 46 to 58x is as it was; the `vs lanes` ratio drops from about
+80x to about 17x. `card/examples/bitunpack.c` carries the fixed version.
 
 **Scheduling was worth 1.8x on its own.** The first version of the
 generator emitted one value's whole dependency chain before starting the
@@ -56,16 +63,15 @@ kernel added here, not a detail of this one.
 
 ## What this does not say
 
-It does not say the card beats the host. Every number is one thread of
-228, and there is no host-side implementation of the same layout to
-compare against. The streaming column is the one that matters for a real
-codec and it is bandwidth-bound, which is the good case for this card
-(80.5 GB/s at 114 threads against the host's 35.7), but that is an
-argument, not a measurement.
+It does not say the card beats the host. Every number is one thread of 228,
+and there is no host-side comparison here.
 
-The honest next steps, in order: the same kernel on 114 and 228 threads,
-then an AVX2 implementation of the same layout on the host, then the
-remaining bit widths.
+All three of those were done later the same day and are in
+`docs/results/2026-09-20-libknc.md`: all 32 widths, both directions, 228
+threads, and the host running the same layout through its own
+auto-vectoriser. Short version, at 11 bits: the card reaches 12556 M values
+per second against the host's 30836, or 0.41x, and it is then sitting on
+its memory bandwidth ceiling.
 
 ## Method notes
 

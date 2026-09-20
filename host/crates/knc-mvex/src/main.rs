@@ -7,6 +7,7 @@
 //! knc-mvex-gen probe         > card/examples/vpu_probe.S
 //! knc-mvex-gen int-probe     > card/examples/vpu_int.S
 //! knc-mvex-gen bitunpack     > card/examples/bitunpack.S
+//! knc-mvex-gen codec         > the libknc kernels, every width, both directions
 //! knc-mvex-gen mandel        > card/examples/mandel_vpu.S
 //! knc-mvex-gen kernel-header > arch/x86/include/asm/knc_vpu.h   (in the kernel tree)
 //! knc-mvex-gen memcpy        > card/examples/vpu_memcpy.S
@@ -117,6 +118,22 @@ fn memcpy_kernel() -> String {
     s
 }
 
+/// Values processed together by both kernels. Eight independent chains is
+/// more than the vector unit's latency needs, and it leaves room inside 32
+/// registers for the words and the mask.
+const GROUP: usize = 8;
+/// Word registers for the unpack kernel: `zmm0` upward. A group of eight
+/// values never touches more than `ceil(8*32/32) + 1 = 9` words, at any bit
+/// width, so ten is the bound with a register to spare.
+const WORD_REGS: u8 = 10;
+
+/// Where value `v` of a block of `bits`-bit values sits: which 32-bit word
+/// of its lane it starts in, and how far up that word.
+fn place(bits: u32, v: usize) -> (usize, u8) {
+    let bitpos = bits as usize * v;
+    (bitpos / 32, (bitpos % 32) as u8)
+}
+
 /// `knc_unpack_bN`: unpack 1024 values of N bits into 1024 int32, using the
 /// vector unit.
 ///
@@ -130,12 +147,18 @@ fn memcpy_kernel() -> String {
 /// Nothing crosses a lane, which matters here because the card has no byte
 /// shuffle and no cross-lane permute worth using.
 ///
-/// Each value needs one of four fixed sequences, decided here rather than
-/// at run time, because the bit offsets are compile-time constants: a value
-/// aligned to a word boundary is one `vpandd`; one that ends on a word
-/// boundary is one `vpsrld`; one inside a word is both; one that straddles
-/// two words is `vpsrld`, `vpslld`, `vpord`, `vpandd`. No branch, no
-/// variable shift, no cross-lane traffic.
+/// Each value needs one of five fixed sequences, decided here rather than
+/// at run time, because the bit offsets are compile-time constants:
+///
+/// | Case | Instructions |
+/// | --- | --- |
+/// | the value is the whole word (N = 32) | none, store the word |
+/// | starts at a word boundary | `vpandd` |
+/// | ends at a word boundary | `vpsrld` |
+/// | inside one word | `vpsrld`, `vpandd` |
+/// | straddles two words | `vpsrld`, `vpslld`, `vpord`, `vpandd` |
+///
+/// No branch, no variable shift, no cross-lane traffic.
 ///
 /// **The emission is software-pipelined, and that is most of the
 /// performance.** The core is in order and a vector result is not ready for
@@ -154,12 +177,6 @@ fn memcpy_kernel() -> String {
 /// because groups overlap at word boundaries, but they hit L1 and it
 /// removes the need to hold the whole block's words in registers.
 fn unpack_kernel(out: &mut String, bits: u32) {
-    /// Values processed together. Eight gives eight independent chains,
-    /// which is more than the vector latency needs, and leaves room for the
-    /// words and the mask inside 32 registers.
-    const GROUP: usize = 8;
-    const WORD_REGS: u8 = 8;
-
     let temp = |p: usize, half: usize| Zmm(WORD_REGS + (2 * p + half) as u8);
     let maskreg = Zmm(30);
     let name = format!("knc_unpack_b{bits}");
@@ -169,19 +186,14 @@ fn unpack_kernel(out: &mut String, bits: u32) {
         &name,
         &format!("void {name}(int *out, const unsigned *packed): rdi = out (1024 int32, 64-byte aligned), rsi = packed ({} bytes, 64-byte aligned)", 64 * 2 * bits),
     );
-    writeln!(out, "\tleaq unpack_b{bits}_mask(%rip), %rax").unwrap();
-    writeln!(out, "{}", vmovaps_load(maskreg, mem(Gpr::Rax, 0)).gas()).unwrap();
-
-    // Per value: which word it starts in, how far up that word, and whether
-    // it runs off the end into the next one.
-    let place = |v: usize| {
-        let bitpos = bits as usize * v;
-        (bitpos / 32, (bitpos % 32) as u8)
-    };
+    if bits < 32 {
+        writeln!(out, "\tleaq knc_mask_b{bits}(%rip), %rax").unwrap();
+        writeln!(out, "{}", vmovaps_load(maskreg, mem(Gpr::Rax, 0)).gas()).unwrap();
+    }
 
     for start in (0..64).step_by(GROUP) {
         let group: Vec<usize> = (start..start + GROUP).collect();
-        let first_word = place(group[0]).0;
+        let first_word = place(bits, group[0]).0;
         let last = *group.last().unwrap();
         let last_word = (bits as usize * last + bits as usize - 1) / 32;
         let n_words = last_word - first_word + 1;
@@ -195,40 +207,221 @@ fn unpack_kernel(out: &mut String, bits: u32) {
             writeln!(out, "{}", vmovaps_load(Zmm(w as u8), mem(Gpr::Rsi, off)).gas()).unwrap();
         }
         let wreg = |w: usize| Zmm((w - first_word) as u8);
+        // Where each value's finished result ends up: its own temporary,
+        // except at N = 32 where the word register already holds it.
+        let result = |p: usize, v: usize| {
+            if bits == 32 {
+                wreg(place(bits, v).0)
+            } else {
+                temp(p, 0)
+            }
+        };
 
         // The low part, for every value that is not already word-aligned.
         for (p, &v) in group.iter().enumerate() {
-            let (w, s) = place(v);
+            let (w, s) = place(bits, v);
             if s != 0 {
                 writeln!(out, "{}", vpsrld(temp(p, 0), Src::Reg(wreg(w)), s, K(0)).gas()).unwrap();
             }
         }
         // The high part of the values that straddle two words.
         for (p, &v) in group.iter().enumerate() {
-            let (w, s) = place(v);
+            let (w, s) = place(bits, v);
             if u32::from(s) + bits > 32 {
                 writeln!(out, "{}", vpslld(temp(p, 1), Src::Reg(wreg(w + 1)), 32 - s, K(0)).gas()).unwrap();
             }
         }
         for (p, &v) in group.iter().enumerate() {
-            let (_, s) = place(v);
+            let (_, s) = place(bits, v);
             if u32::from(s) + bits > 32 {
                 writeln!(out, "{}", vpord(temp(p, 0), temp(p, 0), Src::Reg(temp(p, 1)), K(0)).gas()).unwrap();
             }
         }
-        // The mask, which is dead for a value that ends at the top of a word.
+        // The mask, dead for a value that ends at the top of a word.
         for (p, &v) in group.iter().enumerate() {
-            let (w, s) = place(v);
+            let (w, s) = place(bits, v);
             if u32::from(s) + bits != 32 {
                 let src = if s == 0 { wreg(w) } else { temp(p, 0) };
                 writeln!(out, "{}", vpandd(temp(p, 0), src, Src::Reg(maskreg), K(0)).gas()).unwrap();
             }
         }
         for (p, &v) in group.iter().enumerate() {
-            writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), temp(p, 0)).gas()).unwrap();
+            writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), result(p, v)).gas()).unwrap();
         }
     }
     end_function(out, &name);
+}
+
+/// One value's contribution to one packed word: which value vector to read,
+/// and how to move its bits into place.
+struct Piece {
+    value: usize,
+    left: bool,
+    amount: u8,
+}
+
+/// `knc_pack_bN`: the inverse, 1024 int32 into 1024 packed values of N bits.
+///
+/// Where unpacking is driven by values, packing is driven by **words**, and
+/// that is what makes it schedulable. Each packed word is an independent
+/// `or` of the two to thirty-two pieces that land in it; no word depends on
+/// another, so `PACK_WORDS` of them are built at once and their chains
+/// interleave. Within one word the chain is split across two partial
+/// accumulators, halving its depth for the narrow widths where a single
+/// word swallows many values.
+///
+/// Each piece is a load, a mask and a shift. The mask is not optional here
+/// the way it is in `unpack`: a value with rubbish above bit N would
+/// corrupt its neighbours in the packed word rather than only itself, and
+/// this library is called from languages that cannot promise otherwise. It
+/// costs one instruction per value.
+fn pack_kernel(out: &mut String, bits: u32) {
+    /// Packed words built at once, giving that many independent or-chains.
+    const PACK_WORDS: usize = 4;
+    /// Partial accumulators per word, to halve the chain depth.
+    const WAYS: usize = 2;
+
+    let acc = |j: usize, way: usize| Zmm((WAYS * j + way) as u8);
+    let tmp = |j: usize| Zmm((PACK_WORDS * WAYS + j) as u8);
+    let maskreg = Zmm(30);
+    let words = 2 * bits as usize;
+    let name = format!("knc_pack_b{bits}");
+
+    // Which pieces make up each packed word.
+    let mut pieces: Vec<Vec<Piece>> = (0..words).map(|_| Vec::new()).collect();
+    for v in 0..64 {
+        let (w, s) = place(bits, v);
+        pieces[w].push(Piece {
+            value: v,
+            left: true,
+            amount: s,
+        });
+        if u32::from(s) + bits > 32 {
+            pieces[w + 1].push(Piece {
+                value: v,
+                left: false,
+                amount: 32 - s,
+            });
+        }
+    }
+
+    function(
+        out,
+        &name,
+        &format!("void {name}(unsigned *packed, const int *values): rdi = packed ({} bytes, 64-byte aligned), rsi = values (1024 int32, 64-byte aligned)", 64 * words),
+    );
+    if bits < 32 {
+        writeln!(out, "\tleaq knc_mask_b{bits}(%rip), %rax").unwrap();
+        writeln!(out, "{}", vmovaps_load(maskreg, mem(Gpr::Rax, 0)).gas()).unwrap();
+    }
+
+    for base in (0..words).step_by(PACK_WORDS) {
+        let group: Vec<usize> = (base..(base + PACK_WORDS).min(words)).collect();
+        let steps = group.iter().map(|&w| pieces[w].len()).max().unwrap();
+
+        for i in 0..steps {
+            // The first two pieces of a word land straight in its two
+            // accumulators, so no register move is ever needed.
+            let dst = |j: usize| if i < WAYS { acc(j, i) } else { tmp(j) };
+
+            for (j, &w) in group.iter().enumerate() {
+                if let Some(p) = pieces[w].get(i) {
+                    let off = 64 * p.value as i32;
+                    writeln!(out, "{}", vmovaps_load(dst(j), mem(Gpr::Rsi, off)).gas()).unwrap();
+                }
+            }
+            if bits < 32 {
+                for (j, &w) in group.iter().enumerate() {
+                    if pieces[w].len() > i {
+                        writeln!(out, "{}", vpandd(dst(j), dst(j), Src::Reg(maskreg), K(0)).gas()).unwrap();
+                    }
+                }
+            }
+            for (j, &w) in group.iter().enumerate() {
+                if let Some(p) = pieces[w].get(i) {
+                    if p.amount == 0 {
+                        continue;
+                    }
+                    let insn = if p.left {
+                        vpslld(dst(j), Src::Reg(dst(j)), p.amount, K(0))
+                    } else {
+                        vpsrld(dst(j), Src::Reg(dst(j)), p.amount, K(0))
+                    };
+                    writeln!(out, "{}", insn.gas()).unwrap();
+                }
+            }
+            if i >= WAYS {
+                for (j, &w) in group.iter().enumerate() {
+                    if pieces[w].len() > i {
+                        let a = acc(j, i % WAYS);
+                        writeln!(out, "{}", vpord(a, a, Src::Reg(tmp(j)), K(0)).gas()).unwrap();
+                    }
+                }
+            }
+        }
+        for (j, &w) in group.iter().enumerate() {
+            if pieces[w].len() > 1 {
+                writeln!(out, "{}", vpord(acc(j, 0), acc(j, 0), Src::Reg(acc(j, 1)), K(0)).gas()).unwrap();
+            }
+        }
+        for (j, &w) in group.iter().enumerate() {
+            writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * w as i32), acc(j, 0)).gas()).unwrap();
+        }
+    }
+    end_function(out, &name);
+}
+
+/// The width-dispatching entry points, `knc_unpack` and `knc_pack`, as
+/// tail calls through the tables below. Ordinary scalar assembly: no MVEX
+/// is involved, so this is written as mnemonics rather than bytes.
+///
+/// An out-of-range width returns without touching memory. A wild indirect
+/// jump would be the alternative, and this library is called from Python
+/// and JavaScript where the width can come from data.
+fn dispatch_thunks(out: &mut String) {
+    for (what, sig) in [
+        ("unpack", "void knc_unpack(int *out, const void *packed, unsigned bits)"),
+        ("pack", "void knc_pack(void *packed, const int *values, unsigned bits)"),
+    ] {
+        function(out, &format!("knc_{what}"), sig);
+        writeln!(out, "\tmovl %edx, %edx").unwrap(); // a width is 32 bits wide
+        writeln!(out, "\tdecl %edx").unwrap(); // 1..32 becomes 0..31, and 0 wraps high
+        writeln!(out, "\tcmpl $31, %edx").unwrap();
+        writeln!(out, "\tja 1f").unwrap();
+        writeln!(out, "\tleaq knc_{what}_table(%rip), %rax").unwrap();
+        writeln!(out, "\tjmp *8(%rax,%rdx,8)").unwrap();
+        writeln!(out, "1:").unwrap();
+        end_function(out, &format!("knc_{what}"));
+    }
+}
+
+/// Function tables, so a caller can pick a width at run time without a
+/// switch of its own. Index 0 is null: a zero-bit value carries no
+/// information and there is no kernel for it.
+fn dispatch_tables(out: &mut String, widths: &[u32]) {
+    for what in ["unpack", "pack"] {
+        writeln!(out, "\n\t.section .rodata\n\t.balign 8").unwrap();
+        writeln!(out, "\t.globl knc_{what}_table\n\t.type knc_{what}_table, @object").unwrap();
+        writeln!(out, "knc_{what}_table:").unwrap();
+        writeln!(out, "\t.quad 0").unwrap();
+        for bits in widths {
+            writeln!(out, "\t.quad knc_{what}_b{bits}").unwrap();
+        }
+        writeln!(out, "\t.size knc_{what}_table, .-knc_{what}_table").unwrap();
+    }
+}
+
+/// The lane masks both kernels read, one 64-byte constant per width.
+fn mask_constants(out: &mut String, widths: &[u32]) {
+    writeln!(out, "\n\t.section .rodata\n\t.balign 64").unwrap();
+    for &bits in widths {
+        if bits == 32 {
+            continue;
+        }
+        let m = 0xFFFF_FFFFu32 >> (32 - bits);
+        let row: Vec<String> = (0..16).map(|_| format!("{m}")).collect();
+        writeln!(out, "knc_mask_b{bits}:\n\t.long {}", row.join(", ")).unwrap();
+    }
 }
 
 /// The bit widths the gate measurement uses: one that spans words awkwardly
@@ -241,12 +434,29 @@ fn bitunpack() -> String {
     for bits in UNPACK_WIDTHS {
         unpack_kernel(&mut s, bits);
     }
-    writeln!(s, "\n\t.section .rodata\n\t.balign 64").unwrap();
-    for bits in UNPACK_WIDTHS {
-        let m = (0xFFFF_FFFFu32 >> (32 - bits)) as i64;
-        let row: Vec<String> = (0..16).map(|_| format!("{m}")).collect();
-        writeln!(s, "unpack_b{bits}_mask:\n\t.long {}", row.join(", ")).unwrap();
+    mask_constants(&mut s, &UNPACK_WIDTHS);
+    writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
+    s
+}
+
+/// Every width, both directions: the assembly half of `libknc`.
+///
+/// Not committed. At about 25000 lines it is a build product, generated by
+/// `card/userland/components/libknc.sh` into the build tree the way a
+/// compiler's own output is. `card/examples/bitunpack.S` stays committed
+/// because it is the artifact a published measurement refers to.
+fn codec() -> String {
+    let widths: Vec<u32> = (1..=32).collect();
+    let mut s = header("knc_codec.S", "card/userland/components/libknc.md");
+    for &bits in &widths {
+        unpack_kernel(&mut s, bits);
     }
+    for &bits in &widths {
+        pack_kernel(&mut s, bits);
+    }
+    dispatch_thunks(&mut s);
+    dispatch_tables(&mut s, &widths);
+    mask_constants(&mut s, &widths);
     writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
     s
 }
@@ -491,11 +701,12 @@ fn main() {
         "probe" => probe(),
         "int-probe" => int_probe(),
         "bitunpack" => bitunpack(),
+        "codec" => codec(),
         "memcpy" => memcpy_kernel(),
         "mandel" => mandel(),
         "kernel-header" => kernel_header(),
         _ => {
-            eprintln!("usage: knc-mvex-gen probe|int-probe|bitunpack|mandel|memcpy|kernel-header");
+            eprintln!("usage: knc-mvex-gen probe|int-probe|bitunpack|codec|mandel|memcpy|kernel-header");
             std::process::exit(2);
         }
     };

@@ -76,19 +76,28 @@ static void pack_lanes(unsigned *p, const int *v, unsigned bits)
 	}
 }
 
+/* Written the way FastLanes writes it: position outside, lane inside, so
+ * the shift counts are loop invariants and the inner loop is sixteen
+ * identical operations. That shape is the whole point of the layout, and
+ * writing it the obvious way instead (one loop over values, deriving lane
+ * and position with a divide and a modulo) costs a factor of 2.5 and
+ * measures the traversal rather than the layout. */
 static void unpack_lanes(int *out, const unsigned *p, unsigned bits)
 {
 	unsigned m = lowmask(bits);
-	int i;
+	int pos, lane;
 
-	for (i = 0; i < BLOCK; i++) {
-		unsigned lane = (unsigned)i % LANES, pos = (unsigned)i / LANES;
-		unsigned bit = pos * bits, w = bit / 32, s = bit % 32;
-		unsigned val = p[(size_t)w * LANES + lane] >> s;
+	for (pos = 0; pos < BLOCK / LANES; pos++) {
+		unsigned bit = (unsigned)pos * bits, w = bit / 32, s = bit % 32;
 
-		if (s + bits > 32)
-			val |= p[(size_t)(w + 1) * LANES + lane] << (32 - s);
-		out[i] = (int)(val & m);
+		if (s + bits > 32) {
+			for (lane = 0; lane < LANES; lane++)
+				out[pos * LANES + lane] = (int)(((p[(size_t)w * LANES + lane] >> s)
+					| (p[(size_t)(w + 1) * LANES + lane] << (32 - s))) & m);
+		} else {
+			for (lane = 0; lane < LANES; lane++)
+				out[pos * LANES + lane] = (int)((p[(size_t)w * LANES + lane] >> s) & m);
+		}
 	}
 }
 

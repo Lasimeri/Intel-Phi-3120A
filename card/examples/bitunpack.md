@@ -63,12 +63,12 @@ rather than the vector unit. `vpu` is `knc_unpack_bN`.
 
 | bits | pass | stream M/s | lanes M/s | vpu M/s | vs stream | vs lanes |
 | --- | --- | --- | --- | --- | --- | --- |
-| 5 | hot | 47.8 | 26.1 | **2257.1** | 47.3x | 86.6x |
-| 5 | streaming | 41.9 | 24.6 | 360.2 | 8.6x | 14.6x |
-| 11 | hot | 42.8 | 24.5 | **1970.9** | 46.0x | 80.4x |
-| 11 | streaming | 38.7 | 23.1 | 312.8 | 8.1x | 13.6x |
-| 16 | hot | 51.7 | 27.2 | **2985.1** | 57.7x | 109.8x |
-| 16 | streaming | 45.1 | 25.2 | 294.5 | 6.5x | 11.7x |
+| 5 | hot | 47.8 | 125.5 | **2259.3** | 47.2x | 18.0x |
+| 5 | streaming | 42.0 | 98.9 | 370.3 | 8.8x | 3.8x |
+| 11 | hot | 42.9 | 118.1 | **1972.2** | 46.0x | 16.7x |
+| 11 | streaming | 38.8 | 91.4 | 320.7 | 8.3x | 3.5x |
+| 16 | hot | 51.8 | 131.0 | **2985.6** | 57.6x | 22.8x |
+| 16 | streaming | 45.3 | 96.2 | 305.7 | 6.8x | 3.2x |
 
 `hot` repeats one block in L1 and measures instructions; `streaming` walks
 16 MiB of output and measures memory. Correctness is checked first: all
@@ -82,13 +82,19 @@ vector unit produces that kind of margin, and the reason is structural:
 sixteen 32-bit lanes, three or four instructions per sixteen values, no
 control flow, no cross-lane movement.
 
-**The layout alone is a loss, not a win.** `lanes` is consistently *slower*
-than `stream` in scalar, 24 to 27 M/s against 42 to 52. The interleaved
-layout costs scalar code a multiply and a strided access per value and buys
-it nothing; it only pays when something can read sixteen lanes at once.
-FastLanes reports the opposite on modern hardware, where the compiler
-auto-vectorises the scalar form. Nothing auto-vectorises to MVEX here, so
-on this card the layout is strictly a vector-unit enabler.
+**The layout is worth 2.5x on its own, before any vector code.** `lanes`
+runs at 118 to 131 M/s against `stream`'s 43 to 52, because the shift
+counts are loop invariants and the inner loop is sixteen identical
+operations. That is FastLanes' own claim and it holds here.
+
+This paragraph said the opposite when it was first written, on the strength
+of a `lanes` implementation that looped over values and recovered the lane
+and position with a divide and a modulo each time. That measured the
+traversal, not the layout: 24 M/s, slower than a contiguous bitstream.
+Rewriting the loop as position-outer, lane-inner, which is how the layout
+is meant to be read, moved it to 118 M/s with no change to the data. The
+lesson is narrow and worth keeping: the layout only pays if the code is
+written to exploit it, and a fair baseline has to be the good version.
 
 **Streaming is bandwidth-bound, at 6.5 to 8.6x.** 312 M values per second
 at 11 bits is 1.25 GB/s written plus 0.43 GB/s read, and one thread reaches
