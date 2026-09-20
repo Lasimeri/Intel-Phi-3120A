@@ -7,6 +7,7 @@
 //! knc-mvex-gen probe         > card/examples/vpu_probe.S
 //! knc-mvex-gen mandel        > card/examples/mandel_vpu.S
 //! knc-mvex-gen kernel-header > arch/x86/include/asm/knc_vpu.h   (in the kernel tree)
+//! knc-mvex-gen memcpy        > card/examples/vpu_memcpy.S
 //! ```
 //!
 //! Scalar instructions are written as ordinary AT&T mnemonics; only the
@@ -62,6 +63,56 @@ fn function(out: &mut String, name: &str, signature: &str) {
 
 fn end_function(out: &mut String, name: &str) {
     writeln!(out, "\tret\n\t.size {name}, .-{name}").unwrap();
+}
+
+/// `knc_memcpy64`: copy whole 64-byte blocks between 64-byte aligned
+/// pointers, using the full width of the vector unit.
+///
+/// The card's scalar memcpy is not bandwidth-limited at the sizes that
+/// matter; it is overhead-limited. Measured on 2026-09-20, musl's memcpy
+/// needs about 206 cycles to move 64 bytes and 72 cycles to move 8, almost
+/// all of it size dispatch and alignment branching on a core that cannot
+/// predict a branch. One `vmovaps` pair moves 64 bytes in two instructions.
+///
+/// Unrolled by four because the core is in-order: four loads issue before
+/// the first store needs its result, which is the only way to overlap
+/// memory latency without an out-of-order window.
+fn memcpy_kernel() -> String {
+    let mut s = header("vpu_memcpy.S", "vpu_memcpy.md");
+    function(
+        &mut s,
+        "knc_memcpy64",
+        "void *knc_memcpy64(void *dst, const void *src, size_t blocks): rdi = dst (64-byte aligned), rsi = src (64-byte aligned), rdx = count of 64-byte blocks. Returns dst.",
+    );
+    writeln!(s, "\tmovq %rdi, %rax").unwrap(); // return value
+    writeln!(s, "\tcmpq $4, %rdx").unwrap();
+    writeln!(s, "\tjb 2f").unwrap();
+    writeln!(s, "1:").unwrap();
+    for (i, r) in [0u8, 1, 2, 3].iter().enumerate() {
+        writeln!(s, "{}", vmovaps_load(Zmm(*r), mem(Gpr::Rsi, 64 * i as i32)).gas()).unwrap();
+    }
+    for (i, r) in [0u8, 1, 2, 3].iter().enumerate() {
+        writeln!(s, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * i as i32), Zmm(*r)).gas()).unwrap();
+    }
+    writeln!(s, "\taddq $256, %rsi").unwrap();
+    writeln!(s, "\taddq $256, %rdi").unwrap();
+    writeln!(s, "\tsubq $4, %rdx").unwrap();
+    writeln!(s, "\tcmpq $4, %rdx").unwrap();
+    writeln!(s, "\tjae 1b").unwrap();
+    writeln!(s, "2:").unwrap();
+    writeln!(s, "\ttestq %rdx, %rdx").unwrap();
+    writeln!(s, "\tjz 4f").unwrap();
+    writeln!(s, "3:").unwrap();
+    writeln!(s, "{}", vmovaps_load(Zmm(0), mem(Gpr::Rsi, 0)).gas()).unwrap();
+    writeln!(s, "{}", vmovaps_store(mem(Gpr::Rdi, 0), Zmm(0)).gas()).unwrap();
+    writeln!(s, "\taddq $64, %rsi").unwrap();
+    writeln!(s, "\taddq $64, %rdi").unwrap();
+    writeln!(s, "\tdecq %rdx").unwrap();
+    writeln!(s, "\tjnz 3b").unwrap();
+    writeln!(s, "4:").unwrap();
+    end_function(&mut s, "knc_memcpy64");
+    writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
+    s
 }
 
 fn probe() -> String {
@@ -226,6 +277,7 @@ fn main() {
     let what = env::args().nth(1).unwrap_or_default();
     let text = match what.as_str() {
         "probe" => probe(),
+        "memcpy" => memcpy_kernel(),
         "mandel" => mandel(),
         "kernel-header" => kernel_header(),
         _ => {

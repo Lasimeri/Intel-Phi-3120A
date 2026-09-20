@@ -60,6 +60,7 @@ output and a reading. In date order:
 | [2026-09-16-autoboot.md](results/2026-09-16-autoboot.md) | `phi.service` at login (superseded by boot-without-login, below); host key pinning and file modes |
 | [2026-09-16-sensors.md](results/2026-09-16-sensors.md) | hwmon on the card, `phictl sensors`, the core clock from `COREFREQ`, PMU counters with `phiperf` |
 | [2026-09-17-phitop.md](results/2026-09-17-phitop.md) | The viewer under load; PCIe rates against the card's own counters; the one direct-read stall |
+| [2026-09-20-zstd-vpu.md](results/2026-09-20-zstd-vpu.md) | Why zstd cannot use the VPU: KNC has no byte or word vector instructions, and the one path that can vectorise is already bandwidth-bound |
 | [2026-09-19-zstd.md](results/2026-09-19-zstd.md) | zstd 1.5.7 against the host: 0.03 to 0.07x, why cheap-per-byte algorithms lose here, and a CMOV the patched LLVM still emits |
 | [2026-09-19-xz.md](results/2026-09-19-xz.md) | xz 5.8.3 on the card against the host: 0.22 to 0.26x, block count is the real thread limit, and a portability bug in liblzma's range decoder |
 | [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
