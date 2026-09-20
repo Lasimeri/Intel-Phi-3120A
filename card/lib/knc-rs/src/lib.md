@@ -38,6 +38,21 @@ having a const generic in every signature; a caller packing millions of
 blocks should allocate `Codec::packed_bytes()` itself and use the raw
 `extern "C"` entry points.
 
+## The cascaded encodings
+
+`Codec::unpack_for` and `Codec::unpack_delta` take a `Base`, which is
+`LANES` values with the same 64-byte alignment as `Block` and `Packed` and
+for the same reason. `encode_for` and `encode_delta` are free functions,
+because they do not depend on the bit width: they are the pass that runs
+before `Codec::pack`.
+
+```rust
+let mut base = Base::zeroed();
+knc::encode_delta(&mut staged, &values, &base);
+codec.pack(&mut packed, &staged);
+codec.unpack_delta(&mut out, &packed, &base);
+```
+
 ## `no_std`
 
 The crate needs nothing from `std`. The demo binary in `main.rs` does.

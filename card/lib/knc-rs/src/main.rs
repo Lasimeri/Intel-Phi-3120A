@@ -10,13 +10,11 @@
 //! phi put .../knc-demo /tmp/knc-demo && phi run /tmp/knc-demo 228
 //! ```
 
-use knc::{Block, Codec, Packed, BLOCK};
+use knc::{encode_delta, encode_for, Base, Block, Codec, Packed, BLOCK, LANES};
 use std::env;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-
-const LANES: usize = 16;
 
 fn low_mask(bits: u32) -> u32 {
     if bits >= 32 {
@@ -75,6 +73,60 @@ fn check_every_width() -> usize {
     assert_eq!(Codec::new(0).unwrap_err().0, 0);
     assert_eq!(Codec::new(33).unwrap_err().0, 33);
 
+    failed += check_cascades();
+    failed
+}
+
+/// Frame of reference and delta, at every width, round-tripped through the
+/// packer. Both need the residue to fit in the width unsigned, so the
+/// values are built from residues rather than the other way round.
+fn check_cascades() -> usize {
+    let mut base = Base::zeroed();
+    let mut values = Block::zeroed();
+    let mut staged = Block::zeroed();
+    let mut packed = Packed::zeroed();
+    let mut out = Block::zeroed();
+    let mut failed = 0;
+
+    for (i, b) in base.as_mut_slice().iter_mut().enumerate() {
+        *b = 0x5BF0_3635u32.wrapping_mul(i as u32 + 1) as i32;
+    }
+
+    for bits in 1..=32u32 {
+        let codec = Codec::new(bits).expect("1 to 32");
+        let m = low_mask(bits);
+
+        // Frame of reference.
+        for (i, v) in values.as_mut_slice().iter_mut().enumerate() {
+            let residue = 0x9E37_79B9u32.wrapping_mul(i as u32 + 1) & m;
+            *v = residue.wrapping_add(base[i % LANES] as u32) as i32;
+        }
+        encode_for(&mut staged, &values, &base);
+        codec.pack(&mut packed, &staged);
+        codec.unpack_for(&mut out, &packed, &base);
+        if out.as_slice() != values.as_slice() {
+            println!("  FOR {bits:2} FAILED");
+            failed += 1;
+        }
+
+        // Delta: ascending within each lane, steps inside the width.
+        for i in 0..BLOCK {
+            let residue = 0x9E37_79B9u32.wrapping_mul(i as u32 + 1) & m;
+            let prev = if i < LANES { base[i] as u32 } else { values[i - LANES] as u32 };
+            values[i] = prev.wrapping_add(residue) as i32;
+        }
+        encode_delta(&mut staged, &values, &base);
+        codec.pack(&mut packed, &staged);
+        codec.unpack_delta(&mut out, &packed, &base);
+        if out.as_slice() != values.as_slice() {
+            println!("  DELTA {bits:2} FAILED");
+            failed += 1;
+        }
+    }
+    println!(
+        "frame of reference and delta, widths 1 to 32: {}",
+        if failed == 0 { "all OK" } else { "FAILED" }
+    );
     failed
 }
 

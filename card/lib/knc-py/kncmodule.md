@@ -54,6 +54,25 @@ it wraps. Decoding 64 blocks in one call reaches 395.7 M values per second,
 against 403.9 for the same work from C, so the interpreter is costing about
 2 percent.
 
+## The cascaded encodings
+
+`unpack_for(out, packed, bits, base)` and `unpack_delta(...)` add a frame of
+reference or a running sum as the values come out, and `encode_for(out,
+values, base)` and `encode_delta(...)` are the pass before `pack`. `base` is
+`knc.LANES` int32, one per lane, and has to be a `knc.Buffer` like
+everything else: it is a kernel argument, and an unaligned one faults on the
+first vector load rather than returning a wrong answer.
+
+```python
+base = knc.Buffer(knc.LANES * 4)
+knc.encode_delta(staged, values, base)
+knc.pack(packed, staged, 11)
+knc.unpack_delta(out, packed, 11, base)
+```
+
+Both require the stored residue to fit in the bit width, unsigned;
+`card/lib/knc/knc.md` says what happens when it does not.
+
 ## Errors
 
 A width outside 1 to 32 raises `ValueError`, where the C entry point returns

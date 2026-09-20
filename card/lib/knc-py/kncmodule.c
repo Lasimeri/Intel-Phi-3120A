@@ -218,6 +218,140 @@ done:
 	return result;
 }
 
+/* The cascaded encodings. `base` is KNC_LANES int32, one per lane, and has
+ * to be aligned like everything else: it is a kernel argument, and an
+ * unaligned one faults on the first vector load rather than returning a
+ * wrong answer. */
+static PyObject *knc_cascade_py(PyObject *self, PyObject *args, int delta)
+{
+	Py_buffer out, packed, base;
+	int bits;
+	Py_ssize_t blocks, i;
+
+	(void)self;
+	if (!PyArg_ParseTuple(args, "w*y*iy*", &out, &packed, &bits, &base))
+		return NULL;
+
+	PyObject *result = NULL;
+	if (check_width(bits) < 0 || check_aligned(&out, "out") < 0
+	    || check_aligned(&packed, "packed") < 0 || check_aligned(&base, "base") < 0)
+		goto done;
+	if (base.len < (Py_ssize_t)(KNC_LANES * sizeof(int))) {
+		PyErr_Format(PyExc_ValueError, "knc: base must hold %d int32, one per lane", KNC_LANES);
+		goto done;
+	}
+
+	{
+		Py_ssize_t per_block = (Py_ssize_t)bits * KNC_BLOCK / 8;
+		Py_ssize_t a = out.len / ((Py_ssize_t)KNC_BLOCK * 4);
+		Py_ssize_t b = packed.len / per_block;
+		const knc_unpack_base_fn *table = delta ? knc_unpack_delta_table : knc_unpack_for_table;
+
+		blocks = a < b ? a : b;
+		Py_BEGIN_ALLOW_THREADS
+		for (i = 0; i < blocks; i++)
+			table[bits]((int *)out.buf + i * KNC_BLOCK,
+				    (const unsigned *)((const char *)packed.buf + i * per_block),
+				    (const int *)base.buf);
+		Py_END_ALLOW_THREADS
+		result = PyLong_FromSsize_t(blocks);
+	}
+done:
+	PyBuffer_Release(&out);
+	PyBuffer_Release(&packed);
+	PyBuffer_Release(&base);
+	return result;
+}
+
+PyDoc_STRVAR(unpack_for_doc,
+"unpack_for(out, packed, bits, base) -> int\n\
+\n\
+Unpack, adding base[lane] to every value. `base` is BLOCK-independent: it\n\
+is LANES int32, one per lane, 64-byte aligned. The stored residue must fit\n\
+in `bits` bits unsigned.");
+
+static PyObject *knc_unpack_for_py(PyObject *self, PyObject *args)
+{
+	return knc_cascade_py(self, args, 0);
+}
+
+PyDoc_STRVAR(unpack_delta_doc,
+"unpack_delta(out, packed, bits, base) -> int\n\
+\n\
+Unpack as a running sum along positions within each lane, starting from\n\
+base[lane]. Wants ascending data: each difference must fit in `bits` bits\n\
+unsigned.");
+
+static PyObject *knc_unpack_delta_py(PyObject *self, PyObject *args)
+{
+	return knc_cascade_py(self, args, 1);
+}
+
+/* The encode side, one pass over the values before packing. */
+static PyObject *knc_encode_py(PyObject *self, PyObject *args, int delta)
+{
+	Py_buffer out, values, base;
+	Py_ssize_t blocks, i;
+
+	(void)self;
+	if (!PyArg_ParseTuple(args, "w*y*y*", &out, &values, &base))
+		return NULL;
+
+	PyObject *result = NULL;
+	if (check_aligned(&out, "out") < 0 || check_aligned(&values, "values") < 0
+	    || check_aligned(&base, "base") < 0)
+		goto done;
+	if (base.len < (Py_ssize_t)(KNC_LANES * sizeof(int))) {
+		PyErr_Format(PyExc_ValueError, "knc: base must hold %d int32, one per lane", KNC_LANES);
+		goto done;
+	}
+
+	{
+		Py_ssize_t a = out.len / ((Py_ssize_t)KNC_BLOCK * 4);
+		Py_ssize_t b = values.len / ((Py_ssize_t)KNC_BLOCK * 4);
+
+		blocks = a < b ? a : b;
+		Py_BEGIN_ALLOW_THREADS
+		for (i = 0; i < blocks; i++) {
+			int *o = (int *)out.buf + i * KNC_BLOCK;
+			const int *v = (const int *)values.buf + i * KNC_BLOCK;
+
+			if (delta)
+				knc_encode_delta(o, v, (const int *)base.buf);
+			else
+				knc_encode_for(o, v, (const int *)base.buf);
+		}
+		Py_END_ALLOW_THREADS
+		result = PyLong_FromSsize_t(blocks);
+	}
+done:
+	PyBuffer_Release(&out);
+	PyBuffer_Release(&values);
+	PyBuffer_Release(&base);
+	return result;
+}
+
+PyDoc_STRVAR(encode_for_doc,
+"encode_for(out, values, base) -> int\n\
+\n\
+out[i] = values[i] - base[i % LANES]. Feed the result to pack().");
+
+static PyObject *knc_encode_for_py(PyObject *self, PyObject *args)
+{
+	return knc_encode_py(self, args, 0);
+}
+
+PyDoc_STRVAR(encode_delta_doc,
+"encode_delta(out, values, base) -> int\n\
+\n\
+out[i] = values[i] minus the value before it in the same lane, with\n\
+base[lane] standing in before position 0. Feed the result to pack().");
+
+static PyObject *knc_encode_delta_py(PyObject *self, PyObject *args)
+{
+	return knc_encode_py(self, args, 1);
+}
+
 PyDoc_STRVAR(memcpy64_doc,
 "memcpy64(dst, src) -> int\n\
 \n\
@@ -269,6 +403,10 @@ static PyObject *knc_packed_bytes_py(PyObject *self, PyObject *args)
 static PyMethodDef knc_methods[] = {
 	{ "unpack", knc_unpack_py, METH_VARARGS, unpack_doc },
 	{ "pack", knc_pack_py, METH_VARARGS, pack_doc },
+	{ "unpack_for", knc_unpack_for_py, METH_VARARGS, unpack_for_doc },
+	{ "unpack_delta", knc_unpack_delta_py, METH_VARARGS, unpack_delta_doc },
+	{ "encode_for", knc_encode_for_py, METH_VARARGS, encode_for_doc },
+	{ "encode_delta", knc_encode_delta_py, METH_VARARGS, encode_delta_doc },
 	{ "memcpy64", knc_memcpy64_py, METH_VARARGS, memcpy64_doc },
 	{ "packed_bytes", knc_packed_bytes_py, METH_VARARGS, packed_bytes_doc },
 	{ NULL, NULL, 0, NULL },
@@ -307,6 +445,7 @@ PyMODINIT_FUNC PyInit_knc(void)
 		return NULL;
 	if (PyModule_AddIntConstant(m, "BLOCK", KNC_BLOCK) < 0
 	    || PyModule_AddIntConstant(m, "ALIGN", 64) < 0
+	    || PyModule_AddIntConstant(m, "LANES", KNC_LANES) < 0
 	    || PyModule_AddObjectRef(m, "Buffer", (PyObject *)&BufferType) < 0) {
 		Py_DECREF(m);
 		return NULL;

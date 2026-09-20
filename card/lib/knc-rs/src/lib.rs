@@ -33,12 +33,19 @@ use core::fmt;
 /// Values in one block. Fixed by the layout: sixteen lanes of 64 values.
 pub const BLOCK: usize = 1024;
 
+/// Lanes in the layout. A [`Base`] is one value per lane.
+pub const LANES: usize = 16;
+
 /// The widest packed block, in 32-bit words: `BLOCK` values of 32 bits.
 const MAX_WORDS: usize = BLOCK;
 
 unsafe extern "C" {
     fn knc_unpack(out: *mut i32, packed: *const u32, bits: u32);
     fn knc_pack(packed: *mut u32, values: *const i32, bits: u32);
+    fn knc_unpack_for(out: *mut i32, packed: *const u32, bits: u32, base: *const i32);
+    fn knc_unpack_delta(out: *mut i32, packed: *const u32, bits: u32, base: *const i32);
+    fn knc_encode_for(out: *mut i32, values: *const i32, base: *const i32);
+    fn knc_encode_delta(out: *mut i32, values: *const i32, base: *const i32);
     fn knc_memcpy64(dst: *mut u8, src: *const u8, blocks: usize) -> *mut u8;
 }
 
@@ -107,8 +114,17 @@ macro_rules! aligned_block {
     };
 }
 
+/// One value per lane: the frame of reference, or the value before
+/// position 0 of each lane for delta. Aligned for the same reason the other
+/// two are: it is a kernel argument, and an unaligned one faults on the
+/// first vector load rather than returning a wrong answer.
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct Base([i32; LANES]);
+
 aligned_block!(Block, i32, BLOCK);
 aligned_block!(Packed, u32, MAX_WORDS);
+aligned_block!(Base, i32, LANES);
 
 /// A kernel pair bound to one bit width.
 ///
@@ -156,6 +172,31 @@ impl Codec {
     pub fn unpack(self, out: &mut Block, packed: &Packed) {
         unsafe { knc_unpack(out.0.as_mut_ptr(), packed.0.as_ptr(), self.bits) }
     }
+
+    /// Unpack, adding `base[lane]` to every value: frame of reference.
+    pub fn unpack_for(self, out: &mut Block, packed: &Packed, base: &Base) {
+        unsafe { knc_unpack_for(out.0.as_mut_ptr(), packed.0.as_ptr(), self.bits, base.0.as_ptr()) }
+    }
+
+    /// Unpack as a running sum along positions within each lane, starting
+    /// from `base[lane]`.
+    pub fn unpack_delta(self, out: &mut Block, packed: &Packed, base: &Base) {
+        unsafe { knc_unpack_delta(out.0.as_mut_ptr(), packed.0.as_ptr(), self.bits, base.0.as_ptr()) }
+    }
+}
+
+/// The encode side of the two transforms, as a pass before [`Codec::pack`].
+///
+/// Both require the residue to fit in the bit width, unsigned: `value -
+/// base` for frame of reference, and each difference for delta. Delta
+/// therefore wants ascending data. Out of range, packing truncates and
+/// decoding returns a different number rather than failing.
+pub fn encode_for(out: &mut Block, values: &Block, base: &Base) {
+    unsafe { knc_encode_for(out.0.as_mut_ptr(), values.0.as_ptr(), base.0.as_ptr()) }
+}
+
+pub fn encode_delta(out: &mut Block, values: &Block, base: &Base) {
+    unsafe { knc_encode_delta(out.0.as_mut_ptr(), values.0.as_ptr(), base.0.as_ptr()) }
 }
 
 /// Copy whole 64-byte blocks. Both slices must be 64-byte aligned and at

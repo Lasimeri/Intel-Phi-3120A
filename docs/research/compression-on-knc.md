@@ -169,24 +169,35 @@ no branches in the inner loop, arithmetic rather than byte shuffling.
 That is the argument for expecting a different result, and it is an
 argument from structure, not from measurement.
 
-## If this is pursued
+## This was pursued, the same day
 
-Order of work, cheapest decisive step first:
+The plan below was written on 2026-09-20 and executed on 2026-09-20. What
+happened, against what was predicted:
 
-1. Build FastLanes for the card with `knc-cc` and measure the scalar path.
-   It is MIT C++ with no intrinsics, so it should cross-compile with the
-   usual audit. This costs an afternoon and establishes the baseline.
-2. Extend `knc-mvex` with `VPSLLD`, `VPSRLD`, `VPANDD`, `VPORD` and
-   `VPADDD`. That is the whole operator set both candidates need, and the
-   encoder already has the MVEX prefix machinery.
-3. Hand-write one bit-unpacking kernel (a single bit width, say 11-bit
-   into 32-bit lanes), verify against the scalar version, and measure.
-   One kernel is enough to know whether the approach pays.
-4. Only then consider zfp, which is a larger surface.
+| Step | Outcome |
+| --- | --- |
+| Extend `knc-mvex` with the integer operators | Done, eleven of them, verified on the card: `docs/results/2026-09-20-mvex-integer.md` |
+| Hand-write one bit-unpacking kernel and measure | Done, 46 to 58x the card's scalar code: `docs/results/2026-09-20-bitunpack.md` |
+| Everything after that | `libknc`: all 32 widths, both directions, FOR and DELTA, five language bindings |
 
-Step 2 is also the prerequisite for `vloadunpackld/hd`, which
-`card/examples/vpu_memcpy.md` already names as the next thing the copy
-kernel needs.
+The prediction in this document was right about the structure and wrong
+about one number. It said the card would win where work is wide, regular
+and at least 32 bits per lane, and it does: 46 to 58x its own scalar code
+in cache. It did not anticipate that at 228 threads the card is
+memory-bound, so the vector unit's margin over scalar collapses from 4.6x
+per thread to 1.4x at full occupancy, and the card lands at 0.28 of the
+host rather than ahead of it (`docs/results/2026-09-20-fastlanes.md`).
+
+FastLanes itself was not built for the card. The paper's implementation
+relies on auto-vectorisation, and nothing auto-vectorises to MVEX, so
+building it would have measured the scalar path and nothing else. The
+layout was implemented directly instead, at 512 bits; `knc.md` says how it
+differs from the published Unified Transposed Layout and why that
+difference is deliberate.
+
+zfp is still untried, and is still the obvious next candidate: the same
+argument, on the float side, where this card's vector unit is at its
+strongest.
 
 ## Sources
 

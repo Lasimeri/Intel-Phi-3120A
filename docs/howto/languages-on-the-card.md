@@ -131,6 +131,15 @@ so `ctypes.CDLL` has nothing to load even with libffi ported. That is why
 `.so`, and why `PHI_PYTHON_SETUP` exists. The same is true of every other
 extension module: if it is not built in, it is not available.
 
+## All five carry the whole library
+
+Bit packing at every width from 1 to 32 in both directions, the frame of
+reference and delta transforms on top of it, and the block copy. Each
+binding spells the names its own way (`unpack_for` in C, Python and Rust,
+`unpackFor` in JavaScript, `knc::codec::unpack_for` in C++) and each one's
+demo checks all 32 widths of all three decode paths against a scalar model
+written in that language.
+
 ## The two rules every binding follows
 
 **Buffers must be 64-byte aligned.** Every kernel loads and stores whole

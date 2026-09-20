@@ -79,6 +79,51 @@ def check_every_width():
     return failed
 
 
+def check_cascades():
+    """Frame of reference and delta at every width, through the packer.
+
+    Both need the residue to fit in the width unsigned, so the values are
+    built from residues rather than the other way round.
+    """
+    failed = 0
+    base = knc.Buffer(knc.LANES * 4)
+    bv = memoryview(base).cast("I")
+    for i in range(knc.LANES):
+        bv[i] = (0x5BF03635 * (i + 1)) & 0xFFFFFFFF
+
+    values = knc.Buffer(knc.BLOCK * 4)
+    staged = knc.Buffer(knc.BLOCK * 4)
+    out = knc.Buffer(knc.BLOCK * 4)
+    vv, ov = memoryview(values).cast("I"), memoryview(out).cast("I")
+
+    for bits in range(1, 33):
+        m = low_mask(bits)
+        packed = knc.Buffer(knc.packed_bytes(bits))
+
+        for i in range(knc.BLOCK):
+            vv[i] = ((0x9E3779B9 * (i + 1)) & m) + bv[i % knc.LANES] & 0xFFFFFFFF
+        knc.encode_for(staged, values, base)
+        knc.pack(packed, staged, bits)
+        knc.unpack_for(out, packed, bits, base)
+        if list(ov) != list(vv):
+            print(f"  FOR {bits} FAILED")
+            failed += 1
+
+        for i in range(knc.BLOCK):
+            prev = bv[i] if i < knc.LANES else vv[i - knc.LANES]
+            vv[i] = (prev + ((0x9E3779B9 * (i + 1)) & m)) & 0xFFFFFFFF
+        knc.encode_delta(staged, values, base)
+        knc.pack(packed, staged, bits)
+        knc.unpack_delta(out, packed, bits, base)
+        if list(ov) != list(vv):
+            print(f"  DELTA {bits} FAILED")
+            failed += 1
+
+    print("frame of reference and delta, widths 1 to 32:",
+          "all OK" if failed == 0 else "FAILED")
+    return failed
+
+
 def measure(bits, blocks=64, reps=64):
     values = knc.Buffer(knc.BLOCK * 4 * blocks)
     packed = knc.Buffer(knc.packed_bytes(bits, blocks))
@@ -101,6 +146,7 @@ def main():
     print("knc_demo: Python on the card, through the built-in knc module")
     print(knc.__doc__.splitlines()[0])
     failed = check_every_width()
+    failed += check_cascades()
 
     print(f"\n{'bits':>5} {'unpack M/s':>12} {'packed bytes':>14}")
     for bits in (1, 8, 11, 16, 32):

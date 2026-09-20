@@ -158,6 +158,110 @@ static JSValue js_knc_pack(JSContext *ctx, JSValueConst this_val, int argc, JSVa
 	return js_knc_codec(ctx, this_val, argc, argv, 0);
 }
 
+/* The cascaded encodings. `base` is knc.LANES values, one per lane, and
+ * has to be aligned like everything else: it is a kernel argument, and an
+ * unaligned one faults on the first vector load. */
+static JSValue js_knc_cascade(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int delta)
+{
+	size_t out_len = 0, src_len = 0, base_len = 0;
+	uint8_t *out, *src, *base;
+	uint32_t bits;
+	int64_t per_block, blocks, i;
+	const knc_unpack_base_fn *table;
+
+	(void)this_val;
+	(void)argc;
+	if (knc_width(ctx, argv[2], &bits))
+		return JS_EXCEPTION;
+	out = knc_bytes(ctx, argv[0], &out_len);
+	if (!out)
+		return JS_EXCEPTION;
+	src = knc_bytes(ctx, argv[1], &src_len);
+	if (!src)
+		return JS_EXCEPTION;
+	base = knc_bytes(ctx, argv[3], &base_len);
+	if (!base)
+		return JS_EXCEPTION;
+	if (knc_aligned(ctx, out, "out") || knc_aligned(ctx, src, "packed") || knc_aligned(ctx, base, "base"))
+		return JS_EXCEPTION;
+	if (base_len < KNC_LANES * sizeof(int))
+		return JS_ThrowRangeError(ctx, "knc: base must hold %d values, one per lane", KNC_LANES);
+
+	per_block = (int64_t)bits * KNC_BLOCK / 8;
+	{
+		int64_t a = (int64_t)out_len / (KNC_BLOCK * 4);
+		int64_t b = (int64_t)src_len / per_block;
+
+		blocks = a < b ? a : b;
+	}
+	table = delta ? knc_unpack_delta_table : knc_unpack_for_table;
+	for (i = 0; i < blocks; i++)
+		table[bits]((int *)(out + i * KNC_BLOCK * 4),
+			    (const unsigned *)(src + i * per_block), (const int *)base);
+	return JS_NewInt64(ctx, blocks);
+}
+
+static JSValue js_knc_unpack_for(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+	return js_knc_cascade(ctx, this_val, argc, argv, 0);
+}
+
+static JSValue js_knc_unpack_delta(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+	return js_knc_cascade(ctx, this_val, argc, argv, 1);
+}
+
+/* The encode side: one pass over the values, before packing. */
+static JSValue js_knc_encode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int delta)
+{
+	size_t out_len = 0, src_len = 0, base_len = 0;
+	uint8_t *out, *src, *base;
+	int64_t blocks, i;
+
+	(void)this_val;
+	(void)argc;
+	out = knc_bytes(ctx, argv[0], &out_len);
+	if (!out)
+		return JS_EXCEPTION;
+	src = knc_bytes(ctx, argv[1], &src_len);
+	if (!src)
+		return JS_EXCEPTION;
+	base = knc_bytes(ctx, argv[2], &base_len);
+	if (!base)
+		return JS_EXCEPTION;
+	if (knc_aligned(ctx, out, "out") || knc_aligned(ctx, src, "values") || knc_aligned(ctx, base, "base"))
+		return JS_EXCEPTION;
+	if (base_len < KNC_LANES * sizeof(int))
+		return JS_ThrowRangeError(ctx, "knc: base must hold %d values, one per lane", KNC_LANES);
+
+	{
+		int64_t a = (int64_t)out_len / (KNC_BLOCK * 4);
+		int64_t b = (int64_t)src_len / (KNC_BLOCK * 4);
+
+		blocks = a < b ? a : b;
+	}
+	for (i = 0; i < blocks; i++) {
+		int *o = (int *)(out + i * KNC_BLOCK * 4);
+		const int *v = (const int *)(src + i * KNC_BLOCK * 4);
+
+		if (delta)
+			knc_encode_delta(o, v, (const int *)base);
+		else
+			knc_encode_for(o, v, (const int *)base);
+	}
+	return JS_NewInt64(ctx, blocks);
+}
+
+static JSValue js_knc_encode_for(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+	return js_knc_encode(ctx, this_val, argc, argv, 0);
+}
+
+static JSValue js_knc_encode_delta(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+	return js_knc_encode(ctx, this_val, argc, argv, 1);
+}
+
 static JSValue js_knc_memcpy64(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	size_t dst_len = 0, src_len = 0;
@@ -197,10 +301,15 @@ static const JSCFunctionListEntry js_knc_funcs[] = {
 	JS_CFUNC_DEF("alloc", 1, js_knc_alloc),
 	JS_CFUNC_DEF("unpack", 3, js_knc_unpack),
 	JS_CFUNC_DEF("pack", 3, js_knc_pack),
+	JS_CFUNC_DEF("unpackFor", 4, js_knc_unpack_for),
+	JS_CFUNC_DEF("unpackDelta", 4, js_knc_unpack_delta),
+	JS_CFUNC_DEF("encodeFor", 3, js_knc_encode_for),
+	JS_CFUNC_DEF("encodeDelta", 3, js_knc_encode_delta),
 	JS_CFUNC_DEF("memcpy64", 2, js_knc_memcpy64),
 	JS_CFUNC_DEF("packedBytes", 2, js_knc_packed_bytes),
 	JS_PROP_INT32_DEF("BLOCK", KNC_BLOCK, JS_PROP_CONFIGURABLE),
 	JS_PROP_INT32_DEF("ALIGN", 64, JS_PROP_CONFIGURABLE),
+	JS_PROP_INT32_DEF("LANES", KNC_LANES, JS_PROP_CONFIGURABLE),
 };
 
 static int js_knc_init(JSContext *ctx, JSModuleDef *m)

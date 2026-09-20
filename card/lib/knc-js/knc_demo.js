@@ -97,6 +97,52 @@ function checkEveryWidth() {
     return failed;
 }
 
+// Frame of reference and delta at every width, through the packer. Both
+// need the residue to fit in the width unsigned, so the values are built
+// from residues rather than the other way round.
+function checkCascades() {
+    let failed = 0;
+    const base = knc.alloc(knc.LANES * 4);
+    const bv = new Uint32Array(base);
+    for (let i = 0; i < knc.LANES; i++)
+        bv[i] = Math.imul(0x5BF03635, i + 1) >>> 0;
+
+    const values = knc.alloc(knc.BLOCK * 4);
+    const staged = knc.alloc(knc.BLOCK * 4);
+    const out = knc.alloc(knc.BLOCK * 4);
+    const vv = new Uint32Array(values), ov = new Uint32Array(out);
+
+    for (let bits = 1; bits <= 32; bits++) {
+        const m = lowMask(bits) >>> 0;
+        const packed = knc.alloc(knc.packedBytes(bits));
+
+        for (let i = 0; i < knc.BLOCK; i++)
+            vv[i] = ((Math.imul(0x9E3779B9, i + 1) & m) + bv[i % knc.LANES]) >>> 0;
+        knc.encodeFor(staged, values, base);
+        knc.pack(packed, staged, bits);
+        knc.unpackFor(out, packed, bits, base);
+        if (!sameValues(ov, vv)) {
+            console.log(`  FOR ${bits} FAILED`);
+            failed++;
+        }
+
+        for (let i = 0; i < knc.BLOCK; i++) {
+            const prev = i < knc.LANES ? bv[i] : vv[i - knc.LANES];
+            vv[i] = (prev + (Math.imul(0x9E3779B9, i + 1) & m)) >>> 0;
+        }
+        knc.encodeDelta(staged, values, base);
+        knc.pack(packed, staged, bits);
+        knc.unpackDelta(out, packed, bits, base);
+        if (!sameValues(ov, vv)) {
+            console.log(`  DELTA ${bits} FAILED`);
+            failed++;
+        }
+    }
+    console.log("frame of reference and delta, widths 1 to 32:",
+                failed === 0 ? "all OK" : "FAILED");
+    return failed;
+}
+
 function measure(bits, blocks, reps) {
     const values = knc.alloc(knc.BLOCK * 4 * blocks);
     const packed = knc.alloc(knc.packedBytes(bits, blocks));
@@ -117,7 +163,7 @@ function measure(bits, blocks, reps) {
 }
 
 console.log("knc_demo: JavaScript on the card, through the built-in knc module");
-const failed = checkEveryWidth();
+const failed = checkEveryWidth() + checkCascades();
 
 console.log("\n bits   unpack M/s   packed bytes");
 for (const bits of [1, 8, 11, 16, 32]) {

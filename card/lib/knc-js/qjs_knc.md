@@ -51,6 +51,20 @@ and returns the count. 398.9 M values per second at 11 bits, against 403.9
 from C: the interpreter is costing about 1 percent, because it is called
 once for 64 blocks.
 
+## The cascaded encodings
+
+`unpackFor(out, packed, bits, base)` and `unpackDelta(...)`, with
+`encodeFor(out, values, base)` and `encodeDelta(...)` as the pass before
+`pack`. `base` is `knc.LANES` values, one per lane, and must come from
+`knc.alloc` for the same alignment reason as everything else.
+
+```js
+const base = knc.alloc(knc.LANES * 4);
+knc.encodeDelta(staged, values, base);
+knc.pack(packed, staged, 11);
+knc.unpackDelta(out, packed, 11, base);
+```
+
 ## The PAUSE patch
 
 The build patches one line of `quickjs.c`. `Atomics.pause()` reaches for the
