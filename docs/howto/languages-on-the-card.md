@@ -155,10 +155,17 @@ per-block call from an interpreter would cost more than the kernel.
 
 ## Persistence
 
-`/opt/phi` is a bind mount of a directory on `/data`, which is the host-backed
-block device, so anything installed there survives a reboot. `init` links
-`/opt/phi/bin` into `/usr/bin` at boot, so `cc`, `python3` and `qjs` are on
-the default PATH for non-login shells too.
+`/opt/phi` is a bind mount of a directory on `/data`, which is the
+host-backed block device, so anything installed there survives a reboot.
+
+`card/initramfs/init` does two separate things that both matter here. It
+sets `PATH=/opt/phi/bin:/bin:/sbin:/usr/bin:/usr/sbin` for everything it
+starts, which is why a freshly unpacked `qjs` is found without a reboot.
+And it rebuilds a symlink in `/usr/bin` for every executable under
+`/opt/phi/bin` on each boot, so a non-login shell finds them too: dropbear
+hands those a bare `/usr/sbin:/usr/bin:/sbin:/bin` and never reads
+`/etc/profile`, so without the links `ssh phi python3` would fail while an
+interactive `ssh phi` worked.
 
 ## What is not here
 

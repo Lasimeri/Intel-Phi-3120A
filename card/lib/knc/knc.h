@@ -82,6 +82,13 @@ void knc_pack(void *packed, const int *values, unsigned bits);
  * scalar frame). For delta it is the value that came before position 0 in
  * each lane, which is the previous block's last value in that lane.
  *
+ * Note the stride. Value `i` lives in lane `i % 16`, so for delta "the
+ * value before it" is the value sixteen positions earlier in `values`, not
+ * its neighbour. On a sorted column that costs three to four bits per
+ * value against a layout that could give adjacent differences;
+ * `tools/delta-stride.md` measures it and says why this layout is still
+ * the right one here.
+ *
  * **Both require the stored residue to fit in `bits` bits, unsigned.**
  * `value - base` for frame of reference, and each difference for delta,
  * must lie in [0, 2^bits). Delta therefore wants ascending data; a column

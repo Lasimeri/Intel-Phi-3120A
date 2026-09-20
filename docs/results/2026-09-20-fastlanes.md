@@ -59,6 +59,39 @@ Both require the stored residue to fit in the bit width, unsigned. Delta
 therefore wants ascending data; a column that goes down as well as up needs
 a zigzag transform, which this library does not provide.
 
+## What the layout costs DELTA, measured
+
+Choosing the interleaved order over a transposed one has a third
+consequence beyond the two above, and it is a real cost rather than a free
+simplification.
+
+Value `i` lives in lane `i % 16`, so the value before it *in its lane* is
+sixteen positions earlier in the caller's array, not its neighbour. DELTA
+therefore stores stride-16 differences. For the sorted columns DELTA exists
+to compress, sixteen steps of a walk span roughly sixteen times one step,
+so the bit width goes up by about `log2(16)`.
+
+`tools/delta-stride.c` measures it:
+
+| Column | stride 1 | stride 16 | cost |
+| --- | --- | --- | --- |
+| dense ids, gaps 1 to 2 | 2 bits | 5 bits | 3 |
+| timestamps, 1 to 20 ms | 5 bits | 8 bits | 3 |
+| sorted keys, gaps to 1000 | 10 bits | 14 bits | 4 |
+| strictly sequential | 1 bit | 5 bits | 4 |
+
+Three to four extra bits per value. On a strictly sequential column, which
+is the best case DELTA has anywhere, it is 1 bit against 5.
+
+A transposed layout (lane `L` holding values `L*64` to `L*64+63`) removes
+this entirely and keeps every lane at the same bit offset, so bit-packing
+would be unchanged. What it breaks is the store: sixteen consecutive
+integers become a stride-64 scatter, and `vscatterd` serialises on this
+card. That costs more than four bits per value, so the interleaved order
+stands, but **DELTA here is worth less than DELTA on a machine that can
+scatter cheaply**, and that is a property of this card rather than of the
+encoding.
+
 ## Correctness
 
 `knc_test.c` on the card: 32 widths, two directions, plain, FOR and DELTA.
