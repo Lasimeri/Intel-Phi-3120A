@@ -24,3 +24,41 @@ code read 0x000c/miss 0x000e, L2 read miss 0x10cb, L2 write hit 0x10cc,
 L2 prefetch 0x10fc/miss 0x10fe.
 
 Results: `docs/results/2026-09-16-sensors.md`.
+
+## What the counters are actually worth (2026-09-19)
+
+Only `cycles` has been validated on this card. Treat the rest as unproven.
+
+Measured with `xz -6 -T1` over 8 MB, two events so nothing multiplexes:
+
+```
+$ phiperf -n -r 0x2a,0x16 xz -6 -T1 -c /tmp/p8
+raw 0x2a (cycles)         27557970377       100%
+raw 0x16 (instructions)             0       100%
+wall                           25.099 s
+```
+
+27.56e9 cycles at 1.1 GHz is 25.05 s against a 25.10 s wall, so cycles is
+correct. Instructions reads zero in the same run, at full scaling with no
+multiplexing to blame. `0x0016` is the code
+`arch/x86/events/intel/knc.c` maps `PERF_COUNT_HW_INSTRUCTIONS` to, so
+this is not a wrong constant here; the counter does not appear to work.
+
+Worse, the default six-event set multiplexes onto two counters at 33% and
+the scaled results are not merely imprecise but wrong: the same instruction
+count came back as 15e9 in one run and 993,910 in another for comparable
+work. A derived figure such as instructions per cycle is then pure noise,
+and one was published from it and later retracted
+(`docs/results/2026-09-19-xz.md`).
+
+Rules of thumb until someone investigates:
+
+- Pass `-n -r <two codes>` so the count is exact rather than scaled.
+- Sanity-check any counter against something independent. Cycles divided by
+  1.1 GHz should equal the wall clock for a single-threaded run; if it does
+  not, the counter is not measuring what you think.
+- Do not compute ratios between two events unless both have passed such a
+  check.
+- Multi-threaded runs are separately suspect: `zstd -T114` reported 861,817
+  instructions for 20 MB of input, so the worker threads were not being
+  followed at all.

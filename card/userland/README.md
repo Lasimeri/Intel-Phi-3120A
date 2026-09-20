@@ -5,7 +5,7 @@ upstream version pinned, the configure flags, the ABI-sensitive spots
 (anything that touches float passing or contains assembly), the audit
 result, and the smoke test.
 
-Eight components have a build script here. The rest are notes: either the
+Nine components have a build script here. The rest are notes: either the
 work happens elsewhere (musl is built by `toolchain/musl/build.sh` as part
 of the cross toolchain) or the component has been reasoned about but not
 built.
@@ -18,6 +18,7 @@ built.
 | [ncurses](components/ncurses.md) | `ncurses.sh` | C | 6.5 wide-character, static, terminfo compiled in |
 | [CPython](components/cpython.md) | `cpython.sh` | C | 3.14 static; what the ported htop/glances/fastfetch clones run on |
 | [xz](components/xz.md) | `xz.sh` | C | XZ Utils 5.8.3, static and threaded; also puts `liblzma.a` in the sysroot |
+| [zstd](components/zstd.md) | `zstd.sh` | C | Zstandard 1.5.7, static and threaded. Levels 3 and 4 currently fault (see its notes) |
 | [clang](components/clang.md) | `clang.sh` | C++ | the card's own compiler, a Canadian cross of the same patched LLVM |
 | [clang-push](components/clang-push.md) | `clang-push.sh` | shell | pushes that tarball to `/opt/phi` over `phictl put`/`exec`, no SSH needed |
 | [clang.cfg](components/clang.cfg.md) | (file) | config | the driver defaults installed beside the card's clang so `cc` on the card does the right thing unprompted |
