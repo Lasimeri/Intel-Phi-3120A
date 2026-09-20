@@ -17,8 +17,12 @@ throughput at 11 bits per value, one thread, from
 | JavaScript | `qjs` (QuickJS 2026-06-04) | `import * as knc from "knc"` | 398.9 M/s |
 | Python | `python3` (CPython 3.14.7) | `import knc` | 395.7 M/s |
 
-Scalar C on the same machine, doing the same work the ordinary way, manages
-37.8 M/s. The vector unit is the difference.
+For scale: the same work in scalar C on the same machine manages 92.6 M/s
+over this layout, and 37.8 M/s over an ordinary contiguous bitstream. So
+the vector unit is worth about 4.4x over the card's best scalar code, and
+the layout is worth 2.5x before any vector code at all. Both numbers
+matter; quoting only the 37.8 would credit the vector unit with the
+layout's share.
 
 ## Why there is one library and not five bindings
 

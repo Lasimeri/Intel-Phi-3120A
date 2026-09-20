@@ -60,13 +60,58 @@ void *knc_memcpy64(void *dst, const void *src, size_t blocks);
 void knc_unpack(int *out, const void *packed, unsigned bits);
 void knc_pack(void *packed, const int *values, unsigned bits);
 
+/* --------------------------------------------------- cascaded encodings */
+
+/* Lanes in the layout. A base vector below is one value per lane. */
+#define KNC_LANES 16
+
+/* Bit packing alone is the bottom layer: columnar data is rarely small
+ * because its values are small, it is small because they are close to a
+ * common base (frame of reference) or to their neighbours (delta). Both
+ * are the same instruction, `vpaddd`, on the same layout.
+ *
+ * Decoding folds the transform into the unpack kernel, so it costs one
+ * instruction per sixteen values:
+ *
+ *   knc_unpack_for    out[i] = unpacked[i] + base[i % 16]
+ *   knc_unpack_delta  out[i] = the running sum along positions within
+ *                              each lane, starting from base[i % 16]
+ *
+ * `base` is KNC_LANES int32, 64-byte aligned. For frame of reference it
+ * is the reference value per lane (fill all sixteen with one number for a
+ * scalar frame). For delta it is the value that came before position 0 in
+ * each lane, which is the previous block's last value in that lane.
+ *
+ * **Both require the stored residue to fit in `bits` bits, unsigned.**
+ * `value - base` for frame of reference, and each difference for delta,
+ * must lie in [0, 2^bits). Delta therefore wants ascending data; a column
+ * that goes down as well as up needs a zigzag transform first, which this
+ * library does not provide. Out of range, packing truncates and decoding
+ * returns a different number rather than failing. */
+void knc_unpack_for(int *out, const void *packed, unsigned bits, const int *base);
+void knc_unpack_delta(int *out, const void *packed, unsigned bits, const int *base);
+
+/* The encode side is a separate pass rather than being folded into the
+ * packer, because a value that straddles two packed words is read twice
+ * and would be transformed twice. One pass costs one instruction per
+ * sixteen values, and cannot get that wrong. Feed the output to knc_pack.
+ *
+ *   knc_encode_for    out[i] = values[i] - base[i % 16]
+ *   knc_encode_delta  out[i] = values[i] - the value before it in its lane
+ */
+void knc_encode_for(int *out, const int *values, const int *base);
+void knc_encode_delta(int *out, const int *values, const int *base);
+
 /* The per-width kernels, if a caller wants to hoist the dispatch out of a
  * loop. Indexed by bit width; entry 0 is null. */
 typedef void (*knc_unpack_fn)(int *out, const unsigned *packed);
 typedef void (*knc_pack_fn)(unsigned *packed, const int *values);
+typedef void (*knc_unpack_base_fn)(int *out, const unsigned *packed, const int *base);
 
 extern const knc_unpack_fn knc_unpack_table[33];
 extern const knc_pack_fn knc_pack_table[33];
+extern const knc_unpack_base_fn knc_unpack_for_table[33];
+extern const knc_unpack_base_fn knc_unpack_delta_table[33];
 
 #ifdef __cplusplus
 } /* extern "C" */

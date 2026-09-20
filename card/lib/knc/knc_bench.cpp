@@ -19,6 +19,7 @@
 // See knc.md.
 #include <knc.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -60,31 +61,57 @@ struct Worker {
 	knc::aligned_buffer<int> values;
 	knc::aligned_buffer<int> out;
 	knc::aligned_buffer<unsigned> packed;
+	// The frame of reference and the delta seed are one value per lane,
+	// and they are kernel arguments, so they need the same alignment as
+	// everything else.
+	knc::aligned_buffer<int> base;
 	std::size_t blocks;
 
 	explicit Worker(std::size_t n)
-	    : values(KNC_BLOCK), out(n * KNC_BLOCK), packed(n * KNC_BLOCK), blocks(n)
+	    : values(KNC_BLOCK), out(n * KNC_BLOCK), packed(n * KNC_BLOCK),
+	      base(knc::lanes), blocks(n)
 	{
+		for (std::size_t i = 0; i < knc::lanes; i++)
+			base[i] = 0;
 	}
 };
 
 // Runs `body` on `threads` workers and returns values per second in total.
+//
+// The workers are created first and spin on a flag, and only then does the
+// clock start. Creating 228 threads takes about 140 ms, which is not the
+// problem by itself; the problem is the skew. Threads created early begin
+// work while later ones are still being made, so on a short run they finish
+// and exit before the rest have started, fewer of them ever contend for
+// memory at once, and the reported rate is too high. Measured that way the
+// same configuration read 17.2 G values/s over 256 reps and 11.7 over 1024,
+// declining monotonically with run length at a constant 1100 MHz clock,
+// which is the signature of the skew rather than of throttling.
 template <typename F>
 double timed(std::vector<Worker> &w, unsigned threads, std::size_t reps, F body)
 {
 	std::vector<std::thread> pool;
-	double t0 = now_s();
+	std::atomic<bool> go{false};
+	std::atomic<unsigned> ready{0};
 
 	pool.reserve(threads);
 	for (unsigned t = 0; t < threads; t++)
 		pool.emplace_back([&, t] {
+			ready.fetch_add(1, std::memory_order_release);
+			while (!go.load(std::memory_order_acquire))
+				;
 			for (std::size_t r = 0; r < reps; r++)
 				body(w[t]);
 		});
+	while (ready.load(std::memory_order_acquire) < threads)
+		;
+
+	double t0 = now_s();
+	go.store(true, std::memory_order_release);
 	for (auto &th : pool)
 		th.join();
-
 	double secs = now_s() - t0;
+
 	double total = static_cast<double>(threads) * reps * w[0].blocks * KNC_BLOCK;
 	return total / secs / 1e6;
 }
@@ -106,9 +133,9 @@ int main(int argc, char **argv)
 	std::printf("libknc: %u thread(s), %zu blocks each, %zu reps, %d values per block\n",
 		    threads, blocks, reps, KNC_BLOCK);
 	{
-		// How much of a measurement is thread creation, so the reader can
-		// tell whether the rep count is high enough.
-		std::vector<Worker> dummy;
+		// Reported for context only: thread creation is outside the timed
+		// region now, and all workers are at the start line before the
+		// clock starts.
 		double t0 = now_s();
 		std::vector<std::thread> pool;
 
@@ -117,9 +144,11 @@ int main(int argc, char **argv)
 			pool.emplace_back([] {});
 		for (auto &th : pool)
 			th.join();
-		std::printf("spawning %u threads costs %.1f ms\n", threads, (now_s() - t0) * 1e3);
+		std::printf("spawning %u threads costs %.1f ms, outside the timed region\n",
+			    threads, (now_s() - t0) * 1e3);
 	}
-	std::printf("%5s %12s %12s %12s %10s\n", "bits", "unpack M/s", "pack M/s", "scalar M/s", "speedup");
+	std::printf("%5s %11s %11s %11s %11s %10s %8s\n", "bits",
+		    "unpack", "for", "delta", "pack", "scalar", "vs scalar");
 
 	std::vector<Worker> w;
 	w.reserve(threads);
@@ -149,12 +178,26 @@ int main(int argc, char **argv)
 			for (std::size_t b = 0; b < x.blocks; b++)
 				c.pack(x.packed.data() + b * words, x.out.data() + b * KNC_BLOCK);
 		});
+		double fo = timed(w, threads, reps, [&](Worker &x) {
+			for (std::size_t b = 0; b < x.blocks; b++)
+				c.unpack_for(x.out.data() + b * KNC_BLOCK, x.packed.data() + b * words,
+					     x.base.data());
+		});
+		// The delta chain is 64 dependent adds per lane and cannot be
+		// pipelined: the chain is the algorithm. This is the number that
+		// says whether that matters on an in-order core.
+		double de = timed(w, threads, reps, [&](Worker &x) {
+			for (std::size_t b = 0; b < x.blocks; b++)
+				c.unpack_delta(x.out.data() + b * KNC_BLOCK, x.packed.data() + b * words,
+					       x.base.data());
+		});
 		double sc = timed(w, threads, reps, [&](Worker &x) {
 			for (std::size_t b = 0; b < x.blocks; b++)
 				unpack_stream(x.out.data() + b * KNC_BLOCK, x.packed.data() + b * words, bits);
 		});
 
-		std::printf("%5u %12.1f %12.1f %12.1f %9.1fx\n", bits, un, pk, sc, un / sc);
+		std::printf("%5u %11.1f %11.1f %11.1f %11.1f %10.1f %7.1fx\n",
+			    bits, un, fo, de, pk, sc, un / sc);
 	}
 
 	// The out-of-range width throws from the C++ layer rather than doing

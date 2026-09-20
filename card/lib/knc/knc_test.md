@@ -1,7 +1,7 @@
 # knc_test.c
 
-Conformance for every kernel in `libknc`: 32 widths, two directions, 64
-kernels, on the card. Nothing on the host can execute MVEX bytes, so this is
+Conformance for every kernel in `libknc`: 32 widths, plain, frame of
+reference and delta, on the card. Nothing on the host can execute MVEX bytes, so this is
 the only place the library is checked.
 
 ```sh

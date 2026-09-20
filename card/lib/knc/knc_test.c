@@ -63,6 +63,47 @@ static void scalar_unpack(int *out, const unsigned *p, unsigned bits)
 	}
 }
 
+/* The two cascaded encodings, written straight from their definitions so
+ * that an encode kernel and its matching decode kernel cannot agree on a
+ * wrong idea and pass. */
+static void scalar_encode_for(int *out, const int *v, const int *base)
+{
+	int i;
+
+	for (i = 0; i < KNC_BLOCK; i++)
+		out[i] = (int)((unsigned)v[i] - (unsigned)base[i % LANES]);
+}
+
+static void scalar_encode_delta(int *out, const int *v, const int *base)
+{
+	int i;
+
+	for (i = 0; i < KNC_BLOCK; i++) {
+		unsigned prev = (i < LANES) ? (unsigned)base[i] : (unsigned)v[i - LANES];
+
+		out[i] = (int)((unsigned)v[i] - prev);
+	}
+}
+
+static void scalar_decode_for(int *out, const int *packed_values, const int *base)
+{
+	int i;
+
+	for (i = 0; i < KNC_BLOCK; i++)
+		out[i] = (int)((unsigned)packed_values[i] + (unsigned)base[i % LANES]);
+}
+
+static void scalar_decode_delta(int *out, const int *deltas, const int *base)
+{
+	int i;
+
+	for (i = 0; i < KNC_BLOCK; i++) {
+		unsigned prev = (i < LANES) ? (unsigned)base[i] : (unsigned)out[i - LANES];
+
+		out[i] = (int)(prev + (unsigned)deltas[i]);
+	}
+}
+
 static int first_diff(const int *a, const int *b)
 {
 	int i;
@@ -75,7 +116,7 @@ static int first_diff(const int *a, const int *b)
 
 int main(void)
 {
-	int *values, *out;
+	int *values, *out, *base, *residues, *model, *rebuilt;
 	unsigned *packed, *packed_ref;
 	unsigned bits;
 	int failed = 0, i;
@@ -84,7 +125,15 @@ int main(void)
 	if (posix_memalign((void **)&values, 64, KNC_BLOCK * sizeof *values)
 	    || posix_memalign((void **)&out, 64, KNC_BLOCK * sizeof *out)
 	    || posix_memalign((void **)&packed, 64, KNC_PACKED_BYTES(32))
-	    || posix_memalign((void **)&packed_ref, 64, KNC_PACKED_BYTES(32))) {
+	    || posix_memalign((void **)&packed_ref, 64, KNC_PACKED_BYTES(32))
+	    /* The base vector is an argument to a kernel, so it needs the
+	     * same alignment as everything else. A stack array does not have
+	     * it, and the failure is a fault on the first vmovaps rather than
+	     * a wrong answer. */
+	    || posix_memalign((void **)&base, 64, LANES * sizeof *base)
+	    || posix_memalign((void **)&residues, 64, KNC_BLOCK * sizeof *residues)
+	    || posix_memalign((void **)&model, 64, KNC_BLOCK * sizeof *model)
+	    || posix_memalign((void **)&rebuilt, 64, KNC_BLOCK * sizeof *rebuilt)) {
 		perror("posix_memalign");
 		return 1;
 	}
@@ -141,11 +190,100 @@ int main(void)
 		printf("\n");
 	}
 
+	/* --------------------------------------------- FOR and DELTA */
+
+	printf("\n%5s %8s %14s %14s\n", "bits", "", "frame of ref", "delta");
+	for (bits = 1; bits <= 32; bits++) {
+		unsigned m = lowmask(bits);
+		int bad[2], k;
+
+		for (i = 0; i < LANES; i++)
+			base[i] = (int)(0x5BF03635u * (unsigned)(i + 1));
+
+		/* Frame of reference: the residue has to fit in `bits` bits
+		 * unsigned, so build the values from residues rather than the
+		 * other way round. */
+		for (i = 0; i < KNC_BLOCK; i++)
+			residues[i] = (int)((0x9E3779B9u * (unsigned)(i + 1)) & m);
+		for (i = 0; i < KNC_BLOCK; i++)
+			values[i] = (int)((unsigned)residues[i] + (unsigned)base[i % LANES]);
+
+		scalar_encode_for(model, values, base);
+		knc_encode_for(out, values, base);
+		bad[0] = first_diff(out, model);
+		if (bad[0] < 0) {
+			knc_pack(packed, out, bits);
+			memset(out, 0xAA, KNC_BLOCK * sizeof *out);
+			knc_unpack_for(out, packed, bits, base);
+			bad[0] = first_diff(out, values);
+		}
+
+		/* Delta: ascending within each lane, steps inside the width. */
+		for (i = 0; i < KNC_BLOCK; i++)
+			residues[i] = (int)((0x9E3779B9u * (unsigned)(i + 1)) & m);
+		for (i = 0; i < KNC_BLOCK; i++) {
+			unsigned prev = (i < LANES) ? (unsigned)base[i] : (unsigned)values[i - LANES];
+
+			values[i] = (int)(prev + (unsigned)residues[i]);
+		}
+
+		scalar_encode_delta(model, values, base);
+		knc_encode_delta(out, values, base);
+		bad[1] = first_diff(out, model);
+		if (bad[1] < 0) {
+			scalar_decode_delta(rebuilt, model, base);
+			if (first_diff(rebuilt, values) >= 0) {
+				bad[1] = first_diff(rebuilt, values);
+			} else {
+				knc_pack(packed, out, bits);
+				memset(out, 0xAA, KNC_BLOCK * sizeof *out);
+				knc_unpack_delta(out, packed, bits, base);
+				bad[1] = first_diff(out, values);
+			}
+		}
+
+		printf("%5u %8s", bits, "");
+		for (k = 0; k < 2; k++) {
+			if (bad[k] == -1) {
+				printf(" %14s", "OK");
+			} else {
+				printf(" %10s@%-3d", "FAILED", bad[k]);
+				failed++;
+			}
+		}
+		printf("\n");
+	}
+
+	/* The frame-of-reference decode must also match a scalar decode of the
+	 * same residues, not only round-trip with its own encoder. */
+	{
+		unsigned m = lowmask(11);
+
+		for (i = 0; i < LANES; i++)
+			base[i] = (int)(0x5BF03635u * (unsigned)(i + 1));
+		for (i = 0; i < KNC_BLOCK; i++)
+			residues[i] = (int)((0x9E3779B9u * (unsigned)(i + 1)) & m);
+		scalar_decode_for(model, residues, base);
+		knc_pack(packed, residues, 11);
+		memset(out, 0xAA, KNC_BLOCK * sizeof *out);
+		knc_unpack_for(out, packed, 11, base);
+		if (first_diff(out, model) >= 0) {
+			printf("knc_unpack_for disagrees with the scalar decode at %d\n",
+			       first_diff(out, model));
+			failed++;
+		}
+	}
+
 	/* An out-of-range width must do nothing rather than jump somewhere. */
 	memset(out, 0x5A, KNC_BLOCK * sizeof *out);
 	knc_unpack(out, packed, 0);
 	knc_unpack(out, packed, 33);
 	knc_unpack(out, packed, 0xFFFFFFFFu);
+	memset(base, 0, LANES * sizeof *base);
+	knc_unpack_for(out, packed, 0, base);
+	knc_unpack_for(out, packed, 33, base);
+	knc_unpack_delta(out, packed, 0, base);
+	knc_unpack_delta(out, packed, 33, base);
 	for (i = 0; i < KNC_BLOCK; i++)
 		if (((unsigned)out[i] & 0xFFu) != 0x5Au) {
 			printf("out-of-range width wrote to the output at %d\n", i);
@@ -169,5 +307,7 @@ int main(void)
 
 	printf("\n%d checks failed\n", failed);
 	free(values); free(out); free(packed); free(packed_ref);
+	free(base); free(residues); free(model); free(rebuilt);
+
 	return failed ? 1 : 0;
 }

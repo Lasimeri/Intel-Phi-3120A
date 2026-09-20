@@ -118,6 +118,43 @@ fn memcpy_kernel() -> String {
     s
 }
 
+/// What a decode kernel does with each value after it comes out of the
+/// bit-packed stream.
+///
+/// These are the lightweight encodings FastLanes cascades, and they are why
+/// bit-packing alone is only the bottom layer: real columnar data is not
+/// small because its values are small, it is small because its values are
+/// close together (FOR) or close to their neighbours (DELTA).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The value is the value.
+    Plain,
+    /// Frame of reference: add a per-lane base. One independent `vpaddd`
+    /// per value, so it costs a single instruction and nothing else.
+    For,
+    /// Delta: each value is the difference from the one before it in the
+    /// same lane, so decoding is a running sum along positions. That is a
+    /// dependent chain 64 deep and it cannot be pipelined away: the chain
+    /// *is* the algorithm. It survives only because all sixteen lanes run
+    /// their own chain at once and the bit-unpacking of the next group has
+    /// no dependency on it.
+    Delta,
+}
+
+impl Mode {
+    fn suffix(self) -> &'static str {
+        match self {
+            Mode::Plain => "",
+            Mode::For => "_for",
+            Mode::Delta => "_delta",
+        }
+    }
+
+    fn all() -> [Mode; 3] {
+        [Mode::Plain, Mode::For, Mode::Delta]
+    }
+}
+
 /// Values processed together by both kernels. Eight independent chains is
 /// more than the vector unit's latency needs, and it leaves room inside 32
 /// registers for the words and the mask.
@@ -176,16 +213,27 @@ fn place(bits: u32, v: usize) -> (usize, u8) {
 /// a few more loads than the theoretical minimum of `2N` for the block,
 /// because groups overlap at word boundaries, but they hit L1 and it
 /// removes the need to hold the whole block's words in registers.
-fn unpack_kernel(out: &mut String, bits: u32) {
+fn unpack_kernel(out: &mut String, bits: u32, mode: Mode) {
     let temp = |p: usize, half: usize| Zmm(WORD_REGS + (2 * p + half) as u8);
     let maskreg = Zmm(30);
-    let name = format!("knc_unpack_b{bits}");
+    // The frame of reference, and the running sum, each need one register
+    // live across the whole kernel. Neither mode uses the other's.
+    let base = Zmm(26);
+    let acc = Zmm(27);
+    let name = format!("knc_unpack{}_b{bits}", mode.suffix());
 
-    function(
-        out,
-        &name,
-        &format!("void {name}(int *out, const unsigned *packed): rdi = out (1024 int32, 64-byte aligned), rsi = packed ({} bytes, 64-byte aligned)", 64 * 2 * bits),
-    );
+    let sig = match mode {
+        Mode::Plain => format!("void {name}(int *out, const unsigned *packed): rdi = out (1024 int32, 64-byte aligned), rsi = packed ({} bytes, 64-byte aligned)", 64 * 2 * bits),
+        Mode::For => format!("void {name}(int *out, const unsigned *packed, const int *base): rdi = out, rsi = packed ({} bytes), rdx = base (16 int32, one per lane); all 64-byte aligned", 64 * 2 * bits),
+        Mode::Delta => format!("void {name}(int *out, const unsigned *packed, const int *base): rdi = out, rsi = packed ({} bytes), rdx = base (16 int32, the value before position 0 in each lane); all 64-byte aligned", 64 * 2 * bits),
+    };
+    function(out, &name, &sig);
+    if mode == Mode::For {
+        writeln!(out, "{}", vmovaps_load(base, mem(Gpr::Rdx, 0)).gas()).unwrap();
+    }
+    if mode == Mode::Delta {
+        writeln!(out, "{}", vmovaps_load(acc, mem(Gpr::Rdx, 0)).gas()).unwrap();
+    }
     if bits < 32 {
         writeln!(out, "\tleaq knc_mask_b{bits}(%rip), %rax").unwrap();
         writeln!(out, "{}", vmovaps_load(maskreg, mem(Gpr::Rax, 0)).gas()).unwrap();
@@ -245,8 +293,64 @@ fn unpack_kernel(out: &mut String, bits: u32) {
                 writeln!(out, "{}", vpandd(temp(p, 0), src, Src::Reg(maskreg), K(0)).gas()).unwrap();
             }
         }
-        for (p, &v) in group.iter().enumerate() {
-            writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), result(p, v)).gas()).unwrap();
+        match mode {
+            Mode::Plain => {
+                for (p, &v) in group.iter().enumerate() {
+                    writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), result(p, v)).gas()).unwrap();
+                }
+            }
+            Mode::For => {
+                // Eight independent adds, then eight independent stores.
+                for (p, &v) in group.iter().enumerate() {
+                    writeln!(out, "{}", vpaddd(temp(p, 0), base, Src::Reg(result(p, v)), K(0)).gas()).unwrap();
+                }
+                for (p, &v) in group.iter().enumerate() {
+                    writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), temp(p, 0)).gas()).unwrap();
+                }
+            }
+            Mode::Delta => {
+                // The running sum, in position order. Each add waits on the
+                // one before it; the stores do not, so they interleave and
+                // only the adds are on the critical path.
+                for (p, &v) in group.iter().enumerate() {
+                    writeln!(out, "{}", vpaddd(acc, acc, Src::Reg(result(p, v)), K(0)).gas()).unwrap();
+                    writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), acc).gas()).unwrap();
+                }
+            }
+        }
+    }
+    end_function(out, &name);
+}
+
+/// The encode-side transforms, which are their own pass rather than being
+/// folded into the packer.
+///
+/// Folding them in would mean subtracting inside every piece of every word,
+/// and a value that straddles two words is read twice, so it would be
+/// subtracted twice. A separate pass over 64 vectors costs one instruction
+/// per sixteen values and cannot get that wrong. Decoding is the direction
+/// that has to be fast, and there the transform *is* folded in.
+fn transform_kernel(out: &mut String, mode: Mode) {
+    let (base, tmp) = (Zmm(26), Zmm(27));
+    let name = format!("knc_encode{}", mode.suffix());
+    let sig = match mode {
+        Mode::For => format!("void {name}(int *out, const int *values, const int *base): out[i] = values[i] - base[lane]; rdi = out, rsi = values, rdx = base (16 int32); all 64-byte aligned"),
+        Mode::Delta => format!("void {name}(int *out, const int *values, const int *base): out[i] = values[i] - the value before it in the same lane; rdi = out, rsi = values, rdx = base (16 int32, the value before position 0); all 64-byte aligned"),
+        Mode::Plain => unreachable!("the plain encode is a copy"),
+    };
+
+    function(out, &name, &sig);
+    writeln!(out, "{}", vmovaps_load(base, mem(Gpr::Rdx, 0)).gas()).unwrap();
+    for v in 0..64usize {
+        let slot = mem(Gpr::Rsi, 64 * v as i32);
+
+        writeln!(out, "{}", vmovaps_load(tmp, slot).gas()).unwrap();
+        // For DELTA the subtrahend becomes this value for the next position,
+        // so the two-register shuffle is the whole of the state.
+        writeln!(out, "{}", vpsubd(Zmm(28), tmp, Src::Reg(base), K(0)).gas()).unwrap();
+        writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), Zmm(28)).gas()).unwrap();
+        if mode == Mode::Delta {
+            writeln!(out, "{}", vmovapd_load(base, Src::Reg(tmp), K(0)).gas()).unwrap();
         }
     }
     end_function(out, &name);
@@ -379,17 +483,33 @@ fn pack_kernel(out: &mut String, bits: u32) {
 /// jump would be the alternative, and this library is called from Python
 /// and JavaScript where the width can come from data.
 fn dispatch_thunks(out: &mut String) {
-    for (what, sig) in [
-        ("unpack", "void knc_unpack(int *out, const void *packed, unsigned bits)"),
-        ("pack", "void knc_pack(void *packed, const int *values, unsigned bits)"),
+    // The three-argument entry points take the width in edx, which is where
+    // the kernel wants its third argument, so the base pointer has to move
+    // down from rcx. Everything else is the same tail call.
+    for (what, base, sig) in [
+        ("unpack", false, "void knc_unpack(int *out, const void *packed, unsigned bits)"),
+        ("pack", false, "void knc_pack(void *packed, const int *values, unsigned bits)"),
+        (
+            "unpack_for",
+            true,
+            "void knc_unpack_for(int *out, const void *packed, unsigned bits, const int *base)",
+        ),
+        (
+            "unpack_delta",
+            true,
+            "void knc_unpack_delta(int *out, const void *packed, unsigned bits, const int *base)",
+        ),
     ] {
         function(out, &format!("knc_{what}"), sig);
-        writeln!(out, "\tmovl %edx, %edx").unwrap(); // a width is 32 bits wide
-        writeln!(out, "\tdecl %edx").unwrap(); // 1..32 becomes 0..31, and 0 wraps high
-        writeln!(out, "\tcmpl $31, %edx").unwrap();
+        writeln!(out, "\tmovl %edx, %eax").unwrap(); // a width is 32 bits wide
+        writeln!(out, "\tdecl %eax").unwrap(); // 1..32 becomes 0..31, and 0 wraps high
+        writeln!(out, "\tcmpl $31, %eax").unwrap();
         writeln!(out, "\tja 1f").unwrap();
-        writeln!(out, "\tleaq knc_{what}_table(%rip), %rax").unwrap();
-        writeln!(out, "\tjmp *8(%rax,%rdx,8)").unwrap();
+        if base {
+            writeln!(out, "\tmovq %rcx, %rdx").unwrap();
+        }
+        writeln!(out, "\tleaq knc_{what}_table(%rip), %r9").unwrap();
+        writeln!(out, "\tjmp *8(%r9,%rax,8)").unwrap();
         writeln!(out, "1:").unwrap();
         end_function(out, &format!("knc_{what}"));
     }
@@ -399,13 +519,18 @@ fn dispatch_thunks(out: &mut String) {
 /// switch of its own. Index 0 is null: a zero-bit value carries no
 /// information and there is no kernel for it.
 fn dispatch_tables(out: &mut String, widths: &[u32]) {
-    for what in ["unpack", "pack"] {
+    for what in ["unpack", "pack", "unpack_for", "unpack_delta"] {
         writeln!(out, "\n\t.section .rodata\n\t.balign 8").unwrap();
         writeln!(out, "\t.globl knc_{what}_table\n\t.type knc_{what}_table, @object").unwrap();
         writeln!(out, "knc_{what}_table:").unwrap();
         writeln!(out, "\t.quad 0").unwrap();
         for bits in widths {
-            writeln!(out, "\t.quad knc_{what}_b{bits}").unwrap();
+            let sym = match what {
+                "unpack_for" => format!("knc_unpack_for_b{bits}"),
+                "unpack_delta" => format!("knc_unpack_delta_b{bits}"),
+                _ => format!("knc_{what}_b{bits}"),
+            };
+            writeln!(out, "\t.quad {sym}").unwrap();
         }
         writeln!(out, "\t.size knc_{what}_table, .-knc_{what}_table").unwrap();
     }
@@ -432,7 +557,7 @@ const UNPACK_WIDTHS: [u32; 3] = [5, 11, 16];
 fn bitunpack() -> String {
     let mut s = header("bitunpack.S", "bitunpack.md");
     for bits in UNPACK_WIDTHS {
-        unpack_kernel(&mut s, bits);
+        unpack_kernel(&mut s, bits, Mode::Plain);
     }
     mask_constants(&mut s, &UNPACK_WIDTHS);
     writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
@@ -447,12 +572,17 @@ fn bitunpack() -> String {
 /// because it is the artifact a published measurement refers to.
 fn codec() -> String {
     let widths: Vec<u32> = (1..=32).collect();
-    let mut s = header("knc_codec.S", "card/userland/components/libknc.md");
-    for &bits in &widths {
-        unpack_kernel(&mut s, bits);
+    let mut s = header("knc_codec.S", "card/lib/knc/knc.md");
+    for mode in Mode::all() {
+        for &bits in &widths {
+            unpack_kernel(&mut s, bits, mode);
+        }
     }
     for &bits in &widths {
         pack_kernel(&mut s, bits);
+    }
+    for mode in [Mode::For, Mode::Delta] {
+        transform_kernel(&mut s, mode);
     }
     dispatch_thunks(&mut s);
     dispatch_tables(&mut s, &widths);

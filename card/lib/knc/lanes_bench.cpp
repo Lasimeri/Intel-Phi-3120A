@@ -18,6 +18,7 @@
 //   ./lanes_bench [threads] [blocks-per-thread] [reps] [bits]
 //
 // See knc.md.
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -88,22 +89,37 @@ struct Worker {
 	explicit Worker(std::size_t n) : out(n * BLOCK), packed(n * BLOCK), blocks(n) {}
 };
 
+// Workers are created first and spin on a flag; the clock starts only once
+// every one of them is at the start line. Creating 228 threads takes about
+// 140 ms on the card, and the skew that causes (early threads finishing
+// before late ones start, so fewer ever contend for memory at once) reads
+// as extra throughput on short runs. knc_bench.cpp has the numbers that
+// showed it.
 template <typename F>
 double timed(std::vector<Worker> &w, unsigned threads, std::size_t reps, F body)
 {
 	std::vector<std::thread> pool;
-	double t0 = now_s();
+	std::atomic<bool> go{false};
+	std::atomic<unsigned> ready{0};
 
 	pool.reserve(threads);
 	for (unsigned t = 0; t < threads; t++)
 		pool.emplace_back([&, t] {
+			ready.fetch_add(1, std::memory_order_release);
+			while (!go.load(std::memory_order_acquire))
+				;
 			for (std::size_t r = 0; r < reps; r++)
 				body(w[t]);
 		});
+	while (ready.load(std::memory_order_acquire) < threads)
+		;
+
+	double t0 = now_s();
+	go.store(true, std::memory_order_release);
 	for (auto &th : pool)
 		th.join();
-
 	double secs = now_s() - t0;
+
 	return static_cast<double>(threads) * reps * w[0].blocks * BLOCK / secs / 1e6;
 }
 

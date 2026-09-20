@@ -19,11 +19,15 @@ c++ -std=c++17 -O2 prog.cpp -lknc           # C++, through knc.hpp
 | --- | --- |
 | `knc_unpack(out, packed, bits)` | one block of 1024 values of `bits` bits into 1024 `int32` |
 | `knc_pack(packed, values, bits)` | the inverse |
-| `knc_unpack_table[33]`, `knc_pack_table[33]` | the per-width kernels, to hoist the dispatch out of a loop |
+| `knc_unpack_for(out, packed, bits, base)` | the same, adding a per-lane frame of reference |
+| `knc_unpack_delta(out, packed, bits, base)` | the same, as a running sum along positions within each lane |
+| `knc_encode_for`, `knc_encode_delta` | the encode side of those two, as a pass before `knc_pack` |
+| `knc_unpack_table[33]` and the three others | the per-width kernels, to hoist the dispatch out of a loop |
 | `knc_memcpy64(dst, src, blocks)` | 64-byte aligned block copy |
 | `knc::codec`, `knc::aligned_buffer` | the C++ layer in `knc.hpp` |
 
-Widths 1 to 32, both directions, 64 kernels. All pointers must be 64-byte
+Widths 1 to 32, three decode variants (plain, frame of reference, delta)
+and one encode, 160 kernels in all. All pointers must be 64-byte
 aligned. A width outside 1 to 32 returns without touching memory: the
 dispatch is a computed jump and this library is called from Python and
 JavaScript, where the width can come from data. `knc.hpp` throws instead.
@@ -42,10 +46,20 @@ from all sixteen. Nothing crosses a lane, which matters because the card
 has no byte shuffle and no cheap cross-lane permute
 (`docs/research/compression-on-knc.md`).
 
-This is the FastLanes unified layout at a 512-bit register width. Packed
-bytes produced here are **not** interchangeable with an ordinary packed
-bitstream, and `knc_test.c` checks them against an independent scalar model
-of the layout rather than only round-tripping.
+Packed bytes produced here are **not** interchangeable with an ordinary
+packed bitstream, and `knc_test.c` checks them against an independent
+scalar model of the layout rather than only round-tripping.
+
+This is FastLanes' central idea at 512 bits, with 16 lanes and the identity
+tuple order. It is **not** FastLanes' Unified Transposed Layout, so packed
+bytes are not interchangeable with the reference implementation either. The
+UTL reorders 1024 tuples into eight 8x16 transposed blocks in the order
+04261537 so that one tuple order serves lane widths 8, 16, 32 and 64 across
+a whole table; this card has no 8-bit or 16-bit integer vector instructions
+at all, so that unification buys it nothing, and adopting it would turn
+every store from sixteen consecutive integers into a stride-64 scatter on a
+machine whose `vscatterd` serialises. `docs/results/2026-09-20-fastlanes.md`
+has the full accounting of which parts of FastLanes are here.
 
 ## Why there is no C or Rust in it
 
@@ -66,7 +80,7 @@ libc++, CPython or QuickJS when it is linked into them.
 | `build.sh` | generates the kernels, assembles, audits, installs into the sysroot and packages for `/opt/phi` |
 | `knc.h` | the C ABI |
 | `knc.hpp` | C++17 layer: `knc::codec`, `knc::aligned_buffer`, range-checked entry points |
-| `knc_test.c` | conformance for all 64 kernels, on the card |
+| `knc_test.c` | conformance for all 160 kernels, on the card |
 | `knc_bench.cpp` | throughput at every width, across threads; also the C++ layer's smoke test |
 | `lanes_bench.cpp` | the scalar baselines alone, so the same source runs on the host and the card |
 
@@ -82,10 +96,10 @@ scalar, `lanes` is scalar over this layout, `libknc` is the vector kernels.
 
 | Machine | Threads | stream | lanes | libknc |
 | --- | --- | --- | --- | --- |
-| card | 1 | 37.8 | 92.6 | **403.9** |
-| card | 228 | 3396 | 6355 | **12556** |
-| host | 1 | 1596.5 | **3913.8** | n/a |
-| host | 16 | 10071 | **30836** | n/a |
+| card | 1 | 37.6 | 90.6 | **416** |
+| card | 228 | 3492 | 7416 | **10463** |
+| host | 1 | 1556 | **4159** | n/a |
+| host | 16 | 12800 | **37200** | n/a |
 
 The host's `lanes` column is FastLanes working as designed: the same scalar
 source, auto-vectorised to AVX2 by the compiler. The card's `libknc` column
@@ -93,20 +107,24 @@ is the same job done by hand because the compiler cannot.
 
 Three things follow.
 
-**libknc saturates the card's memory.** 12556 M values per second at 11
-bits is 4 bytes out and 1.375 in per value, about 67 GB/s, against the 66.0
-GB/s that `card/examples/membw.md` measures at 228 threads. There is no
-throughput left to find; the kernels are done until the data moves less.
+**At 228 threads the card is memory-bound.** 10463 M values per second at
+11 bits is about 56 GB/s of useful traffic against the 66.0 GB/s
+`card/examples/membw.md` measures for pure reads at 228 threads, and the
+proof is that the FOR and DELTA transforms cost 20 and 40 percent when the
+data is in L1 and nothing at all at 228 threads
+(`docs/results/2026-09-20-fastlanes.md`).
 
-**The card reaches 0.41 of the host on this workload.** That is the best
-ratio in this project: xz managed 0.22 to 0.26, zstd 0.03 to 0.07, scalar
-integer work 0.14. It is still a loss, and it is a loss against sixteen
-threads with sixteen fewer cores.
+**The card reaches 0.28 of the host on this workload.** Still the best
+ratio in this project, narrowly: xz managed 0.22 to 0.26, zstd 0.03 to
+0.07, scalar integer work 0.14. It is a loss against sixteen threads with
+sixteen fewer cores.
 
-**The vector unit is what closes it.** Card scalar against host scalar on
-the same layout is 6355 against 30836, or 0.21x. libknc takes that to
-0.41x. Per thread the vector unit is worth 4.4x over the card's own best
-scalar code, and 10.7x over how a codec would ordinarily do it.
+**The vector unit is what closes what is closed.** Card scalar against host
+scalar on the same layout is 7416 against 37200, or 0.20x. libknc takes
+that to 0.28x. Per thread the margin is far larger, 4.6x over the card's
+own best scalar code and 11x over how a codec would ordinarily do it; it
+narrows at 228 threads because memory rather than instructions sets the
+rate there.
 
 ## Building it
 

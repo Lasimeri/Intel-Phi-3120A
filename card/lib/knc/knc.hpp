@@ -68,6 +68,20 @@ public:
 		knc_unpack_table[bits_](out, static_cast<const unsigned *>(packed));
 	}
 
+	/// Frame of reference: add `base[lane]` to every value as it is
+	/// decoded. `base` is `lanes` values, 64-byte aligned.
+	void unpack_for(int *out, const void *packed, const int *base) const noexcept
+	{
+		knc_unpack_for_table[bits_](out, static_cast<const unsigned *>(packed), base);
+	}
+
+	/// Delta: the running sum along positions within each lane, starting
+	/// from `base[lane]`.
+	void unpack_delta(int *out, const void *packed, const int *base) const noexcept
+	{
+		knc_unpack_delta_table[bits_](out, static_cast<const unsigned *>(packed), base);
+	}
+
 	unsigned bits() const noexcept { return bits_; }
 	std::size_t packed_bytes() const noexcept { return knc::packed_bytes(bits_); }
 
@@ -101,6 +115,22 @@ private:
 	std::unique_ptr<T, free_deleter> ptr_;
 	std::size_t count_;
 };
+
+/// Lanes in the layout: a base vector is this many values.
+inline constexpr std::size_t lanes = KNC_LANES;
+
+/// The encode side of the two cascaded transforms. Feed the output to
+/// `pack`. Both require the residue to fit in the bit width, unsigned;
+/// `knc.h` says what happens when it does not.
+inline void encode_for(int *out, const int *values, const int *base) noexcept
+{
+	knc_encode_for(out, values, base);
+}
+
+inline void encode_delta(int *out, const int *values, const int *base) noexcept
+{
+	knc_encode_delta(out, values, base);
+}
 
 /// Copy whole 64-byte blocks between aligned pointers.
 inline void *memcpy64(void *dst, const void *src, std::size_t blocks) noexcept

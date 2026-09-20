@@ -52,8 +52,10 @@ The crate needs nothing from `std`. The demo binary in `main.rs` does.
 | 16 | 259.4 | 9607.0 |
 | 32 | 231.3 | 8510.2 |
 
-Millions of values per second. Below the C++ figures in
-`docs/results/2026-09-20-libknc.md` (12556 at 11 bits) because `Packed` is
-4 KiB whatever the width, so the working set at 11 bits is three times
-larger than it needs to be and the memory bound arrives sooner. The kernels
-are identical; this is the cost of the simpler type.
+Millions of values per second, measured before the benchmark harness
+gained its start barrier, so the 228-thread column is optimistic in the way
+`docs/results/2026-09-20-libknc.md` describes. The single-thread column is
+unaffected and is the one to read: it is below the C++ figure because
+`Packed` is 4 KiB whatever the width, so the working set at 11 bits is
+three times larger than it needs to be and the memory bound arrives sooner.
+The kernels are identical; this is the cost of the simpler type.
