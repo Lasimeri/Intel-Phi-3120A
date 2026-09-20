@@ -11,15 +11,18 @@ to produce the numbers in `docs/results/`, not as a library.
 | `pi-bbp.c` | 64-bit integer and modular-exponentiation throughput, no floating point. 0.14 of the host | `docs/results/2026-09-15-pi-bbp.md` |
 | `mandel-vpu.c` with `mandel_vpu.S` | The same image on the 512-bit vector unit, 8 doubles per instruction, against AVX2 on the host. 1.47x on the iteration pass | `docs/results/2026-09-15-vpu.md` |
 | `vpu_probe.c` with `vpu_probe.S` | That the MVEX encoder produces instructions the card executes correctly: every lane of every result checked against scalar arithmetic, including masking and the `zmm31` register extension bits | `docs/results/2026-09-15-vpu.md` |
+| `vpu_int.c` with `vpu_int.S` | That the integer MVEX encodings execute as the ISA document says: one instruction per output slot, every lane against scalar C, two operand passes. 0 of 32 checks failed | `docs/results/2026-09-20-mvex-integer.md` |
 | `vpu_state.c` | That kernel patch 0024 saves and restores vector state across context switches: 32 zmm plus 8 mask registers per thread, compared after every sleep | `docs/results/2026-09-15-vpu.md` (0 mismatches in 3.7 M checks) |
 | `phiperf.c` | Hardware performance counters through `perf_event_open` against the mainline KNC PMU driver, since the `perf` tool is not built for the card | `docs/results/2026-09-16-sensors.md` |
 | `memhog.c` | That host RAM as swap works under real pressure: 8 GiB allocated, touched and read back on a card with 5669 MiB of GDDR5, 0 mismatches | `docs/results/2026-09-19-card-os.md` |
 | `vpu_memcpy.S` with `vpu_memcpy.c` | A 64-byte-wide block copy in hand-encoded MVEX, checked against `memcpy` on every block count: 1.63x at 64 bytes, 1.11x at 1 MiB where both are bandwidth-bound | `card/examples/vpu_memcpy.md` |
 | `membw.c` | Reachable GDDR5 read bandwidth: 80.5 GB/s at 2 threads per core, against 35.7 GB/s on the host. The one axis where the card wins without hand-written MVEX | `card/examples/membw.md` |
+| `bitunpack.c` with `bitunpack.S` | Bit-unpacking 1024 values of N bits into int32 on the vector unit against two scalar baselines: 46 to 58x in cache, 6.5 to 8.6x streaming, one thread | `docs/results/2026-09-20-bitunpack.md` |
 
-The two `.S` files are generated, not written: `knc-mvex-gen mandel` and
-`knc-mvex-gen probe` emit them from the encoder in
-`host/crates/knc-mvex/`. Regenerate rather than edit.
+The `.S` files are generated, not written: `knc-mvex-gen probe`,
+`int-probe`, `mandel`, `memcpy` and `bitunpack` emit them from the encoder
+in `host/crates/knc-mvex/`. Regenerate rather than edit; `cargo test -p
+knc-mvex` fails while a committed file and the generator disagree.
 
 ## Getting one onto the card
 

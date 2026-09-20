@@ -28,11 +28,27 @@ with r/m = 101 is RIP-relative. Mask register moves and `kortest` are
 two-byte VEX instructions (`C5 F8 opcode ModRM`), limited to the first
 eight general registers.
 
-Instructions covered: `vmovaps` load/store (the form Intel's kernel
-uses), `vmovapd` load/store/move, `vaddpd`, `vsubpd`, `vmulpd`,
-`vfmadd213pd`, `vfmadd231pd`, `vcmppd` (with its write mask acting as an
-AND on the result: a clear mask bit clears the result bit, table 6.3 and
-the note under it), `kmov` in all three directions, `kortest`.
+Instructions covered:
+
+| family | forms |
+| --- | --- |
+| move | `vmovaps` load/store (the form Intel's kernel uses), `vmovapd` load/store/move |
+| float64 | `vaddpd`, `vsubpd`, `vmulpd`, `vfmadd213pd`, `vfmadd231pd`, `vcmppd` (its write mask acts as an AND on the result: a clear mask bit clears the result bit, table 6.3 and the note under it) |
+| int32 | `vpaddd`, `vpsubd`, `vpandd`, `vpandnd` (note the order: `(!zmm2) & src`), `vpord`, `vpxord`, `vpslld`, `vpsrld`, `vpsrad`, `vpsllvd`, `vpsrlvd` |
+| mask | `kmov` in all three directions, `kortest` |
+
+Every integer vector instruction on this machine operates on 32-bit or
+64-bit lanes; there are no byte or word forms in the ISA at all, so the
+`D` set above is the complete integer vocabulary a codec can use here
+(`docs/research/compression-on-knc.md`). The `D` forms are `W0` where the
+`PD` forms are `W1`, which is the only difference in the prefix.
+
+The immediate-count shifts are the one `NDD` family: the destination is
+in `vvvv`, the source in ModRM.r/m, and ModRM.reg carries the opcode
+extension of opcode 72 (`/6` left, `/2` logical right, `/4` arithmetic
+right), so `vpslld`, `vpsrld` and `vpsrad` share one encoder path and one
+opcode byte. Everything else here is `NDS`: destination in ModRM.reg,
+first source in `vvvv`, second source in r/m.
 
 Each function returns an `Insn` with the bytes and the Intel-syntax text
 (`[rbp-64]` for a negative displacement); `gas()` renders a `.byte` line
@@ -45,7 +61,13 @@ Three sources pin the bytes, in decreasing strength:
 
 1. Hardware: `probe_bytes_verified_on_the_card` holds the bytes of
    `card/examples/vpu_probe.S`, which ran on the card on 2026-09-15 with
-   every lane checked (`docs/results/2026-09-15-vpu.md`).
+   every lane checked (`docs/results/2026-09-15-vpu.md`), and
+   `integer_bytes_verified_on_the_card` holds the bytes of
+   `card/examples/vpu_int.S`, which ran on 2026-09-20 with 0 of 32 checks
+   failing (`docs/results/2026-09-20-mvex-integer.md`). The integer set
+   has no Intel macro to reproduce, so hardware is its only reference,
+   which is why the probe covers a memory second source, the `NDD` form
+   with a register above `zmm15`, and merge masking.
 2. Intel's macros: the `vmovaps` load and store for all 32 registers and
    the `kmov` r32 forms for all 8 masks reproduce `mic_ni.h` byte for byte.
 3. The document: the extension bits for registers 8 to 31, memory bases

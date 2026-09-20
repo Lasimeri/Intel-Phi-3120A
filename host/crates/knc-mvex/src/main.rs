@@ -1,10 +1,12 @@
 //! `knc-mvex-gen`: writes the project's hand-vectorised Knights Corner code
 //! as assembly with `.byte`-encoded vector instructions, and the kernel's
 //! vector state save/restore header. Everything comes from the encoder in
-//! lib.rs, so a change there regenerates all three:
+//! lib.rs, so a change there regenerates every one of them:
 //!
 //! ```text
 //! knc-mvex-gen probe         > card/examples/vpu_probe.S
+//! knc-mvex-gen int-probe     > card/examples/vpu_int.S
+//! knc-mvex-gen bitunpack     > card/examples/bitunpack.S
 //! knc-mvex-gen mandel        > card/examples/mandel_vpu.S
 //! knc-mvex-gen kernel-header > arch/x86/include/asm/knc_vpu.h   (in the kernel tree)
 //! knc-mvex-gen memcpy        > card/examples/vpu_memcpy.S
@@ -111,6 +113,216 @@ fn memcpy_kernel() -> String {
     writeln!(s, "\tjnz 3b").unwrap();
     writeln!(s, "4:").unwrap();
     end_function(&mut s, "knc_memcpy64");
+    writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
+    s
+}
+
+/// `knc_unpack_bN`: unpack 1024 values of N bits into 1024 int32, using the
+/// vector unit.
+///
+/// The layout is the one that makes bit-packing vectorisable at all, and it
+/// is the reason FastLanes exists (docs/research/compression-on-knc.md).
+/// Value `i` of the block lives in lane `i % 16` at position `i / 16`, so
+/// each of the 16 lanes carries its own independent 64-value bitstream and
+/// all 16 streams sit at the same bit offset at the same time. Word `w` of
+/// every lane is therefore one 64-byte vector at `packed + 64*w`, and a
+/// single shift-and-mask pair extracts one value from all 16 lanes at once.
+/// Nothing crosses a lane, which matters here because the card has no byte
+/// shuffle and no cross-lane permute worth using.
+///
+/// Each value needs one of four fixed sequences, decided here rather than
+/// at run time, because the bit offsets are compile-time constants: a value
+/// aligned to a word boundary is one `vpandd`; one that ends on a word
+/// boundary is one `vpsrld`; one inside a word is both; one that straddles
+/// two words is `vpsrld`, `vpslld`, `vpord`, `vpandd`. No branch, no
+/// variable shift, no cross-lane traffic.
+///
+/// **The emission is software-pipelined, and that is most of the
+/// performance.** The core is in order and a vector result is not ready for
+/// the next instruction for several cycles, so emitting one value's whole
+/// chain before starting the next stalls on every instruction: the first
+/// version of this kernel did exactly that and reached 1.07 values per
+/// cycle, about 15 cycles for a four-instruction chain
+/// (`docs/results/2026-09-20-bitunpack.md`). Instead `GROUP` values are
+/// processed together and the emission goes phase by phase, all the first
+/// shifts, then all the second shifts, then all the ors, then all the
+/// masks, then all the stores, so consecutive instructions are always from
+/// different values and never dependent.
+///
+/// The words a group needs are loaded at the top of the group. That costs
+/// a few more loads than the theoretical minimum of `2N` for the block,
+/// because groups overlap at word boundaries, but they hit L1 and it
+/// removes the need to hold the whole block's words in registers.
+fn unpack_kernel(out: &mut String, bits: u32) {
+    /// Values processed together. Eight gives eight independent chains,
+    /// which is more than the vector latency needs, and leaves room for the
+    /// words and the mask inside 32 registers.
+    const GROUP: usize = 8;
+    const WORD_REGS: u8 = 8;
+
+    let temp = |p: usize, half: usize| Zmm(WORD_REGS + (2 * p + half) as u8);
+    let maskreg = Zmm(30);
+    let name = format!("knc_unpack_b{bits}");
+
+    function(
+        out,
+        &name,
+        &format!("void {name}(int *out, const unsigned *packed): rdi = out (1024 int32, 64-byte aligned), rsi = packed ({} bytes, 64-byte aligned)", 64 * 2 * bits),
+    );
+    writeln!(out, "\tleaq unpack_b{bits}_mask(%rip), %rax").unwrap();
+    writeln!(out, "{}", vmovaps_load(maskreg, mem(Gpr::Rax, 0)).gas()).unwrap();
+
+    // Per value: which word it starts in, how far up that word, and whether
+    // it runs off the end into the next one.
+    let place = |v: usize| {
+        let bitpos = bits as usize * v;
+        (bitpos / 32, (bitpos % 32) as u8)
+    };
+
+    for start in (0..64).step_by(GROUP) {
+        let group: Vec<usize> = (start..start + GROUP).collect();
+        let first_word = place(group[0]).0;
+        let last = *group.last().unwrap();
+        let last_word = (bits as usize * last + bits as usize - 1) / 32;
+        let n_words = last_word - first_word + 1;
+
+        assert!(
+            n_words <= WORD_REGS as usize,
+            "a group of {GROUP} values of {bits} bits needs {n_words} words"
+        );
+        for w in 0..n_words {
+            let off = 64 * (first_word + w) as i32;
+            writeln!(out, "{}", vmovaps_load(Zmm(w as u8), mem(Gpr::Rsi, off)).gas()).unwrap();
+        }
+        let wreg = |w: usize| Zmm((w - first_word) as u8);
+
+        // The low part, for every value that is not already word-aligned.
+        for (p, &v) in group.iter().enumerate() {
+            let (w, s) = place(v);
+            if s != 0 {
+                writeln!(out, "{}", vpsrld(temp(p, 0), Src::Reg(wreg(w)), s, K(0)).gas()).unwrap();
+            }
+        }
+        // The high part of the values that straddle two words.
+        for (p, &v) in group.iter().enumerate() {
+            let (w, s) = place(v);
+            if u32::from(s) + bits > 32 {
+                writeln!(out, "{}", vpslld(temp(p, 1), Src::Reg(wreg(w + 1)), 32 - s, K(0)).gas()).unwrap();
+            }
+        }
+        for (p, &v) in group.iter().enumerate() {
+            let (_, s) = place(v);
+            if u32::from(s) + bits > 32 {
+                writeln!(out, "{}", vpord(temp(p, 0), temp(p, 0), Src::Reg(temp(p, 1)), K(0)).gas()).unwrap();
+            }
+        }
+        // The mask, which is dead for a value that ends at the top of a word.
+        for (p, &v) in group.iter().enumerate() {
+            let (w, s) = place(v);
+            if u32::from(s) + bits != 32 {
+                let src = if s == 0 { wreg(w) } else { temp(p, 0) };
+                writeln!(out, "{}", vpandd(temp(p, 0), src, Src::Reg(maskreg), K(0)).gas()).unwrap();
+            }
+        }
+        for (p, &v) in group.iter().enumerate() {
+            writeln!(out, "{}", vmovaps_store(mem(Gpr::Rdi, 64 * v as i32), temp(p, 0)).gas()).unwrap();
+        }
+    }
+    end_function(out, &name);
+}
+
+/// The bit widths the gate measurement uses: one that spans words awkwardly
+/// (11), one narrow (5), and one that never spans at all (16), so the
+/// measurement separates the cost of the spanning case from the rest.
+const UNPACK_WIDTHS: [u32; 3] = [5, 11, 16];
+
+fn bitunpack() -> String {
+    let mut s = header("bitunpack.S", "bitunpack.md");
+    for bits in UNPACK_WIDTHS {
+        unpack_kernel(&mut s, bits);
+    }
+    writeln!(s, "\n\t.section .rodata\n\t.balign 64").unwrap();
+    for bits in UNPACK_WIDTHS {
+        let m = (0xFFFF_FFFFu32 >> (32 - bits)) as i64;
+        let row: Vec<String> = (0..16).map(|_| format!("{m}")).collect();
+        writeln!(s, "unpack_b{bits}_mask:\n\t.long {}", row.join(", ")).unwrap();
+    }
+    writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
+    s
+}
+
+/// `vpu_int_probe`: one new integer instruction per output slot, so a
+/// wrong encoding localises to a single instruction rather than to a
+/// kernel.
+///
+/// The encodings in lib.rs for the float64 set are pinned to Intel's k1om
+/// kernel macros; the integer set has no such reference, only the opcode
+/// table in the ISA document. A wrong prefix bit does not usually fault,
+/// it decodes as some other valid instruction and returns plausible
+/// numbers, so the check has to be semantic: set known inputs, run exactly
+/// one instruction, compare against the scalar result in C (vpu_int.md).
+///
+/// The cases are chosen to cover the fields that are least cross-checkable:
+/// a memory second source (SSS as the up-conversion field, 000), the `NDD`
+/// immediate shifts (destination in `vvvv`, opcode extension in ModRM.reg),
+/// a destination above zmm15 (the `V'` bit), and merge masking.
+fn int_probe() -> String {
+    let mut s = header("vpu_int.S", "vpu_int.md");
+    function(
+        &mut s,
+        "vpu_int_probe",
+        "void vpu_int_probe(const int *in, int *out): rdi = in (16 int32 a at 0, 16 int32 b at 64, both 64-byte aligned), rsi = out (16 slots of 16 int32)",
+    );
+    // zmm0 = a, zmm1 = b, zmm2 = result, zmm17 = the high-register case.
+    for l in [vmovaps_load(Zmm(0), mem(Gpr::Rdi, 0)), vmovaps_load(Zmm(1), mem(Gpr::Rdi, 64))] {
+        writeln!(s, "{}", l.gas()).unwrap();
+    }
+    let slot = |n: i32| mem(Gpr::Rsi, 64 * n);
+    let cases: [(i32, Insn); 14] = [
+        (0, vpaddd(Zmm(2), Zmm(0), z(1), K(0))),
+        (1, vpsubd(Zmm(2), Zmm(0), z(1), K(0))),
+        (2, vpandd(Zmm(2), Zmm(0), z(1), K(0))),
+        (3, vpandnd(Zmm(2), Zmm(0), z(1), K(0))),
+        (4, vpord(Zmm(2), Zmm(0), z(1), K(0))),
+        (5, vpxord(Zmm(2), Zmm(0), z(1), K(0))),
+        (6, vpslld(Zmm(2), z(0), 1, K(0))),
+        (7, vpslld(Zmm(2), z(0), 11, K(0))),
+        (8, vpsrld(Zmm(2), z(0), 11, K(0))),
+        (9, vpsrad(Zmm(2), z(0), 11, K(0))),
+        (10, vpsrad(Zmm(2), z(0), 31, K(0))),
+        // The same shift as slot 7, with the source read from memory: if
+        // slots 7 and 11 differ, the memory form of the NDD encoding is wrong.
+        (11, vpslld(Zmm(2), at(Gpr::Rdi, 0), 11, K(0))),
+        (12, vpsllvd(Zmm(2), Zmm(0), z(1), K(0))),
+        // Variable shift with the count vector in memory.
+        (13, vpsrlvd(Zmm(2), Zmm(0), at(Gpr::Rdi, 64), K(0))),
+    ];
+    for (n, insn) in &cases {
+        writeln!(s, "{}", insn.gas()).unwrap();
+        writeln!(s, "{}", vmovaps_store(slot(*n), Zmm(2)).gas()).unwrap();
+    }
+    // Merge masking: lanes whose mask bit is clear keep what the destination
+    // already held. KNC has no zeroing mask, so this is the only behaviour.
+    writeln!(s, "\tmovl $255, %eax").unwrap();
+    writeln!(s, "{}", kmov_k_r32(K(1), Gpr::Rax).gas()).unwrap();
+    for l in [
+        vmovaps_load(Zmm(2), mem(Gpr::Rdi, 0)),
+        vpaddd(Zmm(2), Zmm(0), z(1), K(1)),
+        vmovaps_store(slot(14), Zmm(2)),
+    ] {
+        writeln!(s, "{}", l.gas()).unwrap();
+    }
+    // Destination above zmm15 (V' clear) in the NDD form, under a mask.
+    writeln!(s, "\tmovl $3855, %eax").unwrap(); // 0x0f0f
+    writeln!(s, "{}", kmov_k_r32(K(2), Gpr::Rax).gas()).unwrap();
+    for l in [
+        vmovaps_load(Zmm(17), mem(Gpr::Rdi, 0)),
+        vpslld(Zmm(17), z(1), 3, K(2)),
+        vmovaps_store(slot(15), Zmm(17)),
+    ] {
+        writeln!(s, "{}", l.gas()).unwrap();
+    }
+    end_function(&mut s, "vpu_int_probe");
     writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
     s
 }
@@ -277,11 +489,13 @@ fn main() {
     let what = env::args().nth(1).unwrap_or_default();
     let text = match what.as_str() {
         "probe" => probe(),
+        "int-probe" => int_probe(),
+        "bitunpack" => bitunpack(),
         "memcpy" => memcpy_kernel(),
         "mandel" => mandel(),
         "kernel-header" => kernel_header(),
         _ => {
-            eprintln!("usage: knc-mvex-gen probe|mandel|kernel-header");
+            eprintln!("usage: knc-mvex-gen probe|int-probe|bitunpack|mandel|memcpy|kernel-header");
             std::process::exit(2);
         }
     };
@@ -296,9 +510,11 @@ mod tests {
     /// fails here until the files are regenerated (main.md), so the card
     /// never runs bytes the tests in lib.rs did not see.
     #[test]
-    fn committed_probe_and_mandel_are_current() {
+    fn committed_assembly_is_current() {
         assert_eq!(probe(), include_str!("../../../../card/examples/vpu_probe.S"));
+        assert_eq!(int_probe(), include_str!("../../../../card/examples/vpu_int.S"));
         assert_eq!(mandel(), include_str!("../../../../card/examples/mandel_vpu.S"));
+        assert_eq!(memcpy_kernel(), include_str!("../../../../card/examples/vpu_memcpy.S"));
     }
 
     /// The kernel header as patch 0024 adds it: the `+` lines of its

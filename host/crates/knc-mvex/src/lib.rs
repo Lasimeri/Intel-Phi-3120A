@@ -3,11 +3,17 @@
 //! No assembler in this stack knows the card's 512-bit vector unit: its
 //! instructions use the MVEX prefix, a four-byte prefix starting with 62H
 //! that predates and differs from AVX-512's EVEX (ISA reference 327364-001,
-//! section 3.3). This crate produces the bytes for the handful of
-//! instructions the project needs (full-vector loads and stores, float64
-//! add, subtract, multiply, fused multiply-add, compare into a mask, and
-//! the mask register moves) so that they can be emitted as `.byte` lines
-//! into otherwise ordinary assembly.
+//! section 3.3). This crate produces the bytes for the instructions the
+//! project needs, so that they can be emitted as `.byte` lines into
+//! otherwise ordinary assembly:
+//!
+//! - full-vector loads and stores, and the mask register moves;
+//! - float64 add, subtract, multiply, fused multiply-add, compare into a
+//!   mask (the Mandelbrot kernel);
+//! - int32 add, subtract, and, andn, or, xor, immediate and per-lane
+//!   variable shifts (the bit-packing kernels). Every integer vector
+//!   instruction on this machine is 32-bit or 64-bit lanes: there are no
+//!   byte or word forms to encode.
 //!
 //! Layout of the prefix, as used by Intel's k1om kernel macros (which the
 //! tests in this file reproduce byte for byte):
@@ -254,38 +260,39 @@ pub fn vmovapd_store(mem: Mem, src: Zmm, k: K) -> Insn {
     }
 }
 
-fn arith(name: &str, map: Map, opcode: u8, dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+#[allow(clippy::too_many_arguments)]
+fn arith(name: &str, map: Map, w: bool, opcode: u8, dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
     Insn {
-        bytes: mvex(map, Pp::P66, true, dst.0, src1.0, src_rm(src2), k.0, opcode, None),
+        bytes: mvex(map, Pp::P66, w, dst.0, src1.0, src_rm(src2), k.0, opcode, None),
         text: format!("{name} {dst}{}, {src1}, {src2}", mask_text(k)),
     }
 }
 
 /// `vaddpd zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W1 58).
 pub fn vaddpd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
-    arith("vaddpd", Map::M0F, 0x58, dst, src1, src2, k)
+    arith("vaddpd", Map::M0F, true, 0x58, dst, src1, src2, k)
 }
 
 /// `vsubpd zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W1 5C).
 pub fn vsubpd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
-    arith("vsubpd", Map::M0F, 0x5c, dst, src1, src2, k)
+    arith("vsubpd", Map::M0F, true, 0x5c, dst, src1, src2, k)
 }
 
 /// `vmulpd zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W1 59).
 pub fn vmulpd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
-    arith("vmulpd", Map::M0F, 0x59, dst, src1, src2, k)
+    arith("vmulpd", Map::M0F, true, 0x59, dst, src1, src2, k)
 }
 
 /// `vfmadd213pd zmm1 {k}, zmm2, zmm3/mt`: zmm1 = zmm2 * zmm1 + zmm3
 /// (MVEX.NDS.512.66.0F38.W1 A8).
 pub fn vfmadd213pd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
-    arith("vfmadd213pd", Map::M0F38, 0xa8, dst, src1, src2, k)
+    arith("vfmadd213pd", Map::M0F38, true, 0xa8, dst, src1, src2, k)
 }
 
 /// `vfmadd231pd zmm1 {k}, zmm2, zmm3/mt`: zmm1 = zmm2 * zmm3 + zmm1
 /// (MVEX.NDS.512.66.0F38.W1 B8).
 pub fn vfmadd231pd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
-    arith("vfmadd231pd", Map::M0F38, 0xb8, dst, src1, src2, k)
+    arith("vfmadd231pd", Map::M0F38, true, 0xb8, dst, src1, src2, k)
 }
 
 /// `vcmppd k2 {k1}, zmm1, zmm2/mt, imm8`: element compare into a mask. A
@@ -296,6 +303,85 @@ pub fn vcmppd(dst: K, src1: Zmm, src2: Src, pred: Cmp, k: K) -> Insn {
         bytes: mvex(Map::M0F, Pp::P66, true, dst.0, src1.0, src_rm(src2), k.0, 0xc2, Some(pred as u8)),
         text: format!("vcmppd {dst}{}, {src1}, {src2}, {}", mask_text(k), pred as u8),
     }
+}
+
+// The integer forms differ from the float64 forms above in one bit: every
+// integer vector instruction on this machine is `D` (32-bit lanes) or `Q`
+// (64-bit), and the `D` forms are `W0`. There are no byte or word integer
+// vector instructions at all, so the set below is the whole of what a
+// bit-packing codec can use here (docs/research/compression-on-knc.md).
+
+/// `vpaddd zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W0 FE /r).
+pub fn vpaddd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpaddd", Map::M0F, false, 0xfe, dst, src1, src2, k)
+}
+
+/// `vpsubd zmm1 {k}, zmm2, zmm3/mt`: zmm2 - src (MVEX.NDS.512.66.0F.W0 FA /r).
+pub fn vpsubd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpsubd", Map::M0F, false, 0xfa, dst, src1, src2, k)
+}
+
+/// `vpandd zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W0 DB /r).
+pub fn vpandd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpandd", Map::M0F, false, 0xdb, dst, src1, src2, k)
+}
+
+/// `vpandnd zmm1 {k}, zmm2, zmm3/mt`: `(!zmm2) & src`, note the order
+/// (MVEX.NDS.512.66.0F.W0 DF /r).
+pub fn vpandnd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpandnd", Map::M0F, false, 0xdf, dst, src1, src2, k)
+}
+
+/// `vpord zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W0 EB /r).
+pub fn vpord(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpord", Map::M0F, false, 0xeb, dst, src1, src2, k)
+}
+
+/// `vpxord zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.66.0F.W0 EF /r).
+pub fn vpxord(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpxord", Map::M0F, false, 0xef, dst, src1, src2, k)
+}
+
+/// `vpsllvd zmm1 {k}, zmm2, zmm3/mt`: per-lane variable left shift, count
+/// taken from the second source; a count above 31 gives zero
+/// (MVEX.NDS.512.66.0F38.W0 47 /r).
+pub fn vpsllvd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpsllvd", Map::M0F38, false, 0x47, dst, src1, src2, k)
+}
+
+/// `vpsrlvd zmm1 {k}, zmm2, zmm3/mt`: per-lane variable logical right shift
+/// (MVEX.NDS.512.66.0F38.W0 45 /r).
+pub fn vpsrlvd(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vpsrlvd", Map::M0F38, false, 0x45, dst, src1, src2, k)
+}
+
+/// The immediate-count shifts are the one `NDD` family here: the
+/// destination sits in `vvvv`, the source in r/m, and ModRM.reg carries the
+/// opcode extension of opcode 72 (`/6` left, `/2` logical right, `/4`
+/// arithmetic right), so one encoder covers all three. A count above 31
+/// gives zero for the logical forms (ISA reference, VPSLLD).
+fn shift_imm(name: &str, ext: u8, dst: Zmm, src: Src, count: u8, k: K) -> Insn {
+    assert!(ext < 8, "the opcode extension is the three-bit ModRM.reg field");
+    Insn {
+        bytes: mvex(Map::M0F, Pp::P66, false, ext, dst.0, src_rm(src), k.0, 0x72, Some(count)),
+        text: format!("{name} {dst}{}, {src}, {count}", mask_text(k)),
+    }
+}
+
+/// `vpslld zmm1 {k}, zmm2/mt, imm8` (MVEX.NDD.512.66.0F.W0 72 /6 ib).
+pub fn vpslld(dst: Zmm, src: Src, count: u8, k: K) -> Insn {
+    shift_imm("vpslld", 6, dst, src, count, k)
+}
+
+/// `vpsrld zmm1 {k}, zmm2/mt, imm8` (MVEX.NDD.512.66.0F.W0 72 /2 ib).
+pub fn vpsrld(dst: Zmm, src: Src, count: u8, k: K) -> Insn {
+    shift_imm("vpsrld", 2, dst, src, count, k)
+}
+
+/// `vpsrad zmm1 {k}, zmm2/mt, imm8`: arithmetic, so the sign bit fills
+/// (MVEX.NDD.512.66.0F.W0 72 /4 ib).
+pub fn vpsrad(dst: Zmm, src: Src, count: u8, k: K) -> Insn {
+    shift_imm("vpsrad", 4, dst, src, count, k)
 }
 
 /// Assemble a two-byte VEX instruction of the mask register family
@@ -460,6 +546,85 @@ mod tests {
         );
         assert_eq!(kmov_k_r32(K(3), Gpr::Rax).bytes, [0xc5, 0xf8, 0x92, 0xd8]);
         assert_eq!(kmov_r32_k(Gpr::Rax, K(2)).bytes, [0xc5, 0xf8, 0x93, 0xc2]);
+    }
+
+    /// Bytes from `card/examples/vpu_int.S`, generated by this crate and run
+    /// on the card on 2026-09-20: `vpu_int.c` compares every lane of every
+    /// one of these against a scalar model and reports 0 of 32 checks
+    /// failed (`docs/results/2026-09-20-mvex-integer.md`). The integer
+    /// encodings have no Intel macro to reproduce, so this is the only
+    /// reference they have, and it is hardware rather than a document.
+    #[test]
+    fn integer_bytes_verified_on_the_card() {
+        // NDS three-operand forms: W0 is the only difference from the pd
+        // set above, since every integer vector instruction here is 32-bit
+        // or 64-bit lanes.
+        assert_eq!(
+            vpaddd(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf1, 0x79, 0x08, 0xfe, 0xd1]
+        );
+        assert_eq!(
+            vpsubd(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf1, 0x79, 0x08, 0xfa, 0xd1]
+        );
+        assert_eq!(
+            vpandd(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf1, 0x79, 0x08, 0xdb, 0xd1]
+        );
+        assert_eq!(
+            vpandnd(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf1, 0x79, 0x08, 0xdf, 0xd1]
+        );
+        assert_eq!(
+            vpord(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf1, 0x79, 0x08, 0xeb, 0xd1]
+        );
+        assert_eq!(
+            vpxord(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf1, 0x79, 0x08, 0xef, 0xd1]
+        );
+        assert_eq!(
+            vpsllvd(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(0)).bytes,
+            [0x62, 0xf2, 0x79, 0x08, 0x47, 0xd1]
+        );
+        assert_eq!(
+            vpsrlvd(Zmm(2), Zmm(0), Src::Mem(Mem::new(Gpr::Rdi, 64)), K(0)).bytes,
+            [0x62, 0xf2, 0x79, 0x08, 0x45, 0x97, 0x40, 0x00, 0x00, 0x00]
+        );
+        // Merge masking: a clear mask bit leaves the destination lane alone.
+        assert_eq!(
+            vpaddd(Zmm(2), Zmm(0), Src::Reg(Zmm(1)), K(1)).bytes,
+            [0x62, 0xf1, 0x79, 0x09, 0xfe, 0xd1]
+        );
+
+        // NDD shifts: the destination is in vvvv, the source in r/m, and
+        // ModRM.reg is the opcode extension, so /6, /2 and /4 land in the
+        // ModRM byte as 0xf0, 0xd0 and 0xe0 with zmm0 as the source.
+        assert_eq!(
+            vpslld(Zmm(2), Src::Reg(Zmm(0)), 1, K(0)).bytes,
+            [0x62, 0xf1, 0x69, 0x08, 0x72, 0xf0, 0x01]
+        );
+        assert_eq!(
+            vpslld(Zmm(2), Src::Reg(Zmm(0)), 11, K(0)).bytes,
+            [0x62, 0xf1, 0x69, 0x08, 0x72, 0xf0, 0x0b]
+        );
+        assert_eq!(
+            vpsrld(Zmm(2), Src::Reg(Zmm(0)), 11, K(0)).bytes,
+            [0x62, 0xf1, 0x69, 0x08, 0x72, 0xd0, 0x0b]
+        );
+        assert_eq!(
+            vpsrad(Zmm(2), Src::Reg(Zmm(0)), 11, K(0)).bytes,
+            [0x62, 0xf1, 0x69, 0x08, 0x72, 0xe0, 0x0b]
+        );
+        assert_eq!(
+            vpslld(Zmm(2), Src::Mem(Mem::new(Gpr::Rdi, 0)), 11, K(0)).bytes,
+            [0x62, 0xf1, 0x69, 0x08, 0x72, 0xb7, 0x00, 0x00, 0x00, 0x00, 0x0b]
+        );
+        // Destination above zmm15 clears V' (P2 bit 3) while aaa stays.
+        assert_eq!(
+            vpslld(Zmm(17), Src::Reg(Zmm(1)), 3, K(2)).bytes,
+            [0x62, 0xf1, 0x71, 0x02, 0x72, 0xf1, 0x03]
+        );
     }
 
     /// The B bit extends a memory base (section 3.3: "the base of a memory
