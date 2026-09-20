@@ -30,8 +30,9 @@ cd "$SRC"
 #   turns on inline x86-64 assembly whenever __x86_64__ is defined, using it
 #   as a proxy for "has CMOV". The card is x86-64 without CMOV, so no
 #   compiler flag can help and the audit finds 216 cmov instructions in
-#   lzma_decoder.o. LZMA_RANGE_DECODER_CONFIG=0 selects the portable C path,
-#   which is what every non-x86 target already uses.
+#   lzma_decoder.o. LZMA_RANGE_DECODER_CONFIG=0x0F selects the portable
+#   branchless C path (bits 0x01 to 0x08 are mask arithmetic, 0x1F0 is the
+#   assembly), which is what every non-x86 target already uses.
 # - Threading is the whole point of this build: xz -T N splits the input
 #   into independent blocks, which is the only parallelism LZMA offers.
 # - --disable-shared only governs liblzma; the xz driver still links
@@ -52,7 +53,7 @@ cd "$SRC"
     --enable-threads=posix \
     CC=knc-cc AR=llvm-ar RANLIB=llvm-ranlib STRIP=llvm-strip \
     CFLAGS="-O2" \
-    CPPFLAGS="-DLZMA_RANGE_DECODER_CONFIG=0" \
+    CPPFLAGS="-DLZMA_RANGE_DECODER_CONFIG=0x0F" \
     ac_cv_func_malloc_0_nonnull=yes \
     ac_cv_func_realloc_0_nonnull=yes \
     > configure.log 2>&1 || { tail -30 configure.log >&2; exit 1; }
