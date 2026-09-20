@@ -8,6 +8,7 @@
 //! knc-mvex-gen int-probe     > card/examples/vpu_int.S
 //! knc-mvex-gen bitunpack     > card/examples/bitunpack.S
 //! knc-mvex-gen codec         > the libknc kernels, every width, both directions
+//! knc-mvex-gen fastlanes     > the FastLanes-layout unffor kernels, widths 0 to 32
 //! knc-mvex-gen mandel        > card/examples/mandel_vpu.S
 //! knc-mvex-gen kernel-header > arch/x86/include/asm/knc_vpu.h   (in the kernel tree)
 //! knc-mvex-gen memcpy        > card/examples/vpu_memcpy.S
@@ -591,6 +592,214 @@ fn codec() -> String {
     s
 }
 
+/// Positions per lane in the FastLanes layout: 1024 values over 32 lanes.
+const FLS_POSITIONS: usize = 32;
+
+/// `knc_fls_unffor_bN`: FastLanes' `unffor` for 32-bit values, on the
+/// vector unit.
+///
+/// This is `unpack_kernel` in FastLanes' layout rather than libknc's, and
+/// the difference is only in the addresses. FastLanes puts value `i` in
+/// lane `i % 32` at position `i / 32` (see `unffor_11bw_32ow_32crw_1uf` in
+/// the generated `fastlanes_gen_unffor.cpp`: it reads `in + w*32 + i` and
+/// writes `out + p*32 + i` for `i` in 0..32), so a lane row is 32 int32,
+/// which is 128 bytes, which is two vectors. libknc uses 16 lanes and one.
+///
+/// Lanes 0 to 15 and lanes 16 to 31 of a row take the same shifts and the
+/// same mask and never interact, so this is the 16-lane kernel run twice at
+/// a stride of 128 bytes, once at offset 0 and once at offset 64. Register
+/// pressure is unchanged and the schedule is the same.
+///
+/// Two things differ beyond the addresses:
+///
+/// - **The base is a scalar, broadcast.** FastLanes' generated code does
+///   `base_0 = *(a_base_p)` and adds that one value to all 1024, where
+///   libknc's FOR mode carries a different base per lane. `vpbroadcastd`
+///   does it in one instruction, once per block.
+/// - **The input is not 64-byte aligned, so the loads are the unaligned
+///   pair.** A FastLanes bitpacked segment starts at an arbitrary multiple
+///   of four inside the file buffer; measured residues modulo 64 on a
+///   three-column round trip were 8, 48 and 60 (2026-09-20). `vmovaps`
+///   would fault, so every word is `vloadunpackld` plus `vloadunpackhd`.
+///   The output is FastLanes' own `alignas(64)` buffer and is stored with
+///   plain aligned stores.
+///
+/// The `ld` instructions of a group are emitted before any of its `hd`
+/// instructions, because `hd` merges into the register `ld` wrote and the
+/// two are dependent; separating them by the rest of the group hides that
+/// the same way the shifts are separated.
+///
+/// The pair reads up to 60 bytes past the end of the input, because it
+/// always touches the whole of both 64-byte lines around the address (ISA
+/// reference 327364-001, VLOADUNPACKLD: "the memory region accessed will
+/// always be between linear_address & (~0x3F) and (linear_address &
+/// (~0x3F)) + 63"). That needs nothing from the caller. Those bytes are in
+/// the same 64-byte line as the last byte of the input, a line never
+/// crosses a page, so the read cannot reach an unmapped one; and the one
+/// case where the address is itself 64-byte aligned the same section
+/// exempts from #PF outright.
+fn fls_unffor_kernel(out: &mut String, bits: u32) {
+    let temp = |p: usize, half: usize| Zmm(WORD_REGS + (2 * p + half) as u8);
+    let maskreg = Zmm(30);
+    let base = Zmm(26);
+    let name = format!("knc_fls_unffor_b{bits}");
+    let sig = format!(
+        "void {name}(const unsigned *in, unsigned *out, const unsigned *base): rdi = in ({} bytes, 4-byte aligned), rsi = out (1024 int32, 64-byte aligned), rdx = base (one int32)",
+        128 * bits
+    );
+    function(out, &name, &sig);
+    writeln!(out, "{}", vpbroadcastd(base, mem(Gpr::Rdx, 0), K(0)).gas()).unwrap();
+
+    // A zero-bit column carries no bits at all: every value is the base.
+    // FastLanes emits this case (`unffor_0bw_32ow_32crw_1uf`) and the
+    // dispatch table has a real entry for it, unlike libknc's.
+    if bits == 0 {
+        for v in 0..FLS_POSITIONS {
+            for h in 0..2 {
+                let off = 128 * v as i32 + 64 * h;
+                writeln!(out, "{}", vmovaps_store(mem(Gpr::Rsi, off), base).gas()).unwrap();
+            }
+        }
+        end_function(out, &name);
+        return;
+    }
+
+    if bits < 32 {
+        writeln!(out, "\tleaq knc_fls_mask_b{bits}(%rip), %rax").unwrap();
+        writeln!(out, "{}", vmovaps_load(maskreg, mem(Gpr::Rax, 0)).gas()).unwrap();
+    }
+
+    for half in 0..2usize {
+        let word_at = |w: usize| mem(Gpr::Rdi, 128 * w as i32 + 64 * half as i32);
+        let word_hi = |w: usize| mem(Gpr::Rdi, 128 * w as i32 + 64 * half as i32 + 64);
+        let slot = |v: usize| mem(Gpr::Rsi, 128 * v as i32 + 64 * half as i32);
+
+        for start in (0..FLS_POSITIONS).step_by(GROUP) {
+            let group: Vec<usize> = (start..start + GROUP).collect();
+            let first_word = place(bits, group[0]).0;
+            let last = *group.last().unwrap();
+            let last_word = (bits as usize * last + bits as usize - 1) / 32;
+            let n_words = last_word - first_word + 1;
+
+            assert!(
+                n_words <= WORD_REGS as usize,
+                "a group of {GROUP} values of {bits} bits needs {n_words} words"
+            );
+            for w in 0..n_words {
+                writeln!(out, "{}", vloadunpackld(Zmm(w as u8), word_at(first_word + w), K(0)).gas()).unwrap();
+            }
+            for w in 0..n_words {
+                writeln!(out, "{}", vloadunpackhd(Zmm(w as u8), word_hi(first_word + w), K(0)).gas()).unwrap();
+            }
+            let wreg = |w: usize| Zmm((w - first_word) as u8);
+            let result = |p: usize, v: usize| {
+                if bits == 32 {
+                    wreg(place(bits, v).0)
+                } else {
+                    temp(p, 0)
+                }
+            };
+
+            for (p, &v) in group.iter().enumerate() {
+                let (w, s) = place(bits, v);
+                if s != 0 {
+                    writeln!(out, "{}", vpsrld(temp(p, 0), Src::Reg(wreg(w)), s, K(0)).gas()).unwrap();
+                }
+            }
+            for (p, &v) in group.iter().enumerate() {
+                let (w, s) = place(bits, v);
+                if u32::from(s) + bits > 32 {
+                    writeln!(out, "{}", vpslld(temp(p, 1), Src::Reg(wreg(w + 1)), 32 - s, K(0)).gas()).unwrap();
+                }
+            }
+            for (p, &v) in group.iter().enumerate() {
+                let (_, s) = place(bits, v);
+                if u32::from(s) + bits > 32 {
+                    writeln!(out, "{}", vpord(temp(p, 0), temp(p, 0), Src::Reg(temp(p, 1)), K(0)).gas()).unwrap();
+                }
+            }
+            for (p, &v) in group.iter().enumerate() {
+                let (w, s) = place(bits, v);
+                if u32::from(s) + bits != 32 {
+                    let src = if s == 0 { wreg(w) } else { temp(p, 0) };
+                    writeln!(out, "{}", vpandd(temp(p, 0), src, Src::Reg(maskreg), K(0)).gas()).unwrap();
+                }
+            }
+            for (p, &v) in group.iter().enumerate() {
+                writeln!(out, "{}", vpaddd(temp(p, 1), base, Src::Reg(result(p, v)), K(0)).gas()).unwrap();
+            }
+            for (p, &v) in group.iter().enumerate() {
+                writeln!(out, "{}", vmovaps_store(slot(v), temp(p, 1)).gas()).unwrap();
+            }
+        }
+    }
+    end_function(out, &name);
+}
+
+/// The run-time entry point the FastLanes patch calls, and its table.
+///
+/// The table has 33 entries and index 0 is a real kernel, not null: a
+/// zero-bit column is a normal FastLanes case, where every value equals
+/// the frame of reference.
+fn fls_dispatch(out: &mut String, widths: &[u32]) {
+    function(
+        out,
+        "knc_fls_unffor",
+        "void knc_fls_unffor(const unsigned *in, unsigned *out, unsigned bw, const unsigned *base): FastLanes layout, 1024 values; bw above 32 returns without writing",
+    );
+    writeln!(out, "\tmovl %edx, %eax").unwrap();
+    writeln!(out, "\tcmpl $32, %eax").unwrap();
+    writeln!(out, "\tja 1f").unwrap();
+    writeln!(out, "\tmovq %rcx, %rdx").unwrap();
+    writeln!(out, "\tleaq knc_fls_unffor_table(%rip), %r9").unwrap();
+    writeln!(out, "\tjmp *(%r9,%rax,8)").unwrap();
+    writeln!(out, "1:").unwrap();
+    end_function(out, "knc_fls_unffor");
+
+    writeln!(out, "\n\t.section .rodata\n\t.balign 8").unwrap();
+    writeln!(out, "\t.globl knc_fls_unffor_table\n\t.type knc_fls_unffor_table, @object").unwrap();
+    writeln!(out, "knc_fls_unffor_table:").unwrap();
+    for bits in widths {
+        writeln!(out, "\t.quad knc_fls_unffor_b{bits}").unwrap();
+    }
+    writeln!(out, "\t.size knc_fls_unffor_table, .-knc_fls_unffor_table").unwrap();
+}
+
+/// The lane masks, named apart from libknc's so that the FastLanes object
+/// links on its own.
+fn fls_mask_constants(out: &mut String, widths: &[u32]) {
+    writeln!(out, "\n\t.section .rodata\n\t.balign 64").unwrap();
+    for &bits in widths {
+        if bits == 0 || bits == 32 {
+            continue;
+        }
+        let m = 0xFFFF_FFFFu32 >> (32 - bits);
+        let row: Vec<String> = (0..16).map(|_| format!("{m}")).collect();
+        writeln!(out, "knc_fls_mask_b{bits}:\n\t.long {}", row.join(", ")).unwrap();
+    }
+}
+
+/// Every width of FastLanes' 32-bit `unffor`: the assembly half of the
+/// FastLanes backend.
+///
+/// Only 32-bit values are here, and that is a hardware limit rather than a
+/// choice. FastLanes instantiates `unffor` for 64, 32, 16 and 8 bit
+/// values; Knights Corner has no byte or word integer vector instruction
+/// at all, and its 64-bit integer set is exactly `vfixupnanpd`, `vpandnq`,
+/// `vpandq`, `vpblendmq`, `vporq` and `vpxorq` (ISA reference
+/// 327364-001, appendix D.1.8), with no add and no shift. Three of the
+/// four widths stay on FastLanes' scalar code.
+fn fastlanes() -> String {
+    let widths: Vec<u32> = (0..=32).collect();
+    let mut s = header("knc_fls.S", "card/lib/knc-fls/knc-fls.md");
+    for &bits in &widths {
+        fls_unffor_kernel(&mut s, bits);
+    }
+    fls_dispatch(&mut s, &widths);
+    fls_mask_constants(&mut s, &widths);
+    writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
+    s
+}
 /// `vpu_int_probe`: one new integer instruction per output slot, so a
 /// wrong encoding localises to a single instruction rather than to a
 /// kernel.
@@ -662,7 +871,41 @@ fn int_probe() -> String {
     ] {
         writeln!(s, "{}", l.gas()).unwrap();
     }
+    // Splat one 32-bit element from memory. The source of vpbroadcastd is
+    // always memory, so lane b[1] of the second input block goes to every
+    // lane of slot 16.
+    for l in [vpbroadcastd(Zmm(3), mem(Gpr::Rdi, 64 + 4), K(0)), vmovaps_store(slot(16), Zmm(3))] {
+        writeln!(s, "{}", l.gas()).unwrap();
+    }
+    // The unaligned load pair on an address that happens to be aligned:
+    // the high half then transfers nothing and the low half alone is the
+    // whole vector. Slot 17 must equal the first input block.
+    for l in [
+        vloadunpackld(Zmm(3), mem(Gpr::Rdi, 0), K(0)),
+        vloadunpackhd(Zmm(3), mem(Gpr::Rdi, 64), K(0)),
+        vmovaps_store(slot(17), Zmm(3)),
+    ] {
+        writeln!(s, "{}", l.gas()).unwrap();
+    }
     end_function(&mut s, "vpu_int_probe");
+
+    // The same pair on an address that is only element-aligned, which is
+    // what FastLanes hands the unpack kernels: its bitpacked segments start
+    // at an arbitrary multiple of four inside the file buffer (measured
+    // 2026-09-20, residues 8, 48 and 60 on a three-column round trip).
+    function(
+        &mut s,
+        "vpu_int_unaligned",
+        "void vpu_int_unaligned(const int *un, int *out): rdi = un (any multiple of 4), rsi = out (64-byte aligned, 16 int32)",
+    );
+    for l in [
+        vloadunpackld(Zmm(0), mem(Gpr::Rdi, 0), K(0)),
+        vloadunpackhd(Zmm(0), mem(Gpr::Rdi, 64), K(0)),
+        vmovaps_store(mem(Gpr::Rsi, 0), Zmm(0)),
+    ] {
+        writeln!(s, "{}", l.gas()).unwrap();
+    }
+    end_function(&mut s, "vpu_int_unaligned");
     writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
     s
 }
@@ -832,11 +1075,12 @@ fn main() {
         "int-probe" => int_probe(),
         "bitunpack" => bitunpack(),
         "codec" => codec(),
+        "fastlanes" => fastlanes(),
         "memcpy" => memcpy_kernel(),
         "mandel" => mandel(),
         "kernel-header" => kernel_header(),
         _ => {
-            eprintln!("usage: knc-mvex-gen probe|int-probe|bitunpack|codec|mandel|memcpy|kernel-header");
+            eprintln!("usage: knc-mvex-gen probe|int-probe|bitunpack|codec|fastlanes|mandel|memcpy|kernel-header");
             std::process::exit(2);
         }
     };

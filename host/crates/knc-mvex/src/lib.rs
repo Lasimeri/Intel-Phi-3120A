@@ -384,6 +384,46 @@ pub fn vpsrad(dst: Zmm, src: Src, count: u8, k: K) -> Insn {
     shift_imm("vpsrad", 4, dst, src, count, k)
 }
 
+/// `vloadunpackld zmm1 {k}, mt` (MVEX.512.0F38.W0 D0 /r) and `vloadunpackhd`
+/// (D4 /r) are the KNC unaligned 64-byte load: the low form takes the part
+/// of the stream in the cache line containing `mt`, the high form the part
+/// in the line containing `mt + 64`, and together with no write mask they
+/// fill all sixteen lanes. `vmovaps` cannot be used instead, because it
+/// faults unless the address is 64-byte aligned.
+///
+/// Three encoding constraints from the ISA reference (VLOADUNPACKLD):
+/// no legacy prefix (a 66 prefix is `#UD`), `SSS = 000` for "no conversion",
+/// and the address must still be element-aligned (4 bytes here) or `#GP`.
+///
+/// The pair always touches the whole of both cache lines, so it reads up to
+/// 63 bytes past the end of the intended 64, which the caller must have
+/// mapped.
+pub fn vloadunpackld(dst: Zmm, mem: Mem, k: K) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F38, Pp::None, false, dst.0, 0, Rm::Mem(mem), k.0, 0xd0, None),
+        text: format!("vloadunpackld {dst}{}, {mem}", mask_text(k)),
+    }
+}
+
+/// The high half of the unaligned load pair; see `vloadunpackld`. The
+/// address passed is 64 bytes above the one given to the low half.
+pub fn vloadunpackhd(dst: Zmm, mem: Mem, k: K) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F38, Pp::None, false, dst.0, 0, Rm::Mem(mem), k.0, 0xd4, None),
+        text: format!("vloadunpackhd {dst}{}, {mem}", mask_text(k)),
+    }
+}
+
+/// `vpbroadcastd zmm1 {k}, mt` (MVEX.512.66.0F38.W0 58 /r): splat one
+/// 32-bit element from memory into all sixteen lanes. The source is always
+/// memory, never a register, so there is no `Src` here.
+pub fn vpbroadcastd(dst: Zmm, mem: Mem, k: K) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F38, Pp::P66, false, dst.0, 0, Rm::Mem(mem), k.0, 0x58, None),
+        text: format!("vpbroadcastd {dst}{}, {mem}", mask_text(k)),
+    }
+}
+
 /// Assemble a two-byte VEX instruction of the mask register family
 /// (VEX.128.0F.W0, no legacy prefix).
 fn vex_k(opcode: u8, reg: u8, rm: u8) -> Vec<u8> {
@@ -624,6 +664,23 @@ mod tests {
         assert_eq!(
             vpslld(Zmm(17), Src::Reg(Zmm(1)), 3, K(2)).bytes,
             [0x62, 0xf1, 0x71, 0x02, 0x72, 0xf1, 0x03]
+        );
+
+        // The unaligned load pair and the broadcast. The pair carries no
+        // legacy prefix, so P1 keeps pp = 00 and reads 0x78, where the
+        // 66-prefixed integer instructions above read 0x79; a 66 prefix
+        // here is #UD, not a different instruction.
+        assert_eq!(
+            vloadunpackld(Zmm(3), Mem::new(Gpr::Rdi, 0), K(0)).bytes,
+            [0x62, 0xf2, 0x78, 0x08, 0xd0, 0x9f, 0x00, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            vloadunpackhd(Zmm(3), Mem::new(Gpr::Rdi, 64), K(0)).bytes,
+            [0x62, 0xf2, 0x78, 0x08, 0xd4, 0x9f, 0x40, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            vpbroadcastd(Zmm(3), Mem::new(Gpr::Rdi, 68), K(0)).bytes,
+            [0x62, 0xf2, 0x79, 0x08, 0x58, 0x9f, 0x44, 0x00, 0x00, 0x00]
         );
     }
 

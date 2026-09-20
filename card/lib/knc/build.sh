@@ -30,16 +30,17 @@ fi
 
 rm -rf "$OUT"; mkdir -p "$OUT" "$PKG/opt/phi/usr/lib" "$PKG/opt/phi/usr/include"
 
-echo "== generating kernels (32 widths, pack and unpack, plus the block copy)"
+echo "== generating kernels (32 widths, pack and unpack, the FastLanes layout, the block copy)"
 "$GEN" codec > "$OUT/knc_codec.S"
+"$GEN" fastlanes > "$OUT/knc_fls.S"
 "$GEN" memcpy > "$OUT/knc_memcpy.S"
-wc -l "$OUT/knc_codec.S" "$OUT/knc_memcpy.S" | sed 's/^/   /'
+wc -l "$OUT/knc_codec.S" "$OUT/knc_fls.S" "$OUT/knc_memcpy.S" | sed "s/^/   /"
 
 echo "== assembling"
-for s in knc_codec knc_memcpy; do
+for s in knc_codec knc_fls knc_memcpy; do
     knc-cc -c -o "$OUT/$s.o" "$OUT/$s.S"
 done
-llvm-ar rcs "$OUT/libknc.a" "$OUT/knc_codec.o" "$OUT/knc_memcpy.o"
+llvm-ar rcs "$OUT/libknc.a" "$OUT/knc_codec.o" "$OUT/knc_fls.o" "$OUT/knc_memcpy.o"
 llvm-ranlib "$OUT/libknc.a"
 ls -l "$OUT/libknc.a"
 

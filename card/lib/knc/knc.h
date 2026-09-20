@@ -120,6 +120,62 @@ extern const knc_pack_fn knc_pack_table[33];
 extern const knc_unpack_base_fn knc_unpack_for_table[33];
 extern const knc_unpack_base_fn knc_unpack_delta_table[33];
 
+
+/* ---- The FastLanes layout -----------------------------------------
+ *
+ * Everything above uses 16 lanes, which is the card's vector width.
+ * FastLanes (github.com/cwida/FastLanes) uses 32 lanes for 32-bit values:
+ * its generated `unffor_NNbw_32ow_32crw_1uf` reads `in + w*32 + i` and
+ * writes `out + p*32 + i` for `i` in 0..32. A lane row is therefore 128
+ * bytes, or two vectors, and lanes 0 to 15 and 16 to 31 never interact.
+ *
+ * `knc_fls_unffor` is that layout's decode step: unpack `bw`-bit values
+ * and add the frame of reference, which FastLanes stores as a single
+ * scalar and broadcasts. It exists so an unmodified FastLanes build can
+ * route its 32-bit hot path here; see card/lib/knc-fls/knc-fls.md.
+ *
+ * Three constraints, all different from the functions above:
+ *
+ *   - `bw` runs 0 to 32, and 0 is a real width: every value is the base.
+ *   - `base` points at one 32-bit value and **must be 4-byte aligned**.
+ *     The kernels splat it with `vpbroadcastd`, which is `#GP` on any
+ *     other address (ISA reference 327364-001, VPBROADCASTD,
+ *     "Exceptions"). FastLanes' own base pointer is not: a base segment
+ *     holds four bytes per vector but starts at an arbitrary byte offset
+ *     in the file, so the caller copies the value through a local. The
+ *     scalar code it replaces reads it with a plain load and never
+ *     noticed.
+ *   - `in` need only be 4-byte aligned, because FastLanes' bitpacked
+ *     segments start at an arbitrary multiple of four inside its file
+ *     buffer. The kernels use the unaligned load pair for this.
+ *   - The load pair reads up to 60 bytes past `bw * 128`, because it
+ *     always touches the whole of both 64-byte lines around an address
+ *     (ISA reference 327364-001, VLOADUNPACKLD: "the memory region
+ *     accessed will always be between linear_address & (~0x3F) and
+ *     (linear_address & (~0x3F)) + 63"). This needs no padding from the
+ *     caller: those bytes share a 64-byte line with the last byte of the
+ *     input, a line never crosses a page, so the read cannot reach an
+ *     unmapped one. The remaining case, an address that is itself
+ *     64-byte aligned, the same section exempts from #PF outright.
+ *
+ * `out` must still be 64-byte aligned; FastLanes' own buffers are
+ * declared `alignas(64)`, and the caller is responsible for checking it.
+ *
+ * Only 32-bit values are provided, and that is the hardware, not a
+ * choice: Knights Corner has no byte or word integer vector instruction,
+ * and its whole 64-bit integer vector set is vfixupnanpd, vpandnq,
+ * vpandq, vpblendmq, vporq and vpxorq (ISA reference 327364-001,
+ * appendix D.1.8), with no add and no shift. */
+#define KNC_FLS_LANES 32
+#define KNC_FLS_BLOCK 1024
+#define KNC_FLS_PACKED_BYTES(bw) ((size_t)(bw) * 128u)
+
+void knc_fls_unffor(const unsigned *in, unsigned *out, unsigned bw, const unsigned *base);
+
+typedef void (*knc_fls_unffor_fn)(const unsigned *in, unsigned *out, const unsigned *base);
+
+extern const knc_fls_unffor_fn knc_fls_unffor_table[33];
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

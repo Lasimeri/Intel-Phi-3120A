@@ -17,9 +17,10 @@
 #include <stdlib.h>
 
 #define LANES 16
-#define SLOTS 16
+#define SLOTS 18
 
 void vpu_int_probe(const int *in, int *out);
+void vpu_int_unaligned(const int *un, int *out);
 
 /* Arithmetic right shift without relying on the implementation-defined
  * behaviour of >> on a negative signed int. */
@@ -58,6 +59,8 @@ static const char *NAME[SLOTS] = {
 	"vpsrlvd zmm2, zmm0, [rdi+64]",
 	"vpaddd  zmm2 {k1}, zmm0, zmm1   (merge mask 0x00ff)",
 	"vpslld  zmm17 {k2}, zmm1, 3     (merge mask 0x0f0f, V' bit)",
+	"vpbroadcastd zmm3, [rdi+68]     (splat b[1])",
+	"vloadunpackld/hd zmm3, [rdi]    (pair on an aligned address)",
 };
 
 static void reference(const int *a, const int *b, int ref[SLOTS][LANES])
@@ -84,9 +87,55 @@ static void reference(const int *a, const int *b, int ref[SLOTS][LANES])
 		ref[13][i] = shrv(a[i], c);
 		ref[14][i] = (0x00ff >> i) & 1 ? (int)(ua + ub) : a[i];
 		ref[15][i] = (0x0f0f >> i) & 1 ? (int)(ub << 3) : a[i];
+		ref[16][i] = b[1];
+		ref[17][i] = a[i];
 	}
 }
 
+
+/* The unaligned load pair at every byte offset the ISA allows. FastLanes
+ * hands the unpack kernels a bitpacked segment that starts at an arbitrary
+ * multiple of four inside its file buffer, so this is the case the codec
+ * depends on, not a corner. An offset that is not a multiple of four is
+ * #GP by the ISA reference (VLOADUNPACKLD, "Exceptions": the address must
+ * be aligned to the element granularity of the up-conversion), so it is
+ * not tested here.
+ *
+ * The pair always touches both 64-byte lines around the address, up to 63
+ * bytes past the sixteen values it wants, so the source block is padded.
+ */
+static int unaligned_sweep(int *out)
+{
+	unsigned char *block;
+	int failed = 0, delta;
+
+	if (posix_memalign((void **)&block, 64, 256)) {
+		perror("posix_memalign");
+		return 1;
+	}
+	for (delta = 0; delta < 256; delta++)
+		block[delta] = (unsigned char)(0x5Au ^ (unsigned)delta * 7u);
+
+	printf("\nvloadunpackld/hd pair, source at every 4-byte offset\n");
+	for (delta = 0; delta <= 64; delta += 4) {
+		const int *un = (const int *)(block + delta);
+		int i, bad = -1;
+
+		for (i = 0; i < LANES; i++) out[i] = (int)0xDEADBEEF;
+		vpu_int_unaligned(un, out);
+		for (i = 0; i < LANES; i++)
+			if (out[i] != un[i]) { bad = i; break; }
+		if (bad < 0) {
+			printf("  +%-2d OK\n", delta);
+		} else {
+			failed++;
+			printf("  +%-2d FAILED lane %d: got=%08x want=%08x\n", delta, bad,
+			       (unsigned)out[bad], (unsigned)un[bad]);
+		}
+	}
+	free(block);
+	return failed;
+}
 /* Returns the number of failing slots. */
 static int run(const char *what, const int *a, const int *b, int *in, int *out)
 {
@@ -153,7 +202,9 @@ int main(void)
 	failed += run("pass 1: second operand is a shift count (0 to 33)", a, b1, in, out);
 	failed += run("pass 2: second operand is a full bit pattern", a, b2, in, out);
 
-	printf("\n%d of %d checks failed\n", failed, 2 * SLOTS);
+	failed += unaligned_sweep(out);
+
+	printf("\n%d checks failed\n", failed);
 	free(in);
 	free(out);
 	return failed ? 1 : 0;
