@@ -32,3 +32,6 @@ card/agent/target
 # initramfs extra files are build products (see card/initramfs/extra/README.md)
 card/initramfs/extra/*
 !card/initramfs/extra/README.md
+
+# knc-rs build output (mirrors card/agent/target)
+card/lib/knc-rs/target/
