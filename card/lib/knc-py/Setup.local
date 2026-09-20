@@ -1,0 +1,4 @@
+# Setup fragment for card/userland/components/cpython.sh: build the knc
+# module into the interpreter. `*static*` is prepended by cpython.sh.
+# The sysroot supplies libknc.a; card/lib/knc/build.sh must have run.
+knc knc-py/kncmodule.c -lknc

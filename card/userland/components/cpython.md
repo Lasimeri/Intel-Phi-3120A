@@ -59,6 +59,28 @@ library probes.
 extra module sources, rewrites `Setup.local` and reruns `make`: seconds
 instead of minutes when iterating on a fragment.
 
+## The `knc` module (2026-09-20)
+
+The interpreter on the card is now built with the vector unit in it:
+
+```sh
+card/lib/knc/build.sh                       # libknc.a into the sysroot first
+PHI_PYTHON_EXTRA_SRC=card/lib/knc-py \
+PHI_PYTHON_SETUP=card/lib/knc-py/Setup.local \
+  card/userland/components/cpython.sh
+```
+
+`import knc` then gives bit packing at every width from 1 to 32 and a block
+copy, running on hand-encoded MVEX. `card/lib/knc-py/kncmodule.md` covers
+it; the audit of the interpreter reports 19848 KNC vector instructions,
+which is `libknc` having been linked in.
+
+The absent `_ctypes` is the reason this is a built-in rather than an
+extension, and the reason is structural rather than a missing dependency:
+static musl has no `dlopen`, so there is nothing for `ctypes.CDLL` to load
+even with libffi ported. A built-in module is the only route from Python to
+compiled code here.
+
 HACL*'s Blake2 SIMD variants: configure compile-tests `-msse4.1` and
 `-mavx2`, builds `Hacl_Hash_Blake2*_Simd*.c` with those flags (per-file
 flags win over the wrapper's `-mno-sse`) and dispatches on CPUID. The
