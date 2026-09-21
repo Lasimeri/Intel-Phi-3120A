@@ -153,48 +153,250 @@ immediate, and generating sixteen variants per width is not worth it. A
 `memcpy` is.
 
 
-## Compression, which this port does not touch
+## Compression: the vector unit is not the lever, and here is the proof
 
 The encode side is entirely scalar. `encoding_operator.cpp:300` still
 reads `generated::ffor::fallback::scalar::ffor(in_p, bitpacked_arr, *bw,
-base)`, the exact mirror of the decode line that was patched.
+base)`, the exact mirror of the decode line that was patched. The
+question this section answers is whether porting it would buy anything.
+It would not, and the reason is worth more than the answer.
 
-Measured with `fls_roundtrip`, which times `read_csv` and `to_fls`
-separately:
+### Measuring in MB/s, on a real file
 
-| rows | values | `read_csv` | `to_fls` | values/s | ratio |
-| --- | --- | --- | --- | --- | --- |
-| 60000 | 180000 | 0.259 s | 37.654 s | 4780 | 5.42x |
-| 240000 | 720000 | 1.043 s | 163.086 s | 4415 | 5.44x |
+`fls_compress` times `read_csv` and `to_fls` apart and reports three
+denominators, because a columnar compressor has three defensible ones:
+the CSV bytes handed in, the **logical** bytes the compressor actually
+consumes (a fixed width column's width times the row count, a string
+column's own bytes, typed from `schema.json`), and the bytes written.
+Logical is the headline.
 
-**About 4.5 thousand values per second, or 0.03 MiB/s of input.** Against
-102 M values/s for scalar decode on the same file, compression is roughly
-20000 times slower than decompression. Four times the data costs 4.33
-times the time, so that rate is real throughput and not a fixed cost
-amortised over a small file.
+Two datasets. The synthetic one is three `int32` columns, 240000 rows,
+2.880 MB logical. The real one is **TPC-H lineitem at scale factor 0.1**:
+600572 rows, 16 columns, 73.646 MB of CSV, 65.338 MB logical, four
+integer columns, four doubles, three dates and five string columns.
+Generated with `tpch-dbgen` (C, not the repository's Python generator)
+and stripped of dbgen's trailing `|`, which would otherwise make 17
+fields against 16 schema columns and trip
+`FLS_ASSERT_EQUALITY(tuple.size(), n_cols)` in `csv_reader.cpp:75`.
 
-Parsing is not the problem: it is 0.7 percent of the time.
+Reproducing it:
 
-**Vectorising `ffor` would recover almost none of it.** FastLanes picks an
-encoding by running the encoder: `Wizard::Spell` takes each candidate in
-`I32_POOL` (RLE, FFOR, DELTA, FREQUENCY, CROSS_RLE, uncompressed and two
-patched variants, eight in all), fully encodes a `CFG::SAMPLER::SAMPLE_SIZE`
-of 7 vectors with each, measures the output, and keeps the smallest
-(`TryExpr` and `ChooseBestExpr` in `wizard.cpp`). That is 8 x 7 = 56
-sample encodes plus one final pass per column.
+```sh
+git clone --depth 1 https://github.com/electrum/tpch-dbgen
+make -C tpch-dbgen CC=gcc DATABASE=DB2 MACHINE=LINUX WORKLOAD=TPCH \
+    CFLAGS='-O2 -std=gnu89 -w -DDBNAME=\"dss\" -DLINUX -DDB2 -DTPCH -DRNG_TEST -D_FILE_OFFSET_BITS=64'
+DSS_PATH=$PWD/tpch tpch-dbgen/dbgen -s 0.1 -T L -f
+sed 's/|$//' tpch/lineitem.tbl > ds_lineitem/data.csv   # dbgen ends every line with a separator
+```
 
-For the 60000-row file that is about 115 vector-encodes per column, so
-37.654 s over 3 columns is **109 ms per 1024-value encode**. A scalar bit
-pack of 1024 values is tens of microseconds. The bit packing is three
-orders of magnitude below the thing consuming the time, and no kernel
-fixes that.
+The schema next to it types the 16 columns `BIGINT, INT x3, DOUBLE x4,
+STRING x2, DATE x3, STRING x3`, which is what `fls_compress` reads to
+size the logical denominator.
 
-A symmetric encode port would also meet an alignment problem the decode
-side did not have: `enc_ffor_opr::bitpacked_arr` is declared
-`PT bitpacked_arr[CFG::VEC_SZ]` with no `alignas(64)`, unlike the decode
-side's `unffored_data`. It would need an upstream `alignas` patch, or
-staging on the output, which is worse than staging on the input because
-it is a copy back.
+### Finding where the time goes, on a machine with no profiler
+
+The card has no `perf` and no `gdb`. `fls_compress` therefore samples its
+own program counter: `setitimer(ITIMER_PROF)` at 1 kHz with a `SIGPROF`
+handler that records `uc_mcontext.gregs[REG_RIP]`, enabled only when
+`FLS_PROF` names an output file. `ITIMER_PROF` charges CPU time, so time
+blocked in a syscall is not misattributed. Measured overhead on the card:
+**165.18 s with sampling against 163.05 s without, 1.3 percent.** The
+binary is `ET_EXEC`, so sampled addresses resolve directly against
+`llvm-nm` output with no load slide to undo.
+
+### The bit packing is 0.004 percent of the run
+
+Two independent measurements say the same thing.
+
+A control: forcing `EXP_UNCOMPRESSED_I32`, which does no FFOR and no bit
+packing at all, against forcing `EXP_FFOR_I32`, which does both. On the
+card, **0.919 s against 0.930 s**. The entire bit packing step is 11 ms
+of a 930 ms run.
+
+The profile agrees. Of 165176 samples taken across a full compression of
+the integer set, `generated::ffor::fallback::scalar::ffor` accounts for
+**6**. That is 0.0036 percent.
+
+A vector `ffor` would therefore have bought, at the absolute ceiling, a
+few milliseconds out of 163 seconds. The decode side's 6.6x on `unffor`
+does not generalise: `unffor` is two thirds of a decode, `ffor` is a
+rounding error in an encode.
+
+### What was actually consuming the time: an O(n^3) scan
+
+The same profile, top two entries:
+
+| samples | percent | symbol |
+| --- | --- | --- |
+| 82267 | 49.81 | `enc_analyze_opr<u16, true>::Analyze()` |
+| 81385 | 49.27 | `enc_analyze_opr<i32, true>::Analyze()` |
+
+**99.08 percent in one function.** `Analyze` picks a frame of reference by
+scoring every pair `(i, j)` of distinct values in a vector, and
+`find_best_option` summed `rep_vec` over `[i, j]` on every call. That is
+cubic in the number of distinct values. A high cardinality vector has
+1024 of them, so the inner loop ran about 1.8e8 times per vector per
+candidate encoding.
+
+Two exact transformations follow, and neither is a heuristic:
+
+* **Patch 5.** Carry prefix sums of `rep_vec` on the histogram, fill them
+  at the end of `AnalyzeHistogram::Cal`, and the range sum becomes a
+  subtraction. Cubic to quadratic.
+* **Patch 6.** The scan keeps an option only when it leaves fewer than
+  `LOCAL_EXC_LIMIT_C` (20) exceptions. `n_exceptions(i, j)` is never below
+  `prefix[i]`, so the outer loop stops as soon as `prefix[i]` reaches 20;
+  and `n_exceptions` falls as `j` grows, so the inner loop starts at the
+  first `j` that clears the limit. Every pair skipped is one the guard
+  would have rejected. On a vector of 1024 distinct values that is about
+  400 pairs instead of 524288.
+
+Both live in one place each, so they cover the `is_rsum` branch and the
+main branch at once rather than half of the problem.
+
+### Then the real file moved the bottleneck somewhere else
+
+With patches 5 and 6 in, the card profile of lineitem is not
+`Analyze` at all. It is **47.56 percent `memset`**, inside FSST12's
+symbol table construction: `buildSymbol12Map` memsets
+`sizeof(Counters12)` once per round, four rounds per symbol table, and
+`Counters12` is `count1High[4096] + count1Low[4096] +
+count2High[4096][2048] + count2Low[4096][4096]`, which is **24 MB**.
+
+The tempting move is a vector `memset`. It does not work, and the
+measurement says why:
+
+| 24 MB clear, card, one thread | time | rate |
+| --- | --- | --- |
+| musl `memset` | 5.2 ms | 4.82 GB/s |
+| a plain 64-bit store loop | 5.2 ms | 4.83 GB/s |
+
+A scalar store loop already reaches exactly what musl's `memset` reaches,
+so the bottleneck is the memory system and not the instruction stream. A
+512-bit store cannot beat a memory controller. For contrast `memcpy` on
+the same buffer manages 0.85 GB/s and `knc_memcpy64` 0.96 GB/s, both
+touching twice the data.
+
+* **Patch 7.** Clear less. `count2Inc(pos1, pos2)` is only ever reached
+  after `count1Inc(pos1)` in the same iteration of `compressCount`, and
+  `count1High[pos1]` is non-zero exactly when that symbol occurred
+  (`count1Inc` increments the high byte early, which is upstream's own
+  documented invariant). So the rows of `count2` that can be dirty are
+  exactly those with `count1High[pos1] != 0`. The first round still
+  memsets all 24 MB, because the structure lives in an uninitialised
+  union; every later round clears the rows it dirtied and the two
+  `count1` arrays. Upstream's own comment on the structure says the hot
+  area is about 8 KB.
+
+### The numbers
+
+`to_fls` only. Every patched run below was checked byte-for-byte against
+the output of pristine upstream built from the same source with the same
+main program: **identical in every case**, 970002 bytes for the integer
+set and 14758632 bytes for lineitem on the host.
+
+| dataset | build | host | card |
+| --- | --- | --- | --- |
+| int32 x 3, 2.880 MB logical | upstream | 0.444 s, 6.49 MB/s | 163.05 s, 0.018 MB/s |
+| | patches 5 and 6 | 0.049 s, 58.94 MB/s | **1.540 s, 1.870 MB/s** |
+| | speedup | 9.1x | **106x** |
+| lineitem SF 0.1, 65.338 MB logical | upstream | 5.760 s, 11.34 MB/s | stopped, unfinished after 17 min of CPU |
+| | patches 5 and 6 | 2.386 s, 27.39 MB/s | 71.158 s, 0.918 MB/s |
+| | patches 5, 6 and 7 | 1.822 s, 35.86 MB/s | **56.059 s, 1.166 MB/s** |
+| | speedup | 3.16x | more than 18x (lower bound) |
+
+Parsing is separate: 0.49 s on the host and 26.04 s on the card for the
+73.646 MB of lineitem CSV. On the host that is a fifth of the compression
+time; on the card, after patch 7, it is 26.04 s against 56.06 s, so
+parsing is now a third of the wall clock and is the next thing worth
+looking at there.
+
+### Against the host, which is the question that matters
+
+The card does not catch the host, and the patches did not change that,
+because the same patches help the host too.
+
+One thread each, `to_fls` only, logical MB/s. Host is a Ryzen 7 5800X
+(8 cores, 16 threads); card is one of the Phi's 228 hardware threads at
+1.1 GHz.
+
+| dataset | host | card | card / host |
+| --- | --- | --- | --- |
+| int32 x 3 | 58.94 MB/s | 1.870 MB/s | **1/31.5** |
+| lineitem SF 0.1 | 35.86 MB/s | 1.166 MB/s | **1/30.8** |
+
+That factor of 31 is the same factor as before the patches, to within
+noise: the card went 106x faster than its own previous self and the host
+went 9.1x faster than its own, so the gap closed by about 3x on the
+integer set and not at all on lineitem.
+
+The ceiling if the encoder were perfectly threaded, which it is not:
+228 card threads against 16 host threads at 1/31 each is 228/(16 x 31) =
+**0.46x**, so even a perfectly parallel FastLanes would leave this card
+about twice as slow as this host at compression, and in practice less
+than that, because the card's write bandwidth is 4.82 GB/s and the FSST
+path is already memory bound on one thread.
+
+Knights Corner was never a scalar machine and compression here is scalar
+work: branchy searches, hash tables and a memset. The vector unit is why
+the decode side wins 1.80x end to end; there is nothing equivalent on the
+encode side.
+
+### The card and the host disagree, and it is the doubles
+
+On the integer set the card and the host write byte-identical files. On
+lineitem they do not: the host writes 14758632 bytes and the card
+17089801, a 4.43x ratio against 3.82x. Splitting lineitem by column
+family with `cut` and compressing each part on both machines says exactly
+where it comes from:
+
+| lineitem columns | host out | card out | agree |
+| --- | --- | --- | --- |
+| 7 integer and date (`cut -f1-4,11-13`) | 5296500 B, 3.63x | 5296500 B, 3.63x | yes |
+| 5 string (`cut -f9,10,14,15,16`) | 6579725 B, 4.09x | 6579725 B, 4.09x | yes |
+| 4 double (`cut -f5-8`) | 2882503 B, **6.67x** | 5213672 B, **3.69x** | **no** |
+
+The integer path agrees and the FSST string path agrees byte for byte,
+which also clears patch 7: it touches FSST12 and FSST12's output is
+identical on both machines. The whole divergence is in the four `DOUBLE`
+columns, where the card gets 3.69x against the host's 6.67x, and that is
+ALP: it searches exponent and factor pairs by doing floating point
+arithmetic, and this card does not have the host's double semantics. The
+card's file is larger, not wrong, but it is a real difference and it is
+recorded rather than smoothed over.
+
+The same split gives the per-family compression cost on the card, which
+is the useful decomposition of that 56 s:
+
+| lineitem columns | card `to_fls` |
+| --- | --- |
+| 7 integer and date | 6.03 s |
+| 4 double | 5.56 s |
+| 5 string | 42.96 s |
+
+**The string columns are 78 percent of the work.** That is FSST, and FSST
+on this card is a memset and a hash table.
+### The verdict on the vector unit
+
+The request was to make the vector unit do compression. It cannot, and
+not for want of trying:
+
+* bit packing, the one part of an encode shaped like a vector kernel, is
+  0.004 percent of the run, confirmed twice;
+* the part that did dominate was an O(n^3) scan over a histogram, which
+  is a branchy scalar search, not a data-parallel loop, and the right fix
+  removed it rather than widening it;
+* the part that dominates now on real data is a 24 MB `memset` that is
+  already running at the card's full write bandwidth, where a 512-bit
+  store buys nothing.
+
+**106x on the integer set and 3.16x on a real file came from complexity,
+not from silicon.** The vector unit earns its place on the decode side,
+where `unffor` is two thirds of the work and 6.6x on the primitive; there
+is no equivalent on the encode side of this codebase.
+
+What would move compression further on this card is threads: 228 of
+them, against the one this measures.
 ## Correctness
 
 `/opt/phi/bin/fls_check`, on the card:
@@ -260,9 +462,12 @@ inside the file buffer. Measured with a probe inside `Unffor` on
 all three. That check cost an hour and would have cost a day as a fault
 inside a 182 MB library.
 
-## Four patches to upstream
+## Seven patches to upstream
 
-Two are portability, one is a real bug, one is the port itself.
+Two are portability, one is a real bug, one is the port itself, and
+three are complexity fixes that belong upstream and help every machine,
+not just this one. All are verified by comparing output files against
+pristine upstream, not by argument.
 
 | # | File | Change |
 | --- | --- | --- |
@@ -270,6 +475,9 @@ Two are portability, one is a real bug, one is the port itself.
 | 2 | `src/table/stats.cpp` | `last_seen_val(0)` to `last_seen_val {}`; the template is also instantiated for `std::string`, where `string(0)` is `string(nullptr)` |
 | 3 | `src/alp/src/fastlanes_gen_unffor.cpp` | Rename the `uint32_t` dispatcher to `unffor_scalar`, one line |
 | 4 | same file, appended | The new `unffor`, which checks two preconditions and calls `knc_fls_unffor` |
+| 5 | `analyze_operator.hpp`, `.cpp`, `_impl.hpp` | Prefix-sum `rep_vec` on the histogram so `find_best_option` stops summing a range per call. Cubic to quadratic in the number of distinct values per vector. Not a card problem: upstream, and worth 9.1x on the host too |
+| 6 | `analyze_operator_impl.hpp` | Bound the same scan by the exception limit it already enforces: stop the outer loop at `prefix[i] >= LOCAL_EXC_LIMIT_C`, start the inner one at the first admissible `j`. Also upstream |
+| 7 | `libfsst12.hpp`, `libfsst12.cpp` | `Counters12::clearTouched()`: clear the rows of `count2` that `count1High` proves were dirtied instead of memsetting 24 MB per round. Also upstream |
 
 Patch 2 is worth reporting upstream on its own; it is undefined behaviour
 on any compiler, not a Knights Corner problem.
@@ -284,7 +492,7 @@ statement of why `libknc` exists.
 
 ## Audit
 
-`libFastLanes.a` for the card is 3.6 million instructions and audits
+`libFastLanes.a` for the card, rebuilt with patches 5 to 7, still audits
 `0 illegal, 0 suspect, 0 KNC vector`: nothing the compiler emitted is
 outside what the card implements, and no vector instruction is in there
 at all, which is exactly right, because the compiler cannot emit one.

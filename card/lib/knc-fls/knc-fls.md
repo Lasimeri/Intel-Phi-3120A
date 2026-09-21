@@ -11,6 +11,7 @@ for the card, with its 32-bit decode hot path routed into MVEX kernels.
 | `fls_check.cpp` | Equivalence against FastLanes' own scalar `unffor`: every width, every input alignment, every base offset |
 | `fls_bench.cpp` | Scalar against MVEX, per width, one thread |
 | `fls_roundtrip.cpp` | A real file decoded both ways in one process, with a count of how many vectors reached the vector unit |
+| `fls_compress.cpp` | Compression speed in MB/s against three denominators, on the host and the card from one source, with a self-sampling profiler behind `FLS_PROF` because the card has no `perf` |
 
 The kernels themselves are generated: `knc-mvex-gen fastlanes` emits
 `knc_fls.S`, which `card/lib/knc/build.sh` assembles into `libknc.a`

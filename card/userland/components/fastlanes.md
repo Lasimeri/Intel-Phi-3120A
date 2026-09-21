@@ -40,7 +40,7 @@ exist for this build in particular:
   `-Wpass-failed=transform-warning` into a build failure. Upstream already
   makes the same exception for CI runners without AVX-512.
 
-## The four patches
+## The seven patches
 
 All applied by the script, all idempotent, all reported as they go.
 
@@ -75,6 +75,41 @@ happen, and patch 4's appended definition collides with the original at
 link time. That is deliberate. A patch that silently does nothing would
 leave the build on the scalar path with no sign of it.
 
+**5. Prefix-sum the candidate scan in `enc_analyze_opr`.**
+`find_best_option` summed `rep_vec` over `[i, j]` on every call, and it is
+called for every pair of distinct values in a vector, so the analysis was
+cubic in that count: about 1.8e8 inner iterations per vector per candidate
+encoding when a vector has 1024 distinct values. `AnalyzeHistogram` now
+carries prefix sums, filled at the end of `Cal`, and the range sum is a
+subtraction. The same sum, so the same option wins and the same bytes are
+written, which is checked by comparing output files against pristine
+upstream rather than asserted.
+
+**6. Bound that scan by the exception limit it already enforces.** An
+option is kept only when it leaves fewer than `LOCAL_EXC_LIMIT_C`
+exceptions. `n_exceptions(i, j)` is never below `prefix[i]`, so the outer
+loop stops once `prefix[i]` reaches the limit; and `n_exceptions` falls as
+`j` grows, so the inner loop starts at the first admissible `j`. Every
+skipped pair is one the guard would have rejected. About 400 pairs
+instead of 524288 on a vector of 1024 distinct values.
+
+**7. `Counters12::clearTouched()` in FSST12.** `buildSymbol12Map` memset
+`sizeof(Counters12)` once per round, four rounds per symbol table, and
+that structure is 24 MB. On the card that memset was 47.6 percent of a
+real-file compression run, and it cannot be made faster: a 24 MB clear
+runs at 4.82 GB/s there and a plain scalar store loop already reaches the
+same figure, so the limit is the memory system. `count2Inc(pos1, pos2)`
+is only reached after `count1Inc(pos1)`, and `count1High[pos1]` is
+non-zero exactly when that symbol occurred, so the dirty rows of `count2`
+are exactly those with `count1High[pos1] != 0`. The first round still
+memsets everything, because the structure lives in an uninitialised
+union; later rounds clear only what they dirtied.
+
+Patches 5, 6 and 7 are not Knights Corner fixes. They are upstream
+complexity fixes that happen to be visible here because this machine is
+slow enough to make them obvious: on the host they are worth 9.1x on an
+integer table and 3.16x on TPC-H lineitem, with byte-identical output.
+
 ## What it checks
 
 `fls_check` compares the MVEX `unffor` against FastLanes' scalar one for
@@ -82,7 +117,15 @@ every width 0 to 32 at every input alignment the kernels accept, and also
 calls the patched dispatcher so the guard is on the same evidence.
 `fls_bench` reports values per second for both, per width, on one thread.
 
-`phi-isa-audit` runs over `libFastLanes.a` and all three programs; an
+`fls_compress` is the encode-side measurement and reports MB/s rather
+than values per second, because values per second says nothing across
+columns of different widths. It takes an optional third argument that
+forces a single encoding instead of letting the wizard search, which is
+how the cost of the search was separated from the cost of encoding, and
+it samples its own program counter when `FLS_PROF` names an output file,
+because the card has neither `perf` nor `gdb`.
+
+`phi-isa-audit` runs over `libFastLanes.a` and all four programs; an
 instruction the card cannot execute fails the build rather than waiting
 to be a `SIGILL`.
 
@@ -110,6 +153,7 @@ phi run sh -c 'tar -xzf /tmp/fastlanes.tar.gz -C /'
 phi run /opt/phi/bin/fls_check
 phi run /opt/phi/bin/fls_bench
 phi run /opt/phi/bin/fls_roundtrip /opt/phi/share/fls-example /tmp
+phi run /opt/phi/bin/fls_compress /opt/phi/share/fls-example /tmp/example.fls
 ```
 
 Results are in `docs/results/2026-09-20-fastlanes-vpu.md`.
