@@ -13,6 +13,8 @@
 // it says how much of a FastLanes decode is actually bit unpacking.
 //
 //   fls_roundtrip <csv_dir> <work_dir> [passes] [reps]
+//
+// csv_dir of "-" reuses the .fls already in work_dir and skips the encode.
 
 #include "fastlanes.hpp"
 #include "fls/footer/rowgroup_descriptor.hpp"
@@ -35,6 +37,27 @@ double now() {
 	timespec ts {};
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1e-9;
+}
+
+// Exact, so the values-per-second figure is not an estimate from the file
+// size and an assumed row width.
+unsigned long count_rows(const path& csv) {
+	std::FILE* f = std::fopen(csv.c_str(), "rb");
+	if (f == nullptr) {
+		return 0;
+	}
+	char          buf[65536];
+	unsigned long n = 0;
+	size_t        got = 0;
+	while ((got = std::fread(buf, 1, sizeof buf, f)) > 0) {
+		for (size_t i = 0; i < got; i++) {
+			if (buf[i] == '\n') {
+				n++;
+			}
+		}
+	}
+	std::fclose(f);
+	return n;
 }
 
 // One full decode of every vector of every rowgroup. Returns seconds and
@@ -93,19 +116,57 @@ int main(int argc, char** argv) {
 		const path work     = argv[2];
 		const path fls_path = work / "data.fls";
 
-		if (exists(fls_path)) {
+		// A csv_dir of "-" reuses the .fls already in work_dir and skips
+		// the encode, which costs minutes on this card and says nothing
+		// about the decode. Use it to time decoding of a file that is
+		// already there.
+		const bool reuse = (dir_path == "-");
+		if (reuse && !exists(fls_path)) {
+			std::cerr << "fls_roundtrip: no " << fls_path << " to reuse\n";
+			return 2;
+		}
+		if (!reuse && exists(fls_path)) {
 			fs::remove(fls_path);
 		}
 
-		double t = now();
-		{
+		// Split, because the two halves answer different questions.
+		// read_csv is text parsing and says nothing about compression;
+		// to_fls is the compressor: statistics, scheme selection, the
+		// transposes, ffor and the bit packing. Only the second is what
+		// anyone means by "compression speed", and it is entirely scalar,
+		// because this port reroutes unffor and nothing on the encode
+		// side (encoding_operator.cpp:300 still calls
+		// generated::ffor::fallback::scalar::ffor).
+		if (!reuse) {
+			double     t   = now();
 			const auto con = connect();
 			con->read_csv(dir_path);
+			const double parse_s = now() - t;
+
+			t = now();
 			con->to_fls(fls_path);
+			const double compress_s = now() - t;
+
+			const auto csv_bytes = file_size(dir_path / "data.csv");
+			const auto fls_bytes = file_size(fls_path);
+			const auto rows      = static_cast<double>(count_rows(dir_path / "data.csv"));
+
+			std::printf("read_csv (parse)     %8.3f s  %8.2f MiB/s of CSV\n",
+			            parse_s,
+			            static_cast<double>(csv_bytes) / parse_s / (1024 * 1024));
+			std::printf("to_fls (compress)    %8.3f s  %8.2f M values/s  %8.2f MiB/s in\n",
+			            compress_s,
+			            rows * 3.0 / compress_s / 1e6,
+			            static_cast<double>(csv_bytes) / compress_s / (1024 * 1024));
+			std::printf("ratio                %8.2fx  %ld bytes from %ld\n",
+			            static_cast<double>(csv_bytes) / static_cast<double>(fls_bytes),
+			            static_cast<long>(fls_bytes),
+			            static_cast<long>(csv_bytes));
+		} else {
+			std::printf("reusing              %s  %ld bytes\n",
+			            fls_path.c_str(),
+			            static_cast<long>(file_size(fls_path)));
 		}
-		std::printf("encode (csv -> fls)  %8.3f s  %ld bytes\n",
-		            now() - t,
-		            static_cast<long>(file_size(fls_path)));
 
 		n_t values = 0, vectors = 0, check = 0;
 		decode_pass(fls_path, values, vectors, reps); // warm the page cache

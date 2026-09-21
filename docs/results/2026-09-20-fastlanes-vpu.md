@@ -104,19 +104,33 @@ at `bw = 11` and `bw = 17`:
 | total | 30.0 | |
 
 So `unffor` is **two thirds** of a FastLanes decode on this card, not a
-third. The model predicts the two measured points without adjustment:
+third.
 
 | Configuration | predicted us | measured us | ratio |
 | --- | --- | --- | --- |
 | scalar | 30.0 | 30.0 | 1.00x |
 | one column direct, one still scalar | 22.0 | 22.2 | 1.35x |
 | one column direct, one staged | 15.6 | 16.7 | **1.80x** |
-| both direct (not reachable: the data is not aligned) | 13.4 | | 2.24x |
+| both direct, on a second file | 13.4 | 14.8 | **1.90x** |
+
+**The prediction column is indicative, not predictive, and the last row is
+why.** The first two agreeing to within 1 percent looked like the model
+was sound. It is not: a 240000-row file whose segments all landed on
+4-byte boundaries decodes at 1.90x, where the same arithmetic said 2.24x.
+Solving for the implied in-situ kernel cost, the MVEX kernels reach about
+60 percent of the throughput `fls_bench` measures for them.
+
+That is the ordinary microbenchmark gap, and it is worth stating rather
+than hiding in a residual: `fls_bench` calls one kernel in a tight loop
+over a hot arena, while the reader interleaves it with the interpreter,
+the transposes and a streaming input. Two points agreeing was luck at one
+operating point, not validation. Take the measured column.
 
 Three things separate 6.6x from 1.80x, in order of size: one column in
-three never calls `unffor` at all; one of the two that do is staged, which
-is 2.5x rather than 6.6x; and the remaining third of the pipeline is
-untouched. Only the second is something this port could still improve.
+three never calls `unffor` at all; the kernels run at about 60 percent of
+their microbenchmark rate in situ; and of the two columns that do call it,
+one is staged. Only the last is something this port could still improve,
+and the 1.90x file shows the ceiling that would buy: about 5 percent.
 
 ## Staging the unaligned inputs, worth 1.35x to 1.80x
 
@@ -138,6 +152,49 @@ used here: the misalignment is a run-time value, `valignd` takes an
 immediate, and generating sixteen variants per width is not worth it. A
 `memcpy` is.
 
+
+## Compression, which this port does not touch
+
+The encode side is entirely scalar. `encoding_operator.cpp:300` still
+reads `generated::ffor::fallback::scalar::ffor(in_p, bitpacked_arr, *bw,
+base)`, the exact mirror of the decode line that was patched.
+
+Measured with `fls_roundtrip`, which times `read_csv` and `to_fls`
+separately:
+
+| rows | values | `read_csv` | `to_fls` | values/s | ratio |
+| --- | --- | --- | --- | --- | --- |
+| 60000 | 180000 | 0.259 s | 37.654 s | 4780 | 5.42x |
+| 240000 | 720000 | 1.043 s | 163.086 s | 4415 | 5.44x |
+
+**About 4.5 thousand values per second, or 0.03 MiB/s of input.** Against
+102 M values/s for scalar decode on the same file, compression is roughly
+20000 times slower than decompression. Four times the data costs 4.33
+times the time, so that rate is real throughput and not a fixed cost
+amortised over a small file.
+
+Parsing is not the problem: it is 0.7 percent of the time.
+
+**Vectorising `ffor` would recover almost none of it.** FastLanes picks an
+encoding by running the encoder: `Wizard::Spell` takes each candidate in
+`I32_POOL` (RLE, FFOR, DELTA, FREQUENCY, CROSS_RLE, uncompressed and two
+patched variants, eight in all), fully encodes a `CFG::SAMPLER::SAMPLE_SIZE`
+of 7 vectors with each, measures the output, and keeps the smallest
+(`TryExpr` and `ChooseBestExpr` in `wizard.cpp`). That is 8 x 7 = 56
+sample encodes plus one final pass per column.
+
+For the 60000-row file that is about 115 vector-encodes per column, so
+37.654 s over 3 columns is **109 ms per 1024-value encode**. A scalar bit
+pack of 1024 values is tens of microseconds. The bit packing is three
+orders of magnitude below the thing consuming the time, and no kernel
+fixes that.
+
+A symmetric encode port would also meet an alignment problem the decode
+side did not have: `enc_ffor_opr::bitpacked_arr` is declared
+`PT bitpacked_arr[CFG::VEC_SZ]` with no `alignas(64)`, unlike the decode
+side's `unffored_data`. It would need an upstream `alignas` patch, or
+staging on the output, which is worse than staging on the input because
+it is a copy back.
 ## Correctness
 
 `/opt/phi/bin/fls_check`, on the card:
