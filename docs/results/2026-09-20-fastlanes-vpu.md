@@ -347,64 +347,60 @@ looking at there.
 ### Against the host, whole machine against whole machine
 
 One thread against one thread is not the question. The card has 228
-hardware threads and the host has 16, and FastLanes' encoder is
+hardware threads, the host has 16, and FastLanes' encoder is
 single-threaded inside, so the only parallelism available to either is
-running more of it at once. Every number below uses the same binary
-source, the same input and the same chunking on both machines.
+running more of it at once.
 
-**One thread**, `to_fls` only, logical MB/s:
+The harness is `redline.sh`: K persistent workers, each running its jobs
+back to back, so exactly K processes are live for the whole run instead
+of draining to idle at every batch boundary. Jobs are 18768-row chunks
+drawn round-robin from the same 32, identical on both machines, and both
+binaries are stripped so the `exec` cost is comparable. Every run below
+is 34 to 189 seconds, so the card's one-second clock is not the limit.
 
-| dataset | host | card | card / host |
-| --- | --- | --- | --- |
-| int32 x 3 | 58.94 | 1.870 | 1 / 31.5 |
-| lineitem SF 0.1 | 35.86 | 1.278 | 1 / 28.1 |
+**Integer and date columns, the path that does not enter FSST:**
 
-**Whole machine.** Constant job size (1/32 of lineitem, 18768 rows),
-varying how many run at once, aggregate MB/s over the whole table:
+| workers | card | host |
+| --: | --: | --: |
+| 1 | 1.46 MB/s | 19.76 MB/s |
+| 8 | 11.41 | 76.19 |
+| 16 | | **80.08** |
+| 32 | 44.69 | 77.82 |
+| 64 | 79.13 | |
+| 114 | 110.75 | |
+| 228 | **115.92** | |
 
-| concurrency | host | card |
-| --- | --- | --- |
-| 4 | 32.67 | |
-| 8 | 37.34 | |
-| 16 | **40.21** | 6.45 |
-| 32 | 40.21 | 9.86 |
-| 64 | | **10.05** |
+**The card wins this one, 115.92 against 80.08, or 1.45x.** It takes all
+228 threads to do it: per thread the card is 13.5x slower, and 228
+threads return 79.5x the single-thread figure, which is 1.4x beyond one
+thread per core, about what an in-order pipeline gives for four-way SMT.
+At 228 workers `phitop` reports `228 threads 99.8% busy` with every one
+of the 57 by 4 cells full and the die at 62 to 64 C.
 
-Host 40.2 against card 10.1. **The card is 4x slower as a machine, not
-31x.** Engaging its threads is worth 7.9x, which is most of the gap and
-not enough to close it.
+Per-worker throughput is the interesting column: 1.459, 1.426, 1.397,
+1.237, 0.972, 0.508. It is flat to 64 workers, which is one per core plus
+some, and only falls once threads start sharing a core. Nothing shared is
+saturating before that.
 
-**But the card stops scaling at 32 workers and it is not the cores.**
-The same test on the integer and date columns only, which never enter
-FSST:
+**All 16 columns, the path that does enter FSST:**
 
-| concurrency | host | card |
-| --- | --- | --- |
-| 1 | 33.88 | 1.37 |
-| 8 | 155.35 | 11.83 |
-| 24 | | 32.95 |
-| 16 | **167.94** | |
-| 64 | | 51.25 |
-| 128 | | 64.74 |
-| 192 | | **82.00** |
+| workers | card | host |
+| --: | --: | --: |
+| 16 | | **43.17 MB/s** |
+| 64 | **11.07** | |
 
-On that path the card scales **linearly to 24 workers with no per-worker
-loss at all** (1.37, 11.83, 32.95: 1x, 8.6x, 24.0x) and is still climbing
-at 192. On lineitem it flattens at 32. The difference between the two is
-FSST12's 24 MB `Counters12`: one per worker, touched four times per
-symbol table, and 32 of those is a gigabyte of working set churning
-through a memory system that does 77.8 GB/s. **The card's parallel
-scaling is killed by a data structure, not by its cores and not by its
-memory bandwidth.**
+Here the host wins by 3.9x, and the card cannot be pushed past about 80
+workers at all: a lineitem chunk job needs 52 MB against 20 MB for the
+integer one, and each one carries FSST12's 24 MB `Counters12`, touched
+four times per symbol table. Sixty-four of those is 1.5 GB of working set
+churning. **The card's parallel scaling on real data is stopped by one
+data structure, not by its cores, not by its memory bandwidth, and not by
+the vector unit.** Shrinking `Counters12` is worth more than anything
+else measured in this document.
 
-The honest summary is that the host wins by 2x on the path that scales
-and by 4x on the path that does not, and that the second number is a
-software problem with a name.
-
-One more constraint worth stating: a whole-table job needs 417 MB, so the
-card's 6 GB holds about 11 of them. Reaching its thread count at all
-requires splitting the input, which is what a rowgroup-parallel encoder
-would do anyway.
+So the answer depends entirely on which path the data takes: **1.45x
+faster than the host on integers, 3.9x slower on strings**, and the
+second number has a named cause and a fix that has not been written.
 ### The card and the host disagree, and it is the doubles
 
 On the integer set the card and the host write byte-identical files. On
@@ -464,9 +460,13 @@ against 77.79 on 64. Patch 8 puts that kernel under FSST12 and takes
 lineitem from 56.06 s to 51.12 s, byte-identical.
 
 So the vector unit is worth about 1.1x on real-file compression, against
-106x from complexity and 7.9x from threads. It earns far more on the
+106x from complexity and 79x from threads. It earns far more on the
 decode side, where `unffor` is two thirds of the work and the kernels are
 6.6x on the primitive.
+
+On the integer path, with all 228 threads engaged, the card compresses at
+115.92 MB/s against the host's 80.08: 1.45x. On real data with strings it
+is 3.9x slower, for one reason with a name.
 
 **What is still on the table**, named rather than rounded off:
 `memset` is still the top symbol at 24.73 percent and only 2.06 percent
