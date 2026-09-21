@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-/* ---------------------------------------------------------------- copy */
+/* ------------------------------------------------------- copy and clear */
 
 /* Copy `blocks` whole 64-byte blocks. Both pointers must be 64-byte
  * aligned. Returns dst, like memcpy.
@@ -30,6 +30,32 @@ extern "C" {
  * instructions (card/examples/vpu_memcpy.md). Use it for short aligned
  * copies; for long ones it barely matters. */
 void *knc_memcpy64(void *dst, const void *src, size_t blocks);
+
+/* Zero `blocks` whole 64-byte blocks. `dst` must be 64-byte aligned.
+ * Returns dst.
+ *
+ * `knc_memset64` uses `vmovnrngoaps`, the non-globally-ordered store with
+ * a no-read hint (ISA reference 327364-001 page 396): the cache is told
+ * not to fetch a line that is about to be overwritten in full, so the
+ * clear moves half the bytes over the bus. The kernel fences before it
+ * returns, so callers need no fence of their own.
+ *
+ * `knc_memset64_ord` is the same loop with ordinary `vmovaps` stores,
+ * kept because it separates the two reasons a scalar clear is slow.
+ *
+ * Measured on the card 2026-09-21, zeroing 24 MB per thread, correctness
+ * checked against musl memset before timing:
+ *
+ *   threads   musl memset   vmovaps   vmovnrngoaps
+ *         1      0.90 GB/s  1.72 GB/s     4.93 GB/s
+ *        16     13.41       21.47        45.62
+ *        64     22.75       38.89        77.79
+ *
+ * A scalar clear is issue-limited, not bandwidth-limited: 64 bytes per
+ * instruction is worth about 1.9x, and not reading the line first is
+ * worth another 2.9x on top. */
+void *knc_memset64(void *dst, size_t blocks);
+void *knc_memset64_ord(void *dst, size_t blocks);
 
 /* ---------------------------------------------------------- bit packing */
 

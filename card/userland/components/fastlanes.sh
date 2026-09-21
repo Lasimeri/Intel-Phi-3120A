@@ -2,7 +2,7 @@
 # fastlanes.sh: build FastLanes (github.com/cwida/FastLanes) for the card,
 # with its 32-bit unffor hot path routed through the card's vector unit.
 #
-# Seven changes to the upstream tree, all applied here rather than kept as a
+# Eight changes to the upstream tree, all applied here rather than kept as a
 # fork, and all idempotent. See fastlanes.md for why each one is needed.
 #
 #   PHI_FASTLANES_COMMIT   default f0edc1020a538f1f8098640fce8347c9ac247a0d
@@ -35,7 +35,7 @@ rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xzf "$tarball" -C "$SRC" --strip-components=1
 cd "$SRC"
 
-echo "== patch 1/7: <climits> in the CUDA common header"
+echo "== patch 1/8: <climits> in the CUDA common header"
 # CHAR_BIT is used in a constant expression there and reaches it only
 # through a transitive include on the compilers upstream tests with. Under
 # this clang and libc++ it is undeclared, and the error cascades into a
@@ -46,7 +46,7 @@ if ! grep -q '^#include <climits>' src/include/fls/cuda/common.hpp; then
 fi
 grep -n '#include <climits>' src/include/fls/cuda/common.hpp | sed 's/^/   /'
 
-echo "== patch 2/7: value-initialise last_seen_val"
+echo "== patch 2/8: value-initialise last_seen_val"
 # The member initialiser was last_seen_val(0). The template is instantiated
 # for std::string as well, where string(0) is string(nullptr) and undefined;
 # clang says so through -Wnonnull, which -Werror makes fatal. Value
@@ -57,7 +57,7 @@ if grep -q 'last_seen_val(0)' src/table/stats.cpp; then
 fi
 grep -n 'last_seen_val {}' src/table/stats.cpp | sed 's/^/   /'
 
-echo "== patch 3/7: rename the generated uint32_t unffor dispatcher"
+echo "== patch 3/8: rename the generated uint32_t unffor dispatcher"
 # One line. The generated switch over 33 widths stays exactly as it is and
 # stays callable, which is what the equivalence check compares against.
 if grep -q '^void unffor(const uint32_t\* FLS_RESTRICT a_in_p,$' src/alp/src/fastlanes_gen_unffor.cpp; then
@@ -66,7 +66,7 @@ if grep -q '^void unffor(const uint32_t\* FLS_RESTRICT a_in_p,$' src/alp/src/fas
 fi
 grep -c '^void unffor_scalar(const uint32_t\* FLS_RESTRICT a_in_p,$' src/alp/src/fastlanes_gen_unffor.cpp | sed 's/^/   renamed: /'
 
-echo "== patch 4/7: append the MVEX dispatcher and link libknc"
+echo "== patch 4/8: append the MVEX dispatcher and link libknc"
 # Appending rather than adding a source file keeps CMake out of it: the
 # generated translation unit is already in the build.
 if ! grep -q knc_fls_unffor src/alp/src/fastlanes_gen_unffor.cpp; then
@@ -85,7 +85,7 @@ CMEOF
 fi
 tail -5 src/CMakeLists.txt | sed 's/^/   /'
 
-echo "== patch 5/7: prefix-sum the candidate scan in enc_analyze_opr"
+echo "== patch 5/8: prefix-sum the candidate scan in enc_analyze_opr"
 # enc_analyze_opr picks a frame of reference by scoring every pair (i, j)
 # of distinct values in a vector, and find_best_option summed rep_vec over
 # [i, j] on each call. That is cubic in the number of distinct values: a
@@ -160,7 +160,7 @@ if ! grep -q prefix_vec "$AO_I"; then
 fi
 grep -c prefix_vec "$AO_H" "$AO_C" "$AO_I" | sed 's/^/   /'
 
-echo "== patch 6/7: bound the candidate scan by the exception limit"
+echo "== patch 6/8: bound the candidate scan by the exception limit"
 # The scan keeps an option only when it leaves fewer than
 # LOCAL_EXC_LIMIT_C exceptions. Two bounds follow from that guard alone:
 # n_exceptions(i, j) is never below prefix[i], so the outer loop can stop
@@ -217,7 +217,7 @@ if ! grep -q first_admissible_j "$AO_I"; then
 fi
 grep -c 'j {j0}' "$AO_I" | sed 's/^/   bounded scans: /'
 
-echo "== patch 7/7: clear only the counter rows FSST12 dirtied"
+echo "== patch 7/8: clear only the counter rows FSST12 dirtied"
 # sizeof(Counters12) is 24 MB, and buildSymbol12Map memsets all of it once
 # per round, four rounds per symbol table. On a real file that memset was
 # 47.6 percent of the whole compression run on the card, and it cannot be
@@ -288,6 +288,67 @@ if ! grep -q clearTouched "$FS_C"; then
     ' "$FS_C" > "$FS_C.new" && mv "$FS_C.new" "$FS_C"
 fi
 grep -c clearTouched "$FS_C" | sed 's/^/   source: /'
+
+echo "== patch 8/8: clear FSST12's counters on the vector unit"
+# What patch 7 could not remove: the first round of every symbol table
+# build still has to zero all 24 MB, and clearTouched still clears whole
+# rows. A scalar clear on this card is issue-limited, not bandwidth-
+# limited, so the vector unit does help here even though it cannot help
+# with the bit packing: 0.90 GB/s for musl memset against 4.93 GB/s for
+# knc_memset64, which uses the non-globally-ordered store with a no-read
+# hint so the cache never fetches a line it is about to overwrite
+# (measured on the card 2026-09-21, see card/lib/knc/knc.h).
+FS_H=src/include/fls/cor/prm/fsst12/libfsst12.hpp
+
+cat > "$OUT/patch8-bzero.inc" <<'BZEOF'
+/* memset(p, 0, n) with the card's vector unit doing the middle of it.
+ * knc_memset64 needs a 64-byte aligned pointer and a whole number of
+ * 64-byte blocks, so the head and the tail stay on memset; only a clear
+ * long enough to pay for the dispatch goes to the kernel at all. */
+inline void knc_bzero(void* p, size_t n) {
+	auto* b = static_cast<unsigned char*>(p);
+	if (n < 512) {
+		memset(b, 0, n);
+		return;
+	}
+	const size_t head = (64U - (reinterpret_cast<uintptr_t>(b) & 63U)) & 63U;
+	memset(b, 0, head);
+	const size_t blocks = (n - head) / 64U;
+	knc_memset64(b + head, blocks);
+	const size_t done = head + blocks * 64U;
+	memset(b + done, 0, n - done);
+}
+
+BZEOF
+
+if ! grep -q knc_bzero "$FS_H"; then
+    awk -v blk="$OUT/patch8-bzero.inc" '
+      $0 == "struct Counters12 {" && placed == 0 {
+          while ((getline l < blk) > 0) { print l }
+          close(blk)
+          placed = 1
+      }
+      { print }
+    ' "$FS_H" > "$FS_H.new" && mv "$FS_H.new" "$FS_H"
+    # the three clears that matter, in order of size
+    perl -pi -e 's{^\t\t\tmemset\(count2High\[pos1\], 0, FSST12_CODE_MAX / 2\);$}{\t\t\tknc_bzero(count2High[pos1], FSST12_CODE_MAX / 2);}' "$FS_H"
+    perl -pi -e 's{^\t\t\tmemset\(count2Low\[pos1\], 0, FSST12_CODE_MAX\);$}{\t\t\tknc_bzero(count2Low[pos1], FSST12_CODE_MAX);}' "$FS_H"
+    awk '
+      { print }
+      $0 == "#define FSST12_CODE_MAX         4096" {
+          print ""
+          print "/* Added by card/userland/components/fastlanes.sh: knc_bzero below. */"
+          print "#include <knc.h>"
+      }
+    ' "$FS_H" > "$FS_H.new" && mv "$FS_H.new" "$FS_H"
+fi
+grep -c knc_bzero "$FS_H" | sed 's/^/   header: /'
+
+FS_C=src/cor/prm/fsst12/libfsst12.cpp
+if ! grep -q knc_bzero "$FS_C"; then
+    perl -pi -e 's{^\t\t\tmemset\(&counters, 0, sizeof\(Counters12\)\);$}{\t\t\tknc_bzero(&counters, sizeof(Counters12));}' "$FS_C"
+fi
+grep -c knc_bzero "$FS_C" | sed 's/^/   source: /'
 
 echo "== configuring for the card"
 rm -rf "$BLD"; mkdir -p "$BLD"

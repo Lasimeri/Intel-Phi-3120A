@@ -263,19 +263,39 @@ symbol table construction: `buildSymbol12Map` memsets
 `Counters12` is `count1High[4096] + count1Low[4096] +
 count2High[4096][2048] + count2Low[4096][4096]`, which is **24 MB**.
 
-The tempting move is a vector `memset`. It does not work, and the
-measurement says why:
+**A wrong turn, recorded because the correction is the interesting part.**
+The first benchmark of that clear timed five back-to-back
+`memset(p, 0, SZ)` calls on a buffer nothing read afterwards. The
+compiler deleted four of them. It reported 4.82 GB/s for musl `memset`
+and 4.83 GB/s for a scalar store loop, and the conclusion drawn from
+those two numbers agreeing was that the clear already saturates the
+memory system, so a 512-bit store could not help. That conclusion does
+not follow even from those numbers: two *scalar* methods measuring the
+same proves they share a limit, not that a wider store shares it. And the
+numbers were wrong anyway.
 
-| 24 MB clear, card, one thread | time | rate |
-| --- | --- | --- |
-| musl `memset` | 5.2 ms | 4.82 GB/s |
-| a plain 64-bit store loop | 5.2 ms | 4.83 GB/s |
+The rewrite puts each kernel behind a function pointer in a thread and
+checks that it zeroes all 25174016 bytes of a buffer pre-filled with
+`0xa5` before any timer starts:
 
-A scalar store loop already reaches exactly what musl's `memset` reaches,
-so the bottleneck is the memory system and not the instruction stream. A
-512-bit store cannot beat a memory controller. For contrast `memcpy` on
-the same buffer manages 0.85 GB/s and `knc_memcpy64` 0.96 GB/s, both
-touching twice the data.
+| threads | musl `memset` | `vmovaps` | `vmovnrngoaps` |
+| --- | --- | --- | --- |
+| 1 | 0.90 GB/s | 1.72 GB/s | **4.93 GB/s** |
+| 4 | 3.70 | 6.90 | 17.84 |
+| 16 | 13.41 | 21.47 | 45.62 |
+| 64 | 22.75 | 38.89 | **77.79** |
+
+Two separate effects. Eight-byte stores to 64-byte stores is worth about
+**1.9x**: a scalar clear on an in-order core is issue-limited, not
+bandwidth-limited. Not reading the line before overwriting it is worth
+another **2.9x** on top, because a normal store misses, fetches 64 bytes
+it is about to discard, and writes them back. `vmovnrngoaps` tells the
+cache to skip the fetch (ISA reference 327364-001, page 396). It is
+weakly ordered, so the kernel ends with the `lock addq $0, (%rsp)` fence
+the reference recommends.
+
+So the card's write path reaches **77.8 GB/s**, not 4.8, and the vector
+unit is worth 3.4x on it. Two patches follow.
 
 * **Patch 7.** Clear less. `count2Inc(pos1, pos2)` is only ever reached
   after `count1Inc(pos1)` in the same iteration of `compressCount`, and
@@ -287,7 +307,19 @@ touching twice the data.
   union; every later round clears the rows it dirtied and the two
   `count1` arrays. Upstream's own comment on the structure says the hot
   area is about 8 KB.
+* **Patch 8.** Clear faster. What is left after patch 7, the first round
+  and the surviving rows, goes through `knc_bzero`, which dispatches the
+  64-byte aligned middle to `knc_memset64` and leaves the head and tail
+  on `memset`. New kernels in `libknc`, new encoders for `vmovnraps` and
+  `vmovnrngoaps` in `host/crates/knc-mvex`.
 
+Patch 7 took the card's lineitem from 71.16 s to 56.06 s and patch 8 to
+51.12 s, both byte-identical to the output before them. `memset` fell
+from 47.56 percent to 33.10 to 24.73. It is still the top symbol, and
+only 2.06 percent of the run is in `knc_memset64`, so most of the
+remaining clear is called from somewhere these two patches do not reach.
+That is unfinished, and it is named here rather than left as a round
+number.
 ### The numbers
 
 `to_fls` only. Every patched run below was checked byte-for-byte against
@@ -302,8 +334,9 @@ set and 14758632 bytes for lineitem on the host.
 | | speedup | 9.1x | **106x** |
 | lineitem SF 0.1, 65.338 MB logical | upstream | 5.760 s, 11.34 MB/s | stopped, unfinished after 17 min of CPU |
 | | patches 5 and 6 | 2.386 s, 27.39 MB/s | 71.158 s, 0.918 MB/s |
-| | patches 5, 6 and 7 | 1.822 s, 35.86 MB/s | **56.059 s, 1.166 MB/s** |
-| | speedup | 3.16x | more than 18x (lower bound) |
+| | patches 5, 6 and 7 | 1.822 s, 35.86 MB/s | 56.059 s, 1.166 MB/s |
+| | patches 5 to 8 (card only) | n/a | **51.119 s, 1.278 MB/s** |
+| | speedup | 3.16x | more than 20x (lower bound) |
 
 Parsing is separate: 0.49 s on the host and 26.04 s on the card for the
 73.646 MB of lineitem CSV. On the host that is a fifth of the compression
@@ -311,37 +344,67 @@ time; on the card, after patch 7, it is 26.04 s against 56.06 s, so
 parsing is now a third of the wall clock and is the next thing worth
 looking at there.
 
-### Against the host, which is the question that matters
+### Against the host, whole machine against whole machine
 
-The card does not catch the host, and the patches did not change that,
-because the same patches help the host too.
+One thread against one thread is not the question. The card has 228
+hardware threads and the host has 16, and FastLanes' encoder is
+single-threaded inside, so the only parallelism available to either is
+running more of it at once. Every number below uses the same binary
+source, the same input and the same chunking on both machines.
 
-One thread each, `to_fls` only, logical MB/s. Host is a Ryzen 7 5800X
-(8 cores, 16 threads); card is one of the Phi's 228 hardware threads at
-1.1 GHz.
+**One thread**, `to_fls` only, logical MB/s:
 
 | dataset | host | card | card / host |
 | --- | --- | --- | --- |
-| int32 x 3 | 58.94 MB/s | 1.870 MB/s | **1/31.5** |
-| lineitem SF 0.1 | 35.86 MB/s | 1.166 MB/s | **1/30.8** |
+| int32 x 3 | 58.94 | 1.870 | 1 / 31.5 |
+| lineitem SF 0.1 | 35.86 | 1.278 | 1 / 28.1 |
 
-That factor of 31 is the same factor as before the patches, to within
-noise: the card went 106x faster than its own previous self and the host
-went 9.1x faster than its own, so the gap closed by about 3x on the
-integer set and not at all on lineitem.
+**Whole machine.** Constant job size (1/32 of lineitem, 18768 rows),
+varying how many run at once, aggregate MB/s over the whole table:
 
-The ceiling if the encoder were perfectly threaded, which it is not:
-228 card threads against 16 host threads at 1/31 each is 228/(16 x 31) =
-**0.46x**, so even a perfectly parallel FastLanes would leave this card
-about twice as slow as this host at compression, and in practice less
-than that, because the card's write bandwidth is 4.82 GB/s and the FSST
-path is already memory bound on one thread.
+| concurrency | host | card |
+| --- | --- | --- |
+| 4 | 32.67 | |
+| 8 | 37.34 | |
+| 16 | **40.21** | 6.45 |
+| 32 | 40.21 | 9.86 |
+| 64 | | **10.05** |
 
-Knights Corner was never a scalar machine and compression here is scalar
-work: branchy searches, hash tables and a memset. The vector unit is why
-the decode side wins 1.80x end to end; there is nothing equivalent on the
-encode side.
+Host 40.2 against card 10.1. **The card is 4x slower as a machine, not
+31x.** Engaging its threads is worth 7.9x, which is most of the gap and
+not enough to close it.
 
+**But the card stops scaling at 32 workers and it is not the cores.**
+The same test on the integer and date columns only, which never enter
+FSST:
+
+| concurrency | host | card |
+| --- | --- | --- |
+| 1 | 33.88 | 1.37 |
+| 8 | 155.35 | 11.83 |
+| 24 | | 32.95 |
+| 16 | **167.94** | |
+| 64 | | 51.25 |
+| 128 | | 64.74 |
+| 192 | | **82.00** |
+
+On that path the card scales **linearly to 24 workers with no per-worker
+loss at all** (1.37, 11.83, 32.95: 1x, 8.6x, 24.0x) and is still climbing
+at 192. On lineitem it flattens at 32. The difference between the two is
+FSST12's 24 MB `Counters12`: one per worker, touched four times per
+symbol table, and 32 of those is a gigabyte of working set churning
+through a memory system that does 77.8 GB/s. **The card's parallel
+scaling is killed by a data structure, not by its cores and not by its
+memory bandwidth.**
+
+The honest summary is that the host wins by 2x on the path that scales
+and by 4x on the path that does not, and that the second number is a
+software problem with a name.
+
+One more constraint worth stating: a whole-table job needs 417 MB, so the
+card's 6 GB holds about 11 of them. Reaching its thread count at all
+requires splitting the input, which is what a rowgroup-parallel encoder
+would do anyway.
 ### The card and the host disagree, and it is the doubles
 
 On the integer set the card and the host write byte-identical files. On
@@ -378,25 +441,40 @@ is the useful decomposition of that 56 s:
 on this card is a memset and a hash table.
 ### The verdict on the vector unit
 
-The request was to make the vector unit do compression. It cannot, and
-not for want of trying:
+The request was to make the vector unit do compression. It does, but not
+where anyone would have looked first, and the first answer given here was
+wrong.
 
-* bit packing, the one part of an encode shaped like a vector kernel, is
-  0.004 percent of the run, confirmed twice;
-* the part that did dominate was an O(n^3) scan over a histogram, which
-  is a branchy scalar search, not a data-parallel loop, and the right fix
-  removed it rather than widening it;
-* the part that dominates now on real data is a 24 MB `memset` that is
-  already running at the card's full write bandwidth, where a 512-bit
-  store buys nothing.
+**Where it cannot help, twice confirmed.** Bit packing, the one part of an
+encode shaped like a vector kernel, is 0.004 percent of the run: forcing
+`uncompressed` against forcing `ffor` differs by 11 ms in 930, and scalar
+`ffor` takes 6 of 165176 samples. A vector `ffor` is worth nothing.
 
-**106x on the integer set and 3.16x on a real file came from complexity,
-not from silicon.** The vector unit earns its place on the decode side,
-where `unffor` is two thirds of the work and 6.6x on the primitive; there
-is no equivalent on the encode side of this codebase.
+**Where it cannot help either.** The O(n^3) scan that was 99 percent of
+the run is a branchy search over a histogram, not a data-parallel loop.
+The right fix removed it (patches 5 and 6, 106x on the integer set)
+rather than widening it.
 
-What would move compression further on this card is threads: 228 of
-them, against the one this measures.
+**Where it does help, after an error.** The 24 MB clear inside FSST12 was
+dismissed here on a benchmark the compiler had gutted, with a conclusion
+that did not follow from its own numbers. Measured properly, a scalar
+clear on this card is issue-limited and leaves most of the write path
+idle: 0.90 GB/s against 4.93 for `vmovnrngoaps` on one thread, 22.75
+against 77.79 on 64. Patch 8 puts that kernel under FSST12 and takes
+lineitem from 56.06 s to 51.12 s, byte-identical.
+
+So the vector unit is worth about 1.1x on real-file compression, against
+106x from complexity and 7.9x from threads. It earns far more on the
+decode side, where `unffor` is two thirds of the work and the kernels are
+6.6x on the primitive.
+
+**What is still on the table**, named rather than rounded off:
+`memset` is still the top symbol at 24.73 percent and only 2.06 percent
+of that went through `knc_memset64`, so most of the remaining clear has a
+caller these patches do not reach and the profiler here does not
+attribute callers. Beyond that, FSST12's 24 MB counter structure is what
+stops the card scaling past 32 workers on real data, and shrinking it
+would be worth more than anything else measured here.
 ## Correctness
 
 `/opt/phi/bin/fls_check`, on the card:
@@ -462,11 +540,13 @@ inside the file buffer. Measured with a probe inside `Unffor` on
 all three. That check cost an hour and would have cost a day as a fault
 inside a 182 MB library.
 
-## Seven patches to upstream
+## Eight patches to upstream
 
 Two are portability, one is a real bug, one is the port itself, and
 three are complexity fixes that belong upstream and help every machine,
-not just this one. All are verified by comparing output files against
+and one puts the vector unit under a clear that turned out to be worth
+vectorising after all.
+All are verified by comparing output files against
 pristine upstream, not by argument.
 
 | # | File | Change |
@@ -478,6 +558,7 @@ pristine upstream, not by argument.
 | 5 | `analyze_operator.hpp`, `.cpp`, `_impl.hpp` | Prefix-sum `rep_vec` on the histogram so `find_best_option` stops summing a range per call. Cubic to quadratic in the number of distinct values per vector. Not a card problem: upstream, and worth 9.1x on the host too |
 | 6 | `analyze_operator_impl.hpp` | Bound the same scan by the exception limit it already enforces: stop the outer loop at `prefix[i] >= LOCAL_EXC_LIMIT_C`, start the inner one at the first admissible `j`. Also upstream |
 | 7 | `libfsst12.hpp`, `libfsst12.cpp` | `Counters12::clearTouched()`: clear the rows of `count2` that `count1High` proves were dirtied instead of memsetting 24 MB per round. Also upstream |
+| 8 | same two files, plus `knc.h` and `knc-mvex` | `knc_bzero`: the clears that survive patch 7 go to `knc_memset64`, a `vmovnrngoaps` kernel. Card only, because it needs `libknc` |
 
 Patch 2 is worth reporting upstream on its own; it is undefined behaviour
 on any compiler, not a Knights Corner problem.

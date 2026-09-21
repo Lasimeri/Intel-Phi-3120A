@@ -174,6 +174,8 @@ enum Map {
 enum Pp {
     None = 0,
     P66 = 1,
+    /// The F2 prefix, which selects the no-read-hint stores.
+    Pf2 = 3,
 }
 
 /// The r/m operand of the ModRM byte.
@@ -233,6 +235,35 @@ pub fn vmovaps_store(mem: Mem, src: Zmm) -> Insn {
     Insn {
         bytes: mvex(Map::M0F, Pp::None, false, src.0, 0, Rm::Mem(mem), 0, 0x29, None),
         text: format!("vmovaps {mem}, {src}"),
+    }
+}
+
+/// `vmovnraps mt, zmm`: store 64 bytes with a no-read hint
+/// (MVEX.512.F2.0F.W0.EH0 29 /r, ISA reference 327364-001 page 390).
+///
+/// The hint only takes effect when there is no write-mask and no
+/// down-conversion, which is why `aaa` and `SSS` are both zero here and
+/// there is no masked form.
+pub fn vmovnraps_store(mem: Mem, src: Zmm) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F, Pp::Pf2, false, src.0, 0, Rm::Mem(mem), 0, 0x29, None),
+        text: format!("vmovnraps {mem}, {src}"),
+    }
+}
+
+/// `vmovnrngoaps mt, zmm`: the same store, not globally ordered
+/// (MVEX.512.F2.0F.W0.EH1 29 /r, ISA reference 327364-001 page 396).
+///
+/// Identical encoding to `vmovnraps` except for the EH bit, which is bit
+/// 7 of P2. Stores done this way are weakly ordered, so a fence is needed
+/// before anything else may observe the memory; the reference suggests
+/// `lock add $0, (%rsp)`, which is what the memset kernel uses.
+pub fn vmovnrngoaps_store(mem: Mem, src: Zmm) -> Insn {
+    let mut bytes = mvex(Map::M0F, Pp::Pf2, false, src.0, 0, Rm::Mem(mem), 0, 0x29, None);
+    bytes[3] |= 0x80; // EH
+    Insn {
+        bytes,
+        text: format!("vmovnrngoaps {mem}, {src}"),
     }
 }
 
@@ -733,5 +764,29 @@ mod tests {
     #[should_panic(expected = "REX")]
     fn mask_moves_refuse_extended_registers() {
         kmov_k_r32(K(0), Gpr::R8);
+    }
+
+    /// The two no-read stores, pinned to the bytes the card actually ran
+    /// on 2026-09-21: `knc_memset64` (which is built from
+    /// `vmovnrngoaps`) zeroed all 25174016 bytes of a buffer pre-filled
+    /// with 0xa5, checked byte by byte before anything was timed. The two
+    /// differ only in the EH bit, which is bit 7 of P2.
+    #[test]
+    fn no_read_store_bytes_verified_on_the_card() {
+        assert_eq!(
+            vmovnraps_store(Mem::new(Gpr::Rdi, 0), Zmm(0)).bytes,
+            [0x62, 0xf1, 0x7b, 0x08, 0x29, 0x87, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            vmovnrngoaps_store(Mem::new(Gpr::Rdi, 0), Zmm(0)).bytes,
+            [0x62, 0xf1, 0x7b, 0x88, 0x29, 0x87, 0, 0, 0, 0]
+        );
+        // Same instruction as vmovaps apart from the F2 prefix in P1, so a
+        // mistake in the prefix table would show up here as the ordinary
+        // store rather than as a decode fault on the card.
+        assert_ne!(
+            vmovnraps_store(Mem::new(Gpr::Rdi, 0), Zmm(0)).bytes,
+            vmovaps_store(Mem::new(Gpr::Rdi, 0), Zmm(0)).bytes
+        );
     }
 }

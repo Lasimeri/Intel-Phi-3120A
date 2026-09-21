@@ -115,10 +115,66 @@ fn memcpy_kernel() -> String {
     writeln!(s, "\tjnz 3b").unwrap();
     writeln!(s, "4:").unwrap();
     end_function(&mut s, "knc_memcpy64");
+    memset_body(&mut s, "knc_memset64_ord", false);
+    memset_body(&mut s, "knc_memset64", true);
     writeln!(s, "\n\t.section .note.GNU-stack,\"\",@progbits").unwrap();
     s
 }
 
+/// `knc_memset64_ord` and `knc_memset64`: zero whole 64-byte blocks of a
+/// 64-byte aligned buffer with the full width of the vector unit.
+///
+/// Two variants, because the interesting question is which of the two
+/// reasons a scalar memset is slow actually binds. `_ord` uses ordinary
+/// `vmovaps` stores: eight times fewer store instructions than a 64-bit
+/// loop, but still a read-for-ownership of every line it overwrites. The
+/// default uses `vmovnrngoaps`, which tells the cache not to fetch a line
+/// that is about to be written in full, so it moves half the bytes over
+/// the bus. If the card's write path is limited by traffic rather than by
+/// issue rate, only the second one moves.
+///
+/// `vmovnrngoaps` is weakly ordered, so the kernel fences before it
+/// returns. The ISA reference (327364-001, page 396) recommends a dummy
+/// `lock add` over `cpuid`, and that is what this uses.
+fn memset_body(s: &mut String, name: &str, ngo: bool) {
+    function(
+        s,
+        name,
+        &format!("void *{name}(void *dst, size_t blocks): rdi = dst (64-byte aligned), rsi = count of 64-byte blocks. Returns dst."),
+    );
+    let store = |m: Mem| {
+        if ngo {
+            vmovnrngoaps_store(m, Zmm(0))
+        } else {
+            vmovaps_store(m, Zmm(0))
+        }
+    };
+    writeln!(s, "\tmovq %rdi, %rax").unwrap();
+    writeln!(s, "{}", vpxord(Zmm(0), Zmm(0), Src::Reg(Zmm(0)), K(0)).gas()).unwrap();
+    writeln!(s, "\tcmpq $4, %rsi").unwrap();
+    writeln!(s, "\tjb 2f").unwrap();
+    writeln!(s, "1:").unwrap();
+    for i in 0..4i32 {
+        writeln!(s, "{}", store(mem(Gpr::Rdi, 64 * i)).gas()).unwrap();
+    }
+    writeln!(s, "\taddq $256, %rdi").unwrap();
+    writeln!(s, "\tsubq $4, %rsi").unwrap();
+    writeln!(s, "\tcmpq $4, %rsi").unwrap();
+    writeln!(s, "\tjae 1b").unwrap();
+    writeln!(s, "2:").unwrap();
+    writeln!(s, "\ttestq %rsi, %rsi").unwrap();
+    writeln!(s, "\tjz 4f").unwrap();
+    writeln!(s, "3:").unwrap();
+    writeln!(s, "{}", store(mem(Gpr::Rdi, 0)).gas()).unwrap();
+    writeln!(s, "\taddq $64, %rdi").unwrap();
+    writeln!(s, "\tdecq %rsi").unwrap();
+    writeln!(s, "\tjnz 3b").unwrap();
+    writeln!(s, "4:").unwrap();
+    if ngo {
+        writeln!(s, "\tlock addq $0, (%rsp)\t# fence: vmovnrngoaps is not globally ordered").unwrap();
+    }
+    end_function(s, name);
+}
 /// What a decode kernel does with each value after it comes out of the
 /// bit-packed stream.
 ///
