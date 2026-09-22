@@ -70,6 +70,7 @@ output and a reading. In date order:
 | [2026-09-22-second-card.md](results/2026-09-22-second-card.md) | A second card on the chipset: why it did not enumerate (seating), the 3608 subsystem with an 8 GiB BAR, both cards booted and offloading side by side, phitop per card |
 | [2026-09-22-block-pipeline.md](results/2026-09-22-block-pipeline.md) | The transport, taken apart: one record per scattered 4 KiB page, 20 us of host work each; pipelined DMA, huge pages on the card, a poller that stays awake (patch 0029) and the KNC DELAY instruction; 65536 elements in 0.49 ms, 64 MiB each way at the link |
 | [2026-09-22-seamless-test.md](results/2026-09-22-seamless-test.md) | The transparent path tested from the user side: an ordinary AVX-512 program is intercepted and runs bit-exact, on the HOST emulator; the cards see nothing (counters unchanged); what wiring them in would take |
+| [2026-09-22-seamless-card.md](results/2026-09-22-seamless-card.md) | The join, done: an unmodified AVX-512 program has its instructions executed by the card, as MVEX, from the SIGILL handler; regions, byte-level rewrite, demand paging over the mailbox, line-granular write-back, kernel patch 0030; what it costs and the three fixes queued |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.
