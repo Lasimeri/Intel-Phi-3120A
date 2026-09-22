@@ -21,7 +21,7 @@ use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
 
 use phi_vpu::proto::*;
-use phi_vpu::window::{submit, wait_ready, worker_ready, Window};
+use phi_vpu::window::{submit, wait_ready, Window};
 
 #[derive(Parser)]
 #[command(about = "Drive the Xeon Phi's vector units as an AVX-512 co-processor", version)]
@@ -177,12 +177,14 @@ fn as_bytes(v: &[f32]) -> &[u8] {
 fn status(w: &Window) -> Result<()> {
     let req: Request = w.read(OFF_REQ);
     let rep: Reply = w.read(OFF_REPLY);
+    // A live worker, not a word a dead one left behind: the word is cleared
+    // and a re-assertion awaited (the wrapper starts a worker on "not").
     println!(
         "worker: {}",
-        if worker_ready(w) {
+        if wait_ready(w, Duration::from_millis(300)).is_ok() {
             "polling"
         } else {
-            "not polling (no readiness word)"
+            "not polling (no live worker re-asserted the readiness word)"
         }
     );
     println!("request: seq={} kernel={} n={} threads={}", req.seq, req.kernel, req.n, req.threads);

@@ -60,6 +60,14 @@ impl Window {
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), self.base.add(off), bytes.len()) }
     }
 
+    /// A raw pointer into the window, for a kernel copy straight into it.
+    pub fn ptr(&self, off: u64, len: usize) -> *mut u8 {
+        let off = off as usize;
+        assert!(off + len <= self.len);
+        // SAFETY: bounds checked; the window is mapped for the life of self.
+        unsafe { self.base.add(off) }
+    }
+
     pub fn get(&self, off: u64, out: &mut [u8]) {
         let off = off as usize;
         assert!(off + out.len() <= self.len);

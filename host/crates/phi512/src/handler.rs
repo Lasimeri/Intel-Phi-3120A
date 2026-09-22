@@ -225,6 +225,18 @@ extern "C" fn on_sigill(_sig: i32, _info: *mut libc::siginfo_t, ctx: *mut libc::
     // The card path: the region around this instruction runs on the
     // card's vector units, and the frame comes back at the region's exit.
     if CARD_ON.load(Ordering::Relaxed) {
+        // A thread meeting its first fault has no alternate stack yet, so
+        // this frame sits on the program's stack, which the card will
+        // write back. Give the thread its stack and return with rip
+        // untouched: the instruction faults again, onto the new stack.
+        // SAFETY: a query of this thread's alternate stack.
+        let no_stack = unsafe {
+            let mut cur: libc::stack_t = std::mem::zeroed();
+            libc::sigaltstack(std::ptr::null(), &mut cur) == 0 && cur.ss_flags & libc::SS_DISABLE != 0
+        };
+        if no_stack && install_altstack() {
+            return;
+        }
         let result = crate::state::tls::with(|st| {
             pull_live_registers(uc, st);
             // SAFETY: uc is the frame the kernel handed this handler.
@@ -240,10 +252,34 @@ extern "C" fn on_sigill(_sig: i32, _info: *mut libc::siginfo_t, ctx: *mut libc::
                 OFFLOADED.fetch_add(1, Ordering::Relaxed);
                 if VERBOSE.load(Ordering::Relaxed) {
                     say(&[&format!(
-                        "phi512: card ran {:#x}..{:#x} ({} instructions, {} AVX-512{}) to {:#x}: {} chunks, {} written back, {} faults; fetch {} us, run {} us, write back {} us, total {} us\n",
-                        s.lo, s.hi, s.insns, s.avx512, if s.cached { ", cached" } else { "" }, s.exit,
-                        s.chunks, s.dirty, s.faults, s.fetch_us, s.run_us, s.wb_us, s.total_us
+                        "phi512: card ran {:#x}..{:#x} ({} instructions, {} AVX-512{}) in {} phase(s), {} us\n",
+                        s.lo,
+                        s.hi,
+                        s.insns,
+                        s.avx512,
+                        if s.cached { ", cached" } else { "" },
+                        s.phases.len(),
+                        s.total_us
                     )]);
+                    for p in &s.phases {
+                        say(&[&format!(
+                            "phi512:   {} {:#x}..{:#x}: {}{}, {} ranges, {} chunks, {} pages back, {} faults; fetch {} us, run {} us, write back {} us; card {} us, wall {} us\n",
+                            p.what,
+                            p.entry,
+                            p.exit,
+                            p.mode,
+                            if p.threads > 1 { format!(" on {} threads", p.threads) } else { String::new() },
+                            p.ranges,
+                            p.chunks,
+                            p.pages_back,
+                            p.faults,
+                            p.fetch_us,
+                            p.run_us,
+                            p.wb_us,
+                            p.card_us,
+                            p.total_us
+                        )]);
+                    }
                 }
             }
             Err(e) => {
@@ -462,30 +498,10 @@ extern "C" fn init() {
                 *CARD_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = e;
             }
         }
-        // The card writes the program's memory back whole chunks at a
-        // time, the stack included, so the handler must not keep its own
-        // frame on the program's stack: an alternate stack for this thread.
-        // SAFETY: an anonymous mapping handed to sigaltstack for the life
-        // of the process.
-        unsafe {
-            let size = 1 << 20;
-            let p = libc::mmap(
-                std::ptr::null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            );
-            if p != libc::MAP_FAILED {
-                let ss = libc::stack_t {
-                    ss_sp: p,
-                    ss_flags: 0,
-                    ss_size: size,
-                };
-                libc::sigaltstack(&ss, std::ptr::null_mut());
-            }
-        }
+        // The card writes the program's stack back, so the handler must not
+        // keep its own frame on it: an alternate stack for this thread now,
+        // and for every other thread at its first fault (on_sigill).
+        install_altstack();
         // Sites are not rewritten in card mode: a region runs whole.
         PATCHING_ON.store(false, Ordering::Relaxed);
     }
@@ -531,6 +547,37 @@ extern "C" fn init() {
         } else {
             say(&["phi512: no card: ", &CARD_ERROR.lock().unwrap_or_else(|p| p.into_inner()), "\n"]);
         }
+    }
+}
+
+/// An alternate signal stack for the calling thread. True when it is in
+/// place (or was already).
+fn install_altstack() -> bool {
+    // SAFETY: sigaltstack queries and installs for this thread; the
+    // mapping lives for the life of the process (threads are not many).
+    unsafe {
+        let mut cur: libc::stack_t = std::mem::zeroed();
+        if libc::sigaltstack(std::ptr::null(), &mut cur) == 0 && cur.ss_flags & libc::SS_DISABLE == 0 && !cur.ss_sp.is_null() {
+            return true;
+        }
+        let size = 1 << 20;
+        let p = libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        if p == libc::MAP_FAILED {
+            return false;
+        }
+        let ss = libc::stack_t {
+            ss_sp: p,
+            ss_flags: 0,
+            ss_size: size,
+        };
+        libc::sigaltstack(&ss, std::ptr::null_mut()) == 0
     }
 }
 

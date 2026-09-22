@@ -90,3 +90,48 @@ explicit path. Three costs, each with a known fix, in order:
 Also open: chunks fetched afresh per region (the text and the stack
 chunk are the same every time), the code chunk resent per region, one
 region at a time, other host threads unsynchronised.
+
+## Evening: the three costs, fixed, and then the rest
+
+Commit after 85a6f84. Card 0, the same test, every size bit-identical:
+
+| elements | polynomial | dot product | integers | emulated polynomial |
+| --- | --- | --- | --- | --- |
+| 65536 | 7.7 ms | 3.3 ms | 5.5 ms | 22.5 ms |
+| 1048576 | 16.2 ms | 10.7 ms | 10.6 ms | 376 ms |
+| 16777216 | 98 ms | 139 ms | 91 ms | about 6 s |
+
+What changed, each measured before the next:
+
+1. A planner (`host/crates/phi512/src/plan.md`) resolves every address
+   a phase touches from the register file, stack slots included, and
+   finds the loop to split; the card fetches exactly those pages and
+   writes exactly the stored ranges back (no snapshots, no diffs, no
+   faults), and the loop runs on 57 threads, the last of them keeping
+   the original bound so the final registers and flags are the
+   sequential ones. The dot product's accumulator keeps it on one
+   thread, bit-identical. A miss falls back to demand mode for that
+   phase, after the card refuses without writing back.
+2. Regions run in phases (prologue, loop, epilogue), each dispatched
+   with the exact registers the previous returned.
+3. On the card: a pool of 256 pre-faulted huge pages moved into place
+   with `mremap`; chunks kept mapped across regions (every map change
+   flushed 57 TLBs; a region's unmap was 2 ms); the descriptor, thunk
+   and code pages as one bundle in one DMA (the uncached read was
+   0.4 ms); write-back straight from the mapped chunks (the staging
+   copy was 130 ms at 16 M); two fetch slots with the host filling the
+   next ahead, two write-back slots with the host acknowledging before
+   applying; split-loop exits by a jump into the worker instead of a
+   signal (57 signals serialised on one lock, 1 ms).
+4. The wrapper starts the worker itself and turns unused swap off;
+   every thread of the program gets an alternate stack.
+
+At 16 M elements the split loop's run is 4.4 ms; the transport is 35 ms
+in and 34 ms out for 64 MiB, within 2x of the link (the explicit path's
+20 and 20). What is left there: one DMA per 2 MiB piece, and the mail
+round trip between pieces.
+
+Two defects found on the way, both by the test: a stale staging pointer
+after a mid-range flush sent write-back entries into the slot the host
+was applying (the program's stack was overwritten; visible as garbage
+timings), and a fresh huge page's zero-fill landing on the first region.

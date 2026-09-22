@@ -36,6 +36,7 @@ pub mod emulate;
 pub mod frame;
 pub mod offload;
 pub mod patch;
+pub mod plan;
 pub mod state;
 
 #[cfg(not(test))]

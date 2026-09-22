@@ -7,8 +7,12 @@
 # executes an AVX-512 instruction, this host refuses it, and libphi512
 # performs the instruction and lets the program continue.
 #
-#   --verbose   report how many AVX-512 instructions were performed
+#   --card N    the card to use (default: PHI512_CARD, else 0)
+#   --emulate   run the AVX-512 in software on this host instead of on a card
+#   --verbose   report every region the card ran, with its phases and times
 #   --check     say whether this host needs the library at all, and exit
+#
+# The card's worker is started (and deployed) if it is not running.
 #
 # See phi512.md.
 set -euo pipefail
@@ -16,9 +20,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 
 verbose=0
+card=${PHI512_CARD:-0}
+emulate=${PHI512_EMULATE:-}
 while [ $# -gt 0 ]; do
     case "$1" in
         --verbose|-v) verbose=1; shift ;;
+        --card|-c) card=$2; shift 2 ;;
+        --card=*) card=${1#--card=}; shift ;;
+        --emulate) emulate=1; shift ;;
         --check)
             if grep -qw avx512f /proc/cpuinfo; then
                 echo "this host has AVX-512; the library is unnecessary here"
@@ -56,4 +65,22 @@ fi
 case "$lib" in *" "*) echo "$0: the library path contains a space, which LD_PRELOAD cannot express: $lib" >&2; exit 1 ;; esac
 
 [ "$verbose" = 1 ] && export PHI512_VERBOSE=1
+export PHI512_CARD="$card"
+if [ -n "$emulate" ]; then
+    export PHI512_EMULATE=1
+else
+    # The card executes the program's AVX-512: its worker must be polling.
+    # A missing worker is started here, deployed first if the card has none.
+    driver=""
+    for cand in "$root/host/target/release/phi-vpu" "$root/host/target/debug/phi-vpu"; do
+        [ -x "$cand" ] && { driver=$cand; break; }
+    done
+    if [ -z "$driver" ] || ! "$driver" --card "$card" status 2>/dev/null | grep -q "worker: polling"; then
+        echo "phi512: card $card has no worker polling; starting it" >&2
+        "$root/scripts/phi-vpu.sh" -c "$card" start >&2 || {
+            echo "phi512: could not start the worker on card $card (is the card up? phi -c $card status)" >&2
+            exit 1
+        }
+    fi
+fi
 exec env LD_PRELOAD="$lib${LD_PRELOAD:+:$LD_PRELOAD}" "$@"

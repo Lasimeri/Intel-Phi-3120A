@@ -12,3 +12,8 @@ seamless path (`phi512/src/offload.rs`) uses the same code as the
 explicit driver. `Window` is `Send` (one sits behind a mutex there);
 the pointer is to shared memory and every access through it is volatile
 or a plain copy.
+
+`ptr` (2026-09-22) hands out a raw pointer into the window so the
+seamless path can copy the program's memory straight into a fetch slot
+with `process_vm_readv` and apply a write-back straight from a slot,
+one copy instead of two.

@@ -25,6 +25,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +74,16 @@ static uint64_t now_ns(void)
  * through 4+4k are core k. Filling core-major puts one thread on every
  * core before any core gets a second, which is what the two-cycle
  * decoder wants (SSDG 2.1.2). */
+/* Every pool thread handles the exec engine's signals on its own stack
+ * (vpu_exec.c): the program's stack is the last place a handler frame may
+ * go while the card writes the program's memory back. */
+static char pool_altstacks[MAX_POOL][64 << 10] __attribute__((aligned(16)));
+static void pool_altstack(int t)
+{
+    stack_t ss = { .ss_sp = pool_altstacks[t], .ss_size = sizeof pool_altstacks[t], .ss_flags = 0 };
+    sigaltstack(&ss, NULL);
+}
+
 static int knc_cpu(int core, int slot)
 {
     int cpu = 1 + core * 4 + slot;
@@ -98,6 +109,9 @@ static long futex(volatile uint32_t *addr, int op, uint32_t val)
 struct job {
     float *in, *out, *coef;
     long begin, count;
+    void (*fn)(void *arg, int slice, int nslices);   /* a generic job (vpu_pool_map), else the polynomial */
+    void *arg;
+    int slice, nslices;
 };
 
 static struct {
@@ -111,6 +125,10 @@ static struct {
 
 static void run_job(const struct job *j)
 {
+    if (j->fn) {
+        j->fn(j->arg, j->slice, j->nslices);
+        return;
+    }
     if (j->count > 0) {
         poly_kernel_x8(j->out + j->begin, j->in + j->begin, j->coef, j->count);
     }
@@ -148,6 +166,7 @@ static void *pool_thread(void *arg)
 {
     int t = (int)(intptr_t)arg;
     pin(knc_cpu(t % 57, t / 57));
+    pool_altstack(t);
     uint32_t seen = 0;
     for (;;) {
         wait_for_work(seen);
@@ -196,7 +215,7 @@ static int dispatch(int threads, float *in, float *out, float *coef, long n)
             if (at + take > chunks) take = chunks - at;
             if (take < 0) take = 0;
         }
-        j->in = in; j->out = out; j->coef = coef;
+        j->in = in; j->out = out; j->coef = coef; j->fn = NULL;
         j->begin = at * VPU_CHUNK;
         j->count = take * VPU_CHUNK;
         if (take > 0 && j->begin + j->count > n) j->count = n - j->begin;
@@ -421,4 +440,34 @@ int main(int argc, char **argv)
             fflush(stdout);
         }
     }
+}
+
+/* Run fn(arg, slice, nslices) on nslices threads: pool threads take
+ * slices 0 to nslices - 2, the caller (the dispatcher) runs the last
+ * one, and everyone is waited for. The pool must be idle: the caller is
+ * the dispatcher between requests, or its exec engine inside one. */
+int vpu_pool_map(void (*fn)(void *arg, int slice, int nslices), void *arg, int nslices)
+{
+    if (nslices > pool.nthreads + 1) nslices = pool.nthreads + 1;
+    if (nslices < 1) nslices = 1;
+    for (int t = 0; t <= pool.nthreads; t++) {
+        struct job *j = &pool.jobs[t];
+        memset(j, 0, sizeof *j);
+        int slice = (t == pool.nthreads) ? nslices - 1 : (t < nslices - 1 ? t : -1);
+        if (slice >= 0) { j->fn = fn; j->arg = arg; j->slice = slice; j->nslices = nslices; }
+    }
+    pool.done = 0;
+    COMPILER_BARRIER();
+    pool.gen++;
+    FULL_FENCE();
+    if (pool.parked) futex(&pool.gen, FUTEX_WAKE, INT_MAX);
+    run_job(&pool.jobs[pool.nthreads]);
+    while (pool.done != (uint32_t)pool.nthreads) { }
+    COMPILER_BARRIER();
+    return nslices;
+}
+
+int vpu_pool_threads(void)
+{
+    return pool.nthreads;
 }

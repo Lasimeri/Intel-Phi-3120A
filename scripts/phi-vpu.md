@@ -70,3 +70,12 @@ in the initramfs and vanished at every reboot; `poly` redeployed it
 silently, which is how nobody noticed. The worker now also carries the
 seamless path's exec engine (`card/vpu/vpu_exec.c`), so a deploy copies
 those sources too.
+
+## Swap, and the pool (2026-09-22 evening)
+
+`start` no longer refuses unused swap on `/dev/phiblk1`: it turns it off
+and says so. Swap with pages out on it is still refused with the
+command to run. The default reservation is 768 huge pages: the seamless
+path's engine pools 256 of them at start (512 MiB of the program mapped
+at once, moved into place with `mremap`), the rest are the worker's
+buffers.

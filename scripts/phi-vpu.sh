@@ -4,7 +4,7 @@
 #   scripts/phi-vpu.sh [-c N] deploy        copy the sources to the card and build there
 #   scripts/phi-vpu.sh [-c N] start [T]     start the worker with T threads (default 57);
 #                                           PHI_VPU_ARGS="-s MS -i US" passes worker options
-#                                           PHI_VPU_HUGEPAGES=N huge pages reserved on the card at start (512)
+#                                           PHI_VPU_HUGEPAGES=N huge pages reserved on the card at start (768)
 #   scripts/phi-vpu.sh [-c N] stop
 #   scripts/phi-vpu.sh [-c N] status        worker process on the card, control words on the host
 #   scripts/phi-vpu.sh [-c N] log           the worker's output
@@ -53,10 +53,16 @@ driver() {
 # which the card can also be using as swap. Offloading over live swap
 # would corrupt whichever side wrote second.
 refuse_if_swapping() {
-    if ssh_ 'grep -q phiblk1 /proc/swaps'; then
-        echo "phi-vpu.sh: /dev/phiblk1 is a swap device on card $PHI_CARD; run: phi -c $PHI_CARD run swapoff /dev/phiblk1" >&2
-        exit 1
+    # The card's init puts swap on the window at boot. Unused swap is turned
+    # off here; swap with pages out on it is not (that would take the card's
+    # own time and memory), and the user hears.
+    used=$(ssh_ "awk '/phiblk1/ {print \$4}' /proc/swaps")
+    [ -z "$used" ] && return 0
+    if [ "$used" = "0" ]; then
+        ssh_ "swapoff /dev/phiblk1" && echo "phi-vpu.sh: swap on /dev/phiblk1 was unused; turned off for the co-processor" >&2 && return 0
     fi
+    echo "phi-vpu.sh: /dev/phiblk1 is a swap device on card $PHI_CARD with $used kB in use; run: phi -c $PHI_CARD run swapoff /dev/phiblk1" >&2
+    exit 1
 }
 
 cmd=${1:-}; shift || true
@@ -76,8 +82,8 @@ case "$cmd" in
         # The worker takes its buffers from 2 MiB huge pages when the card has
         # them (one block record per 512 KiB instead of one per scattered
         # 4 KiB page; vpu_worker.md). PHI_VPU_HUGEPAGES is the reservation,
-        # 512 pages = 1 GiB by default, enough for 128 M elements in and out.
-        want=${PHI_VPU_HUGEPAGES:-512}
+        # 768 pages = 1.5 GiB by default: 256 for the seamless path pool, the rest for buffers.
+        want=${PHI_VPU_HUGEPAGES:-768}
         have=$(ssh_ "echo $want > /proc/sys/vm/nr_hugepages; cat /proc/sys/vm/nr_hugepages")
         [ "$have" = "$want" ] || echo "phi-vpu.sh: card $PHI_CARD gave $have of $want huge pages; larger requests fall back to 4 KiB pages" >&2
         if running; then ssh_ "pkill -f '$pat'"; sleep 0.5; fi
