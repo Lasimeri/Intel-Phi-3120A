@@ -30,7 +30,7 @@
 //! once its translation exists. See `docs/research/avx512-transparency.md`
 //! for what each stage costs and where this is going.
 
-use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+use iced_x86::{CpuidFeature, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
 pub mod emulate;
 pub mod state;
@@ -46,29 +46,63 @@ pub fn decode_at(bytes: &[u8], ip: u64) -> Instruction {
     Decoder::with_ip(64, bytes, ip, DecoderOptions::NONE).decode()
 }
 
-/// Is this an instruction this host cannot execute but we can perform?
+/// Does this instruction need AVX-512, and so fault on a host without it?
+///
+/// The question is asked of the instruction's *required CPU feature*, not
+/// of its encoding, and the difference is not academic. The mask register
+/// instructions, `kmovw` and its family, are AVX-512F but are **VEX**
+/// encoded, not EVEX. An encoding test misses every one of them, and since
+/// masks are the entire point of AVX-512 predication, that is most real
+/// AVX-512 programs.
 pub fn is_avx512(insn: &Instruction) -> bool {
-    insn.encoding() == iced_x86::EncodingKind::EVEX
+    insn.cpuid_features().iter().any(|f| {
+        matches!(
+            f,
+            CpuidFeature::AVX512F
+                | CpuidFeature::AVX512VL
+                | CpuidFeature::AVX512BW
+                | CpuidFeature::AVX512DQ
+                | CpuidFeature::AVX512CD
+                | CpuidFeature::AVX512_VBMI
+                | CpuidFeature::AVX512_VNNI
+                | CpuidFeature::AVX512_IFMA
+                | CpuidFeature::AVX512_BF16
+                | CpuidFeature::AVX512_FP16
+        )
+    })
 }
 
-/// The program's general purpose registers, as the signal frame presents
-/// them. Effective addresses have to be computed from the live values, so
-/// the emulator needs to read them, and a few instructions write them.
-pub trait Gprs {
+/// The program's scalar state, as the signal frame presents it.
+///
+/// Reads are needed because memory operands are computed from live
+/// register values. Writes are needed because some AVX-512 instructions
+/// are not purely vector: `kmov r32, k1` moves a mask into a general
+/// register, and `kortest` sets the flags a following `jz` will read.
+pub trait Cpu {
     fn get(&self, r: Register) -> u64;
+    fn set(&mut self, r: Register, v: u64);
+    fn flags(&self) -> u64;
+    fn set_flags(&mut self, f: u64);
 }
 
 /// Compute the effective address of an instruction's memory operand from
 /// the program's live register values.
-pub fn effective_address(insn: &Instruction, gprs: &dyn Gprs) -> u64 {
+pub fn effective_address(insn: &Instruction, cpu: &dyn Cpu) -> u64 {
+    // RIP-relative is resolved by the decoder, which was given the real
+    // instruction pointer, so the answer is already absolute. Adding the
+    // next instruction's address on top of it, as the general path below
+    // would, produces a wild pointer: this is the form every
+    // position-independent load of a constant uses, so getting it wrong
+    // crashes almost immediately on real compiler output.
+    if insn.is_ip_rel_memory_operand() {
+        return insn.ip_rel_memory_address();
+    }
     let mut addr = insn.memory_displacement64();
-    match insn.memory_base() {
-        Register::None => {}
-        Register::RIP | Register::EIP => addr = addr.wrapping_add(insn.next_ip()),
-        b => addr = addr.wrapping_add(gprs.get(b)),
+    if insn.memory_base() != Register::None {
+        addr = addr.wrapping_add(cpu.get(insn.memory_base()));
     }
     if insn.memory_index() != Register::None {
-        let idx = gprs.get(insn.memory_index());
+        let idx = cpu.get(insn.memory_index());
         addr = addr.wrapping_add(idx.wrapping_mul(u64::from(insn.memory_index_scale())));
     }
     addr

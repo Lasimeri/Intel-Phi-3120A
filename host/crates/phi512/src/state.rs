@@ -13,6 +13,10 @@ use std::fmt;
 pub struct VState {
     pub zmm: [[u8; 64]; 32],
     pub k: [u64; 8],
+    /// The low 32 bytes of zmm0 to zmm15 as this library last left
+    /// them. Used to notice that something else wrote the register.
+    /// See `note_write` and `upper_is_stale`.
+    pub last_low: [[u8; 32]; 16],
 }
 
 impl Default for VState {
@@ -28,6 +32,7 @@ impl VState {
         VState {
             zmm: [[0u8; 64]; 32],
             k: [0u64; 8],
+            last_low: [[0u8; 32]; 16],
         }
     }
 
@@ -73,5 +78,42 @@ impl VState {
 impl fmt::Debug for VState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "VState {{ zmm0: {:02x?}.., k1: {:#x} }}", &self.zmm[0][..8], self.k[1])
+    }
+}
+
+impl VState {
+    /// Record the low 256 bits of every aliasable register as this
+    /// library is leaving them.
+    pub fn note_write(&mut self) {
+        for i in 0..16 {
+            self.last_low[i].copy_from_slice(&self.zmm[i][..32]);
+        }
+    }
+
+    /// Has something other than this library written register `i` since
+    /// the last emulated instruction?
+    ///
+    /// This matters because of a rule that has no visible effect on a
+    /// machine without AVX-512, and a decisive one on a machine
+    /// pretending to have it: **a VEX-encoded write to `xmm` or `ymm`
+    /// zeroes the whole 512-bit register**. On real hardware
+    /// `vpxor xmm0, xmm0, xmm0` clears bits 0 to 511. Here it clears bits
+    /// 0 to 255, because that is all the silicon there is, and bits 256
+    /// to 511 are this library's storage, which it never hears about.
+    ///
+    /// VEX instructions do not fault, so they cannot be observed. What
+    /// can be observed is their effect: if the low 256 bits in the signal
+    /// frame differ from what was left there, something else wrote the
+    /// register, and on real hardware that write would have zeroed the
+    /// top.
+    ///
+    /// The inference is not perfect. A legacy SSE write preserves the
+    /// upper bits rather than zeroing them, so it would be treated too
+    /// harshly; and a write that happened to reproduce the previous 256
+    /// bits exactly would be missed. Compilers targeting AVX-512 emit VEX
+    /// and EVEX, not legacy SSE, and the second case requires a
+    /// coincidence in 256 bits.
+    pub fn upper_is_stale(&self, i: usize, live_low: &[u8]) -> bool {
+        i < 16 && live_low != self.last_low[i]
     }
 }
