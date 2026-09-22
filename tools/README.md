@@ -9,6 +9,7 @@ against them.
 | --- | --- |
 | `ring-layout-check.c` | Prints `sizeof`/`offsetof` for the ring transport structures in `card/drivers/phinet/include/phi_ring.h` and compares them with the values the Rust crate uses. Run by `make layout-check`, which `make check` includes. |
 | `vpu-layout-check.c` | The same for the AVX-512 offload protocol: `card/vpu/vpu_proto.h` against the offsets `host/crates/phi-vpu/src/proto.rs` asserts. Also run by `make layout-check`. |
+| `avx512-seamless-test.c` | The transparent path from the user side: an ordinary AVX-512 intrinsics program that checks its own answers against scalar references compiled with AVX-512 forbidden. SIGILL bare, PASS under `scripts/phi512.sh`; where it ran is read from the cards (`docs/results/2026-09-22-seamless-test.md`). |
 | `hlt-image.c` | Builds a stub boot image: the real bzImage's setup sectors followed by one sector that sets the card's boot flag in the ring header and halts. Used to separate a failing boot interrupt from a failing kernel. `hlt-image.md` has the commands. |
 
 ## What the layout check does and does not cover
