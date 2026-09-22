@@ -17,6 +17,7 @@
 
 #![warn(missing_docs)]
 
+pub mod cards;
 pub mod container;
 pub mod device;
 pub mod group;

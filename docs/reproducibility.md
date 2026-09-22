@@ -294,6 +294,17 @@ host/target/debug/phictl exec -- sh -c 'cd /tmp && cc -O2 -o prog prog.c && ./pr
 `cc`, `c++`, `ld`, `ar`, `nm`, `objdump`, `strip` are in `/opt/phi/bin`,
 first on the PATH of every `phictl exec`; the same works over SSH.
 
+## 16. A second card (recorded, 2026-09-22)
+
+The stack addresses up to 16 cards by index. Seat the card with both
+auxiliary power connectors (without both it does not power up and leaves
+no trace), reboot, `scripts/verify-card.sh` (every card), `phi cards
+init` if `~/.config/phi/cards` does not exist yet, a disk image per card
+(`scripts/phi-disk.sh create`), then `scripts/phi-autoboot.sh install
+all`. `phi -c N status`, `phi -c N sh`, `phitop` (every card in its own
+block). The walkthrough is `docs/howto/multiple-cards.md`; the record is
+`results/2026-09-22-second-card.md`.
+
 ## Reference material (optional)
 
 ```sh

@@ -1,18 +1,23 @@
 # phi-vpu.sh: put the co-processor worker on the card and drive it
 
 ```
-scripts/phi-vpu.sh deploy        copy the sources to the card and build there
-scripts/phi-vpu.sh start [N]     start the worker with N threads (default 57)
-scripts/phi-vpu.sh stop
-scripts/phi-vpu.sh status        worker process on the card, control words on the host
-scripts/phi-vpu.sh log           the worker's output
-scripts/phi-vpu.sh poly [args]   run the host driver; deploys and starts first if needed
+scripts/phi-vpu.sh [-c N] deploy        copy the sources to the card and build there
+scripts/phi-vpu.sh [-c N] start [T]     start the worker with T threads (default 57)
+scripts/phi-vpu.sh [-c N] stop
+scripts/phi-vpu.sh [-c N] status        worker process on the card, control words on the host
+scripts/phi-vpu.sh [-c N] log           the worker's output
+scripts/phi-vpu.sh [-c N] poly [args]   run the host driver; deploys and starts first if needed
 ```
 
-Needs the card up (`phi status`) and reachable as `ssh phi`. The worker
-lives in `/opt/phi-vpu` on the card (`PHI_VPU_DIR` to change), which is
-on the card's persistent disk, so a deployed worker survives a reboot
-and only `start` is needed afterwards.
+`-c N` picks the card (else `$PHI_CARD`, else 0). Each card has its own
+host-memory window (`/dev/shm/phi-hostmem` for card 0, `phi-hostmem-N`
+for card N) and its own SSH forward (`127.0.0.1:2222+N`), so each runs
+its own worker, and the script reaches it over its own port with the
+pinned host key; no `~/.ssh/config` stanza is needed. Needs the card up
+(`phi -c N status`) with the native toolchain on its disk (`cc` builds
+the worker on the card). The worker lives in `/opt/phi-vpu` on the card
+(`PHI_VPU_DIR` to change), which is on the card's persistent disk, so a
+deployed worker survives a reboot and only `start` is needed afterwards.
 
 ```
 scripts/phi-vpu.sh poly --n 1048576 --threads 57 --repeat 5

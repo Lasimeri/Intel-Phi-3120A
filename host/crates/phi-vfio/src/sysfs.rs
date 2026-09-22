@@ -88,9 +88,9 @@ pub fn require_phi(bdf: &str) -> Result<()> {
     Ok(())
 }
 
-/// Find the first Xeon Phi 3120-series device on the bus, by full BDF
-/// (lowest address first; sysfs names are already canonical).
-pub fn find_phi() -> Result<Option<String>> {
+/// Every Xeon Phi 3120-series device on the bus, by full BDF, lowest
+/// address first (sysfs names are already canonical).
+pub fn find_phis() -> Result<Vec<String>> {
     let mut found = Vec::new();
     for entry in fs::read_dir(PCI_DEVICES).map_err(|e| Error::Os("read /sys/bus/pci/devices", e))? {
         let entry = entry.map_err(|e| Error::Os("read_dir entry", e))?;
@@ -102,12 +102,18 @@ pub fn find_phi() -> Result<Option<String>> {
         }
     }
     found.sort();
-    Ok(found.into_iter().next())
+    Ok(found)
 }
 
-/// Resolve a BDF from an explicit argument, then `PHI_BDF`, then
-/// autodetection. The result is normalized; a malformed explicit or
-/// environment value is an error rather than a silent fallback.
+/// The first Xeon Phi 3120-series device on the bus.
+pub fn find_phi() -> Result<Option<String>> {
+    Ok(find_phis()?.into_iter().next())
+}
+
+/// Resolve a BDF from an explicit argument, then `PHI_BDF`, then the card
+/// index (`PHI_CARD`, else card 0 of `cards::list`). The result is
+/// normalized; a malformed explicit or environment value is an error
+/// rather than a silent fallback.
 pub fn resolve_bdf(explicit: Option<&str>) -> Result<String> {
     if let Some(b) = explicit {
         return normalize_bdf(b);
@@ -117,7 +123,8 @@ pub fn resolve_bdf(explicit: Option<&str>) -> Result<String> {
             return normalize_bdf(&b);
         }
     }
-    find_phi()?.ok_or_else(|| Error::Sysfs("no Xeon Phi 3120 series device found; pass --bdf or set PHI_BDF".into()))
+    let index = crate::cards::index_from_env()?.unwrap_or(0);
+    Ok(crate::cards::resolve(index)?.bdf)
 }
 
 #[cfg(test)]

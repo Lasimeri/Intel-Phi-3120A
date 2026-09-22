@@ -1,7 +1,8 @@
 # Intel Phi 3120A
 
-A from-scratch software stack for one Intel Xeon Phi 3120A coprocessor
-(Knights Corner, PCI `8086:225d`, subsystem `8086:3c98`), written in Rust
+A from-scratch software stack for Intel Xeon Phi 3120-series coprocessors
+(Knights Corner, PCI `8086:225d`; up to 16 cards in one host, each
+addressed by an index), written in Rust
 wherever Rust can run, with C only where the hardware or an upstream project
 leaves no choice.
 
@@ -62,7 +63,7 @@ Dated measurements: [`docs/README.md`](docs/README.md#results) lists them.
 
 | Path | What lives there |
 | --- | --- |
-| `host/` | Rust workspace. Binaries: `phictl` (boot, console, control socket daemon, disk and host-memory service, SSH forwarder, sensors), `phitop` (live viewer), `phi-isa-audit` (flags KNC-illegal instructions in any x86-64 ELF), `knc-mvex-gen` (emits the vector-code files). Libraries: `phi-vfio` (VFIO device access, DMA mapping, PCIe byte counters), `phi-regs` (SBOX/DBOX register map, POST codes, bzImage header offsets), `phi-hw` (reset, boot, image loading, DMA engine), `phi-ring` (host side of the ring transport), `phi-rpc` (frames of the control channel, shared with the card agent), `knc-mvex` (MVEX encoder). AVX-512: `avx512-xlate` (EVEX to MVEX translator), `phi512` (the `LD_PRELOAD` library that performs AVX-512 in software on a host without it), `phi-vpu` (hands AVX-512 work to the card's vector units). |
+| `host/` | Rust workspace. Binaries: `phictl` (boot, console, control socket daemon, disk and host-memory service, SSH forwarder, sensors), `phitop` (live viewer), `phi-isa-audit` (flags KNC-illegal instructions in any x86-64 ELF), `knc-mvex-gen` (emits the vector-code files). Libraries: `phi-vfio` (VFIO device access, DMA mapping, PCIe byte counters, and `cards`: the index-to-card mapping every tool shares), `phi-regs` (SBOX/DBOX register map, POST codes, bzImage header offsets), `phi-hw` (reset, boot, image loading, DMA engine), `phi-ring` (host side of the ring transport), `phi-rpc` (frames of the control channel, shared with the card agent), `knc-mvex` (MVEX encoder). AVX-512: `avx512-xlate` (EVEX to MVEX translator), `phi512` (the `LD_PRELOAD` library that performs AVX-512 in software on a host without it), `phi-vpu` (hands AVX-512 work to the card's vector units). |
 | `card/` | Everything that runs on the card: `kernel/` (28-patch series against v7.2.3, config fragment, build script), `agent/` (`phi-agent`, Rust, the card end of the control socket), `initramfs/` (`init` and the assembly script), `userland/components/` (busybox, dropbear, zlib, ncurses, CPython build scripts; clang packaging; gcc, tcc, QuickJS notes), `examples/` (benchmarks and probes compiled on the card), `vpu/` (the resident AVX-512 co-processor worker and its host/card protocol), `drivers/phinet/include/phi_ring.h` (the C mirror of the ring layout). |
 | `toolchain/` | How code for the card is compiled: the LLVM patch series and build script (three variants), `knc-cc`/`knc-c++` wrappers, musl, compiler-rt, libunwind, libc++, the Rust target JSON and `build-std`, the phase P2 exit check. |
 | `scripts/` | `phi.sh`, the one command a person uses (`phi up/run/sh/top/status/down`), plus what it drives: host setup (`setup-arch.sh`), card verification and VFIO binding, the card's daily drivers (`phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh`), reference fetching, documentation lint, and the AVX-512 pieces (`phi-vpu.sh` deploys and drives the card worker; `phi512.sh`, `phi512-check.sh`, `phi512-install.sh`, `phi512-ground.sh` run, verify, install and ground the software path). Each script has a sibling `.md`. |
@@ -74,7 +75,7 @@ Dated measurements: [`docs/README.md`](docs/README.md#results) lists them.
 
 1. [`docs/hardware.md`](docs/hardware.md): what the card is and how this host sees it.
 2. [`docs/reproducibility.md`](docs/reproducibility.md): the walkthrough from a fresh Arch Linux install to a booted card with SSH, in order, with durations.
-3. [`docs/howto/direct-access.md`](docs/howto/direct-access.md) and [`docs/howto/build-and-run.md`](docs/howto/build-and-run.md): daily use.
+3. [`docs/howto/direct-access.md`](docs/howto/direct-access.md) and [`docs/howto/build-and-run.md`](docs/howto/build-and-run.md): daily use; [`docs/howto/multiple-cards.md`](docs/howto/multiple-cards.md) when there is more than one card (up to 16, each addressed by an index).
 4. [`docs/spec/ring-protocol.md`](docs/spec/ring-protocol.md): the one transport everything rides on.
 5. [`docs/decisions/`](docs/decisions/README.md) and [`docs/research/`](docs/research/README.md): why it is built this way.
 

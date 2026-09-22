@@ -1,10 +1,16 @@
-//! phitop: a resource viewer for the card in the spirit of glances, run on
-//! the host. Every interval it asks the daemon (`phictl boot --serve`) for
-//! a `Stat` sample, which the card's agent answers from /proc and sysfs,
-//! and for the daemon's own PCIe byte counters (`Traffic`), then draws the
-//! load of every hardware thread on a core grid, the die temperatures,
-//! memory and swap, PCIe rates by path and direction, the card's disk and
-//! network rates, and its processes. See main.md.
+//! phitop: a resource viewer for the cards in the spirit of glances, run on
+//! the host. Every interval it asks each card's daemon (`phictl boot
+//! --serve`) for a `Stat` sample, which the card's agent answers from /proc
+//! and sysfs, and for the daemon's own PCIe byte counters (`Traffic`), then
+//! draws the load of every hardware thread on a core grid, the die
+//! temperatures, memory and swap, PCIe rates by path and direction, the
+//! card's disk and network rates, and its processes.
+//!
+//! With one card named (`-c N`, `PHI_CARD`, `--socket` or `PHICTL_SOCKET`)
+//! that card fills the screen. With none named, every card in
+//! `phictl cards` gets its own block, sampled on its own socket and drawn
+//! from its own model, so one card's load never colours another's; `n`
+//! and `p` focus one card, `a` goes back to all. See main.md.
 
 mod model;
 mod term;
@@ -21,21 +27,21 @@ use clap::Parser;
 use phi_rpc::{Decoder, Msg};
 
 use model::{Derived, Model, Snapshot};
-use view::Options;
-
-/// Where a root daemon binds (as `phictl serve` does).
-const ROOT_SOCKET: &str = "/run/phictl/control.sock";
+use view::{CardHeader, CardView, Options};
 
 #[derive(Parser)]
-#[command(about = "Resource viewer for the Xeon Phi 3120A, from the host")]
+#[command(about = "Resource viewer for the Xeon Phi cards, from the host")]
 struct Args {
+    /// Card index, 0 to 15 (default: $PHI_CARD; else every card, each in its own block).
+    #[arg(short, long)]
+    card: Option<usize>,
     /// Seconds between samples.
     #[arg(short, long, default_value_t = 1.0)]
     interval: f64,
     /// Print this many frames as plain text and exit (no terminal control).
     #[arg(short, long)]
     batch: Option<u32>,
-    /// The daemon's control socket (default: PHICTL_SOCKET, else the runtime directory).
+    /// One daemon's control socket (default: PHICTL_SOCKET, else the card's).
     #[arg(long)]
     socket: Option<PathBuf>,
     /// Show the kernel threads the card reports (those that used CPU time).
@@ -43,22 +49,93 @@ struct Args {
     kthreads: bool,
 }
 
-/// The same lookup as `phictl` for a client: `PHICTL_SOCKET`, a root
-/// daemon's socket when one answers, else the user's runtime directory.
-fn default_socket() -> PathBuf {
+/// One card on the screen: where to ask, and what it has said so far.
+struct Slot {
+    index: usize,
+    name: String,
+    bdf: String,
+    socket: PathBuf,
+    model: Model,
+    derived: Option<Derived>,
+    error: Option<String>,
+}
+
+impl Slot {
+    fn new(index: usize, bdf: String, socket: PathBuf) -> Slot {
+        Slot {
+            index,
+            name: phi_vfio::cards::hostname(index),
+            bdf,
+            socket,
+            model: Model::default(),
+            derived: None,
+            error: None,
+        }
+    }
+
+    fn poll(&mut self) {
+        match sample(&self.socket) {
+            Ok(s) => {
+                self.error = None;
+                if let Some(d) = self.model.update(s) {
+                    self.derived = Some(d);
+                }
+            }
+            Err(e) => self.error = Some(format!("{e:#}")),
+        }
+    }
+
+    fn view(&self) -> CardView<'_> {
+        CardView {
+            head: CardHeader {
+                index: self.index,
+                name: &self.name,
+                bdf: &self.bdf,
+            },
+            data: match (self.model.current(), self.derived.as_ref()) {
+                (Some(s), Some(d)) => Some((s, d)),
+                _ => None,
+            },
+            error: self.error.as_deref(),
+        }
+    }
+}
+
+/// The socket of card `index` for a client: a root daemon's when one
+/// answers there, else the card's socket in the user's runtime directory
+/// (`phi_vfio::cards`).
+fn socket_of(index: usize) -> PathBuf {
+    // SAFETY: geteuid has no preconditions.
+    let root = unsafe { libc::geteuid() == 0 };
+    let root_path = phi_vfio::cards::root_socket_path(index);
+    if root || UnixStream::connect(&root_path).is_ok() {
+        return root_path;
+    }
+    phi_vfio::cards::socket_path(index)
+}
+
+/// Which cards to watch. One, when anything names one; else all of them.
+fn slots(args: &Args) -> Result<Vec<Slot>> {
+    let env_card = phi_vfio::cards::index_from_env()?;
+    let one = args.card.or(env_card);
+    if let Some(s) = &args.socket {
+        let i = one.unwrap_or(0);
+        return Ok(vec![Slot::new(i, String::new(), s.clone())]);
+    }
     if let Ok(p) = std::env::var("PHICTL_SOCKET") {
-        return PathBuf::from(p);
+        let i = one.unwrap_or(0);
+        return Ok(vec![Slot::new(i, String::new(), PathBuf::from(p))]);
     }
-    // SAFETY: geteuid and getuid have no preconditions.
-    let (root, uid) = unsafe { (libc::geteuid() == 0, libc::getuid()) };
-    if root || UnixStream::connect(ROOT_SOCKET).is_ok() {
-        return PathBuf::from(ROOT_SOCKET);
+    let cards = phi_vfio::cards::list()?;
+    if let Some(i) = one {
+        phi_vfio::cards::check_index(i)?;
+        let bdf = cards.iter().find(|c| c.index == i).map(|c| c.bdf.clone()).unwrap_or_default();
+        return Ok(vec![Slot::new(i, bdf, socket_of(i))]);
     }
-    std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(format!("/tmp/phictl-{uid}")))
-        .join("phictl")
-        .join("control.sock")
+    if cards.is_empty() {
+        bail!("no Xeon Phi card is known to this host (phictl cards)");
+    }
+    Ok(cards.into_iter().map(|c| Slot::new(c.index, c.bdf, socket_of(c.index))).collect())
 }
 
 /// One request and its reply on a fresh connection, so that the daemon
@@ -99,21 +176,40 @@ fn sample(socket: &Path) -> Result<Snapshot> {
     })
 }
 
-fn draw(model: &Model, d: Option<&Derived>, o: &Options) {
+/// The frame for the current focus: one card in full, or every card in
+/// its own block.
+fn frame(slots: &[Slot], focus: Option<usize>, o: &mut Options, cols: usize, rows: usize) -> String {
+    match focus {
+        Some(i) => {
+            let s = &slots[i];
+            o.error = s.error.clone();
+            match (s.model.current(), s.derived.as_ref()) {
+                (Some(cur), Some(d)) => view::render(cur, d, o, cols, rows),
+                (Some(_), None) => "\x1b[Hsampling...\x1b[K".into(),
+                (None, _) => format!("\x1b[H{}\x1b[K", o.error.as_deref().unwrap_or("connecting...")),
+            }
+        }
+        None => {
+            o.error = None;
+            let views: Vec<CardView> = slots.iter().map(Slot::view).collect();
+            view::render_multi(&views, o, cols, rows)
+        }
+    }
+}
+
+fn draw(slots: &[Slot], focus: Option<usize>, o: &mut Options) {
     let (cols, rows) = term::Term::size();
-    let frame = match (model.current(), d) {
-        (Some(cur), Some(d)) => view::render(cur, d, o, cols, rows),
-        (Some(_), None) => "\x1b[Hsampling...\x1b[K".into(),
-        (None, _) => format!("\x1b[H{}\x1b[K", o.error.as_deref().unwrap_or("connecting...")),
-    };
+    let f = frame(slots, focus, o, cols, rows);
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(frame.as_bytes());
+    let _ = out.write_all(f.as_bytes());
     let _ = out.flush();
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let socket = args.socket.unwrap_or_else(default_socket);
+    let mut slots = slots(&args)?;
+    // One card fills the screen; several start as blocks.
+    let mut focus: Option<usize> = if slots.len() == 1 { Some(0) } else { None };
     let mut opts = Options {
         sort_mem: false,
         show_kthreads: args.kthreads,
@@ -121,19 +217,23 @@ fn main() -> Result<()> {
         interval_s: args.interval.clamp(0.2, 60.0),
         error: None,
     };
-    let mut model = Model::default();
+    let poll = |slots: &mut Vec<Slot>, focus: Option<usize>| match focus {
+        Some(i) => slots[i].poll(),
+        None => slots.iter_mut().for_each(Slot::poll),
+    };
     if let Some(frames) = args.batch {
         let mut printed = 0;
         while printed < frames {
-            match sample(&socket) {
-                Ok(s) => {
-                    if let Some(d) = model.update(s) {
-                        let cur = model.current().expect("a sample was just stored");
-                        println!("{}", view::render(cur, &d, &opts, 132, 32));
-                        printed += 1;
-                    }
-                }
-                Err(e) => eprintln!("phitop: {e:#}"),
+            poll(&mut slots, focus);
+            let ready = match focus {
+                Some(i) => slots[i].derived.is_some(),
+                None => slots.iter().any(|s| s.derived.is_some()),
+            };
+            if ready {
+                println!("{}", frame(&slots, focus, &mut opts, 132, 32));
+                printed += 1;
+            } else if let Some(e) = slots.iter().find_map(|s| s.error.as_ref()) {
+                eprintln!("phitop: {e}");
             }
             std::thread::sleep(Duration::from_secs_f64(opts.interval_s));
         }
@@ -141,19 +241,10 @@ fn main() -> Result<()> {
     }
     let term = term::Term::open().context("standard input is not a terminal (use --batch N for plain text)")?;
     opts.color = true;
-    let mut derived: Option<Derived> = None;
     let mut next = Instant::now();
     loop {
-        match sample(&socket) {
-            Ok(s) => {
-                opts.error = None;
-                if let Some(d) = model.update(s) {
-                    derived = Some(d);
-                }
-            }
-            Err(e) => opts.error = Some(format!("{e:#}")),
-        }
-        draw(&model, derived.as_ref(), &opts);
+        poll(&mut slots, focus);
+        draw(&slots, focus, &mut opts);
         next += Duration::from_secs_f64(opts.interval_s);
         if next < Instant::now() {
             next = Instant::now();
@@ -168,6 +259,7 @@ fn main() -> Result<()> {
                 break;
             }
             let ms = (next - now).as_millis().min(500) as i32;
+            let n = slots.len();
             let redraw = match term::Term::key(ms) {
                 Some(b'q') | Some(3) => {
                     drop(term);
@@ -193,10 +285,22 @@ fn main() -> Result<()> {
                     opts.interval_s = (opts.interval_s - 0.5).max(0.25);
                     true
                 }
+                Some(b'n') if n > 1 => {
+                    focus = Some(focus.map_or(0, |i| (i + 1) % n));
+                    true
+                }
+                Some(b'p') if n > 1 => {
+                    focus = Some(focus.map_or(n - 1, |i| (i + n - 1) % n));
+                    true
+                }
+                Some(b'a') if n > 1 => {
+                    focus = None;
+                    true
+                }
                 _ => false,
             };
             if redraw {
-                draw(&model, derived.as_ref(), &opts);
+                draw(&slots, focus, &mut opts);
             }
         }
     }

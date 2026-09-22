@@ -27,11 +27,21 @@ use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
-/// The host end of the ring network as seen by the card.
+/// The host end of the ring network as seen by the card. Each card has
+/// its own ring, so the same MAC on every one collides with nothing.
 const HOST_MAC: [u8; 6] = [0x02, 0x50, 0x48, 0x49, 0x00, 0x01];
-const HOST_IP: Ipv4Addr = Ipv4Addr::new(10, 9, 0, 1);
-/// The card's address, set by its init script.
-const CARD_IP: Ipv4Addr = Ipv4Addr::new(10, 9, 0, 2);
+
+/// The host's and the card's addresses from the host's `A.B.C.D/24`: the
+/// card is always `.2` of the host's /24 (its init sets that from
+/// `PHI_CARD_ADDR`, which `phi-boot.sh` derives from the same index).
+pub fn parse_subnet(net_addr: &str) -> Result<(Ipv4Addr, Ipv4Addr)> {
+    let ip = net_addr.split('/').next().unwrap_or("");
+    let host: Ipv4Addr = ip
+        .parse()
+        .with_context(|| format!("--net-addr {net_addr:?}: not an IPv4 address"))?;
+    let o = host.octets();
+    Ok((host, Ipv4Addr::new(o[0], o[1], o[2], 2)))
+}
 /// Record framing on the network channel (see net.rs).
 const MAX_FRAME: usize = 1518;
 const HDR: usize = 2;
@@ -164,7 +174,15 @@ pub fn parse_ports(spec: &str) -> Result<(u16, u16)> {
 
 /// Forward `127.0.0.1:host_port` to the card's `card_port` until the
 /// process ends. Waits for the card to reach init like the bridge does.
-pub fn run(card: &Card, ring_base: u64, ring_size: u64, host_port: u16, card_port: u16) -> Result<()> {
+pub fn run(
+    card: &Card,
+    ring_base: u64,
+    ring_size: u64,
+    host_port: u16,
+    card_port: u16,
+    host_ip: Ipv4Addr,
+    card_ip: Ipv4Addr,
+) -> Result<()> {
     if !crate::serve::wait_for_init(card, Duration::from_secs(120)) {
         eprintln!("[phictl] forward: the card did not reach init; not forwarding");
         return Ok(());
@@ -192,13 +210,13 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, host_port: u16, card_por
     let config = Config::new(HardwareAddress::Ethernet(EthernetAddress(HOST_MAC)));
     let mut iface = Interface::new(config, &mut dev, Instant::now());
     iface.update_ip_addrs(|addrs| {
-        addrs.push(IpCidr::new(IpAddress::Ipv4(HOST_IP), 24)).expect("one address fits");
+        addrs.push(IpCidr::new(IpAddress::Ipv4(host_ip), 24)).expect("one address fits");
     });
     let mut sockets = SocketSet::new(vec![]);
     let mut conns: Vec<Conn> = Vec::new();
     let mut next_port: u16 = 49152;
     let mut buf = vec![0u8; 16384];
-    eprintln!("[phictl] forward: 127.0.0.1:{host_port} -> {CARD_IP}:{card_port} through the ring (no root)");
+    eprintln!("[phictl] forward: 127.0.0.1:{host_port} -> {card_ip}:{card_port} through the ring (no root)");
 
     loop {
         match listener.accept() {
@@ -212,7 +230,7 @@ pub fn run(card: &Card, ring_base: u64, ring_size: u64, host_port: u16, card_por
                 let local = next_port;
                 next_port = if next_port == u16::MAX { 49152 } else { next_port + 1 };
                 let socket = sockets.get_mut::<tcp::Socket>(handle);
-                if let Err(e) = socket.connect(iface.context(), (IpAddress::Ipv4(CARD_IP), card_port), local) {
+                if let Err(e) = socket.connect(iface.context(), (IpAddress::Ipv4(card_ip), card_port), local) {
                     eprintln!("[phictl] forward: connect to the card failed: {e}");
                     sockets.remove(handle);
                     continue;

@@ -80,7 +80,15 @@ if [ -d "$SKEL/root-ssh" ]; then
 	$BB chmod 700 /root /root/.ssh
 	$BB chmod 600 /root/.ssh/* 2>/dev/null
 fi
-if [ -r /etc/hostname ]; then
+# The host names each card by its index (phi, phi1, phi2, ...) through
+# PHI_HOSTNAME on the kernel command line, which the kernel hands to init
+# as an environment variable. That wins over /etc/hostname on the disk,
+# because the same disk image may be moved between cards and the name has
+# to follow the slot, not the image.
+if [ -n "${PHI_HOSTNAME:-}" ]; then
+	$BB hostname "$PHI_HOSTNAME"
+	echo "$PHI_HOSTNAME" > /etc/hostname
+elif [ -r /etc/hostname ]; then
 	$BB hostname "$($BB cat /etc/hostname)"
 else
 	$BB hostname phi

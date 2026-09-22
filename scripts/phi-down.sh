@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# phi-down.sh: halt the card started by phi-up.sh and release it. The agent
+# phi-down.sh: halt a card started by phi-up.sh and release it. The agent
 # gets a plain `poweroff`, which signals PID 1 so init can stop the services,
 # swapoff and unmount /data before the kernel halts (POST "KH"); ending the
-# phictl process then resets the card through VFIO. See phi-down.md.
+# phictl process then resets the card through VFIO.
+#   scripts/phi-down.sh [-c N]      # default $PHI_CARD, else 0
+# See phi-down.md.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
+. "$root/scripts/phi-env.sh"
+phi_env "$@"
 P="$root/host/target/debug/phictl"
-dir="${XDG_RUNTIME_DIR:-/tmp/phictl-$(id -u)}/phictl"
-sock="$dir/control.sock"
-pidfile="$dir/boot.pid"
+sock="$PHI_SOCK"
+pidfile="$PHI_RUNDIR/boot.pid"
 if [ -S "$sock" ]; then
     # Plain poweroff: busybox signals PID 1 (SIGUSR2) and init runs its
     # shutdown. `poweroff -f` would call reboot(2) straight from the shell and
@@ -22,10 +25,10 @@ if [ -S "$sock" ]; then
     done
 fi
 if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    # phi-up.sh recorded phi-boot.sh's pid, which exec'd into phictl.
     kill "$(cat "$pidfile")"
     sleep 1
     kill -9 "$(cat "$pidfile")" 2>/dev/null || true
 fi
 rm -f "$pidfile" "$sock"
-pgrep -f "^(sudo )?\S*phictl boot " > /dev/null && echo "phi-down.sh: another phictl boot (not ours) is still running" >&2
-echo "phi-down.sh: card released"
+echo "phi-down.sh: card $PHI_CARD released"

@@ -1,14 +1,24 @@
-# phitop: the card's resources, live, from the host
+# phitop: the cards' resources, live, from the host
 
 ```
-host/target/debug/phitop [--interval 1.0] [--kthreads] [--socket PATH]
+host/target/debug/phitop [-c N] [--interval 1.0] [--kthreads] [--socket PATH]
 host/target/debug/phitop --batch 3          # plain text frames, for scripts and logs
 ```
 
-A full-screen viewer in the spirit of glances, but for the card and run
-on the host: nothing is installed on the card beyond the agent it
-already runs. Each interval it makes two short requests on the daemon's
-control socket: `Stat`, which the daemon relays to the card and the
+A full-screen viewer in the spirit of glances, but for the cards and run
+on the host: nothing is installed on a card beyond the agent it already
+runs. With one card named (`-c N`, `PHI_CARD`, `--socket` or
+`PHICTL_SOCKET`) that card fills the screen. With none named, every card
+in `phictl cards` gets its own block: each is sampled on its own
+daemon's socket and folded into its own model, so one card's load,
+temperatures or processes never colour another's, and a card that is
+down says so on its header line while the others keep updating. `n` and
+`p` focus one card in the full view, `a` returns to all. Blocks share the
+rows equally: two cards get the grid and a few processes each, sixteen
+get a header and the mean load per core.
+
+Each interval it makes two short requests on each daemon's control
+socket: `Stat`, which the daemon relays to the card and the
 agent answers from /proc and sysfs (`card/agent/src/stat.md`), and
 `Traffic`, which the daemon answers from its own PCIe byte counters
 (`phi-vfio/src/traffic.md`). The frame (`view.md`) shows:

@@ -375,6 +375,7 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
+ "phi-vfio",
 ]
 
 [[package]]
@@ -410,6 +411,7 @@ dependencies = [
  "clap",
  "libc",
  "phi-rpc",
+ "phi-vfio",
 ]
 
 [[package]]

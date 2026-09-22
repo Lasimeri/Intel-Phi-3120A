@@ -9,5 +9,6 @@ description = "Host side of the AVX-512 co-processor: hand work to the card's ve
 
 [dependencies]
 libc = { workspace = true }
+phi-vfio = { path = "../phi-vfio" }
 anyhow = { workspace = true }
 clap = { workspace = true }

@@ -9,6 +9,7 @@
 | [howto/direct-access.md](howto/direct-access.md) | The control socket: `phictl boot --serve`, `exec`, `put`, `get`, `status`; the unprivileged scripts |
 | [howto/monitoring.md](howto/monitoring.md) | `phitop`, `phictl sensors` and `traffic`, hwmon on the card, `phiperf`, the service's journal |
 | [howto/secure-access.md](howto/secure-access.md) | Who can reach the card through which path, keys, what is not protected |
+| [howto/multiple-cards.md](howto/multiple-cards.md) | Up to 16 cards by index: what each card owns (socket, window, port, subnet, hostname, unit, disk), `~/.config/phi/cards`, bringing a new card up, the aux-power rule |
 | [spec/ring-protocol.md](spec/ring-protocol.md) | The host/card shared-memory transport: region layout, channel kinds 1 to 5 (console, network, rpc, block, host memory), frames and records |
 | [spec/sbox-registers.md](spec/sbox-registers.md) | The SBOX/DBOX register subset this project touches, with sources |
 | [decisions/](decisions/README.md) | Architecture decision records (nine) with alternatives considered |
@@ -66,6 +67,7 @@ output and a reading. In date order:
 | [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
 | [2026-09-21-avx512-translation.md](results/2026-09-21-avx512-translation.md) | AVX-512 to MVEX is a two-bit rewrite; a translated kernel runs on all 57 vector units bit-identically to the host; four wrong guesses corrected by measurement |
 | [2026-09-22-avx512-coprocessor.md](results/2026-09-22-avx512-coprocessor.md) | The card as an AVX-512 co-processor end to end: doorbell, DMA, persistent pool, bit-exact results; where a request's time goes now |
+| [2026-09-22-second-card.md](results/2026-09-22-second-card.md) | A second card on the chipset: why it did not enumerate (aux power), the 3608 subsystem with an 8 GiB BAR, both cards booted and offloading side by side, phitop per card |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.

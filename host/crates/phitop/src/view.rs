@@ -297,6 +297,186 @@ pub fn render(cur: &Snapshot, d: &Derived, o: &Options, cols: usize, rows: usize
     out
 }
 
+/// What identifies one card in the multi-card view.
+pub struct CardHeader<'a> {
+    pub index: usize,
+    pub name: &'a str,
+    pub bdf: &'a str,
+}
+
+/// One card's contribution to a frame: its identity, its latest sample
+/// and derivation when it has them, else why not.
+pub struct CardView<'a> {
+    pub head: CardHeader<'a>,
+    pub data: Option<(&'a Snapshot, &'a Derived)>,
+    pub error: Option<&'a str>,
+}
+
+/// One card's block of the multi-card frame, at most `budget` lines.
+///
+/// What fits is decided by the budget rather than the terminal: a
+/// two-card terminal gets the grid and a few processes per card, a
+/// sixteen-card one gets a header and the mean load per core. The block
+/// never lies about a card that is down: it says so on its header line.
+fn card_block(c: &CardView, o: &Options, cols: usize, budget: usize, out: &mut Vec<String>) {
+    let tag = if o.color { fg(75) } else { String::new() };
+    let reset = if o.color { RESET } else { "" };
+    let (s, d) = match c.data {
+        Some(x) => x,
+        None => {
+            out.push(format!(
+                "{tag}card {} {}{reset}  {}  {}",
+                c.head.index,
+                c.head.name,
+                c.head.bdf,
+                c.error.unwrap_or("no sample yet")
+            ));
+            return;
+        }
+    };
+    let st = &s.stat;
+    out.push(format!(
+        "{tag}card {} {}{reset}  {}  up {}  load {:.2}  {} running of {} procs  {} threads {:.1}% busy",
+        c.head.index,
+        c.head.name,
+        c.head.bdf,
+        hms(st.uptime_ms),
+        st.load[0] as f64 / 100.0,
+        st.running,
+        st.nprocs,
+        st.cpus.len(),
+        d.mean_load * 100.0
+    ));
+    if budget < 3 {
+        return;
+    }
+    let m = &st.mem;
+    let used = m.total_kb.saturating_sub(m.avail_kb);
+    let swap_used = m.swap_total_kb.saturating_sub(m.swap_free_kb);
+    if budget >= 9 {
+        out.push(temps_line(s));
+        out.push(format!(
+            "mem   {} {} / {}   swap {} {} / {}   pcie to {} from {}",
+            bar(used as f64 / m.total_kb.max(1) as f64, 12),
+            mib(used),
+            mib(m.total_kb),
+            bar(swap_used as f64 / m.swap_total_kb.max(1) as f64, 6),
+            mib(swap_used),
+            mib(m.swap_total_kb),
+            rate(d.dma.0 + d.aperture.0),
+            rate(d.dma.1 + d.aperture.1)
+        ));
+        grid(d, o, cols, out);
+    } else {
+        // Room for the mean load per core only.
+        let mut line = format!("{:<LABEL$}", "mean");
+        let mut last = 0;
+        let cw = if cols >= LABEL + d.cores.len() * 2 { 2 } else { 1 };
+        for core in &d.cores {
+            let load = core.iter().map(|cpu| d.cpu_load[*cpu]).sum::<f64>() / core.len().max(1) as f64;
+            if o.color {
+                let cc = color(load);
+                if cc != last {
+                    line.push_str(&fg(cc));
+                    last = cc;
+                }
+            }
+            line.push(level(load));
+            if cw == 2 {
+                line.push(' ');
+            }
+        }
+        out.push(line);
+        out.push(format!(
+            "mem {} / {}  swap {} / {}  pcie to {} from {}",
+            mib(used),
+            mib(m.total_kb),
+            mib(swap_used),
+            mib(m.swap_total_kb),
+            rate(d.dma.0 + d.aperture.0),
+            rate(d.dma.1 + d.aperture.1)
+        ));
+    }
+    let used_lines = if budget >= 9 {
+        3 + 2 + d.cores.iter().map(|c| c.len()).max().unwrap_or(0) + 1
+    } else {
+        3
+    };
+    let room = budget.saturating_sub(used_lines + 1);
+    if room == 0 {
+        return;
+    }
+    let mut procs: Vec<&crate::model::ProcRow> = d.procs.iter().filter(|p| o.show_kthreads || !p.kthread).collect();
+    if o.sort_mem {
+        procs.sort_by(|a, b| b.rss_kb.cmp(&a.rss_kb).then(b.cpu.total_cmp(&a.cpu)));
+    } else {
+        procs.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(b.rss_kb.cmp(&a.rss_kb)));
+    }
+    out.push(format!(
+        "{:>7} {} {:>7} {:>9} {:>4}  {}",
+        "PID", "S", "CPU%", "RSS", "THR", "COMMAND"
+    ));
+    for p in procs.iter().take(room) {
+        let name = if p.kthread { format!("[{}]", p.comm) } else { p.comm.clone() };
+        let row = format!(
+            "{:>7} {} {:>7.1} {:>9} {:>4}  {}",
+            p.pid,
+            p.state,
+            p.cpu,
+            mib(p.rss_kb),
+            p.threads,
+            name
+        );
+        out.push(if p.kthread && o.color { format!("{}{row}", fg(DIM)) } else { row });
+    }
+}
+
+/// The multi-card frame: every card gets an equal share of the rows,
+/// blocks separated by a blank line, one footer.
+pub fn render_multi(cards: &[CardView], o: &Options, cols: usize, rows: usize) -> String {
+    let n = cards.len().max(1);
+    let footer_lines = 2;
+    let per = rows.saturating_sub(footer_lines).saturating_sub(n.saturating_sub(1)) / n;
+    let mut lines: Vec<String> = Vec::with_capacity(rows);
+    for (i, c) in cards.iter().enumerate() {
+        if i > 0 {
+            lines.push(String::new());
+        }
+        let mut block = Vec::new();
+        card_block(c, o, cols, per.max(1), &mut block);
+        block.truncate(per.max(1));
+        lines.extend(block);
+    }
+    let status = match &o.error {
+        Some(e) => format!("{}{e}", if o.color { fg(196) } else { String::new() }),
+        None => format!("{:.1} s", o.interval_s),
+    };
+    while lines.len() + footer_lines < rows {
+        lines.push(String::new());
+    }
+    lines.truncate(rows.saturating_sub(footer_lines));
+    lines.push(format!("phitop  {} cards  every {}", cards.len(), status));
+    lines.push(format!(
+        "q quit   n/p one card   a all   c/m sort by cpu/mem ({})   k kernel threads ({})   +/- interval",
+        if o.sort_mem { "mem" } else { "cpu" },
+        if o.show_kthreads { "shown when active" } else { "hidden" }
+    ));
+    let mut out = String::with_capacity(cols * rows * 2);
+    if o.color {
+        out.push_str("\x1b[H");
+    }
+    for (i, l) in lines.iter().take(rows).enumerate() {
+        out.push_str(&fit(l, cols));
+        if o.color {
+            out.push_str("\x1b[K");
+        }
+        if i + 1 < rows || !o.color {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

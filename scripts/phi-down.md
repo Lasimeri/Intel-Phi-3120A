@@ -1,8 +1,10 @@
 # phi-down.sh
 
-Halts the card started by `phi-up.sh` and ends the `phictl boot` process,
-which resets the card when it closes the VFIO device; removes the pid file
-and the socket. Safe to run when nothing is up.
+Halts one card (`-c N`, else `$PHI_CARD`, else 0) and ends the `phictl
+boot` process holding it, which resets the card when it closes the VFIO
+device; removes the pid file and the socket. Safe to run when nothing is
+up. `phi@N.service` runs it as `ExecStop`, where there is no pid file and
+systemd ends the process itself afterwards.
 
 The card gets a plain `poweroff` through the agent, not `poweroff -f`.
 Plain `poweroff` signals PID 1, so `init` can stop the services, release

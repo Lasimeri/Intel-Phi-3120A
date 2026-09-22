@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 phi-rpc = { path = "../phi-rpc" }
+phi-vfio = { path = "../phi-vfio" }
 clap.workspace = true
 anyhow.workspace = true
 libc.workspace = true

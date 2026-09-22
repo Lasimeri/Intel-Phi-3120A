@@ -1,9 +1,11 @@
 # Completions for the `phi` command (scripts/phi.sh). Installed to
 # ~/.config/fish/completions/phi.fish by `phi install-cli`. See phi.md.
 
-set -l phi_cmds up down restart status run sh put get top sensors traffic console log disk install-cli help
+set -l phi_cmds cards up down restart status run sh put get top sensors traffic console log disk install-cli help
 
 complete -c phi -f
+complete -c phi -s c -l card -d "card index, 0 to 15" -x -a "(phictl cards --plain 2>/dev/null | awk '{print \$1\"\t\"\$2}')"
+complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a cards -d "every card: index, address, link, state"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a up -d "boot the card and serve it"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a down -d "power off and release the card"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a restart -d "down then up"
@@ -17,9 +19,12 @@ complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a sensors -d "te
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a traffic -d "PCIe bytes by path and direction"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a console -d "follow the card console"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a log -d "the daemon journal"
-complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a disk -d "manage the disk image"
+complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a disk -d "manage a disk image"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a install-cli -d "symlink the CLI and completions"
 complete -c phi -n "not __fish_seen_subcommand_from $phi_cmds" -a help -d "usage"
+
+# `phi cards init [DIR]` writes ~/.config/phi/cards.
+complete -c phi -n "__fish_seen_subcommand_from cards" -a init -d "write ~/.config/phi/cards from the bus"
 
 # `phi put` takes a host path then a card path; `phi get` the reverse.
 complete -c phi -n "__fish_seen_subcommand_from put" -F

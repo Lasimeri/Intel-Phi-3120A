@@ -4,19 +4,45 @@ Every row names its source: an Intel document and section, a database, or
 a measurement on this machine with its date and the record in
 `docs/results/`. Rows without a primary source say so.
 
-## The card
+## The cards
 
-Intel Xeon Phi coprocessor **3120A** (Knights Corner, x100 family).
-Identification on this machine, measured 2026-09-13 with `lspci -nn`:
+Two Intel Xeon Phi coprocessors of the 3120 series (Knights Corner, x100
+family) since 2026-09-22; one from 2026-09-13. `lspci -nn` on
+2026-09-22:
 
 ```
-2e:00.0 Co-processor [0b40]: Intel Corporation Xeon Phi coprocessor 3120 series [8086:225d] (rev 20)
+24:00.0 Co-processor [0b40]: Intel Corporation Xeon Phi coprocessor 3120 series [8086:225d] (rev 20)
+        Subsystem: Intel Corporation Device 3608
+2f:00.0 Co-processor [0b40]: Intel Corporation Xeon Phi coprocessor 3120 series [8086:225d] (rev 20)
         Subsystem: Intel Corporation Device 3c98
 ```
 
-Subsystem `8086:3c98` decodes to "3120A/3140A" in the linux-hardware.org
-database (`pci:8086-225d-8086-3c98`); the 3120P uses a different subsystem
-ID.
+| | card 0 (`~/.config/phi/cards`) | card 1 |
+| --- | --- | --- |
+| address | `0000:2f:00.0` (`2e:00.0` until the 2026-09-21 boot) | `0000:24:00.0` |
+| subsystem | `8086:3c98`, "3120A/3140A" in the linux-hardware.org database | `8086:3608` |
+| slot | CPU root port `00:03.1`, the x8 half of the x16 bifurcated with the GPU | X570 chipset port `21:02.0` (PCI_E4) |
+| link | Gen2 x8 | Gen2 x4 |
+| BAR0 | 16 GiB | 8 GiB |
+| IOMMU group | 34 (was 30) | 27 |
+| software | identical: same kernel, same image, 228 CPUs, 5669 MiB, `phi` | same, hostname `phi1` |
+
+Both were measured with `scripts/verify-card.sh` and booted by
+`phi@0.service` and `phi@1.service` (`docs/howto/multiple-cards.md`). The
+second card's BAR0 is half the first's; the aperture code sizes itself
+from the BAR and needed no change. Everything below was measured on card
+0 unless it says otherwise; the second card has not been characterised
+separately beyond booting, running the AVX-512 offload worker and
+answering `phitop`.
+
+**What it took to enumerate the second card.** Nothing in software: with
+one auxiliary connector missing the card does not power up, does not
+train its link, leaves no trace in `lspci` and does not affect POST
+(datasheet 328209, "Supplemental Power Connectors": a 300 W SKU must see
+both the 2x4 and the 2x3 driven). After both were connected it appeared
+on the chipset port, bound itself to `vfio-pci` through the `ids=`
+option, and booted at once. An x4 chipset slot is a quarter of the first
+card's link for bulk DMA and makes no difference to compute.
 
 | Property | Value | Source |
 | --- | --- | --- |
@@ -34,18 +60,18 @@ ID.
 | ISA | x86-64 base minus a long list of instructions, plus the KNC vector ISA | ISA reference App. B; see `research/isa-deletions.md` |
 | Bootstrap | POST `"12"` (ready) 9.3 s after an `RGCR` reset, of which 7.4 s is GDDR training; the download address is 64 MiB, the BSP is APIC ID 224 | measured 2026-09-13 (`results/2026-09-13-reset-2.md`) |
 | Die temperatures | 47 to 55 C idle, 59 C after 20 s of full load, maximum ever recorded by the SBOX 66 C; sensors 8 and 9 read 0 (unfused) | measured 2026-09-16 and 2026-09-17 (`results/2026-09-16-sensors.md`, `phictl sensors`) |
-| Core voltage | 1100 mV (SVID code `0xab`, VR12: 250 mV + 5 mV per step) | decoding from MPSS 3.8.6 `ras/micras_knc.c` (reference only); measured 2026-09-16 |
+| Core voltage | card 0: 1100 mV (SVID code `0xab`, VR12: 250 mV + 5 mV per step); card 1: 960 mV | decoding from MPSS 3.8.6 `ras/micras_knc.c` (reference only); measured 2026-09-16, card 1 through `phitop` 2026-09-22 |
 
 ## The host
 
 | Item | Value | Source |
 | --- | --- | --- |
 | CPU | AMD Ryzen 7 5800X, 8 cores, 16 threads | `lscpu`, 2026-09-13 |
-| Chipset | AMD X570 (Matisse), CPU-direct PCIe x16 bifurcated x8/x8 | `lspci -tv` (bridges `00:03.1` and `00:03.2` under the CPU root complex), 2026-09-13 |
+| Board and chipset | MSI MEG X570 GODLIKE (MS-7C34, BIOS 1.E0), AMD X570 (Matisse); CPU-direct PCIe x16 bifurcated x8/x8 (PCI_E1 and PCI_E3), one chipset x4 slot (PCI_E4) | DMI and `lspci -tv` (bridges `00:03.1` and `00:03.2` under the CPU root complex, `21:02.0` under the chipset), 2026-09-13 and 2026-09-22 |
 | RAM | 64 GiB | `free -g`, 2026-09-13 |
 | Host kernel | 7.2.6-1-cachyos, Arch-based | `uname -r`, 2026-09-19. Was 7.2.3-1-cachyos from 2026-09-13 to 2026-09-17; every result before that date was taken on 7.2.3. Nothing in this project changed across the upgrade (ADR 0001). The `vfio-pci` binding did not survive the first reboot, because this host predated the `modprobe.d` file; with that file it does, observed 2026-09-19 (`scripts/setup-arch.md`) |
 | IOMMU | AMD-Vi enabled, interrupt remapping enabled, DMA domain lazy TLB invalidation | kernel log (`AMD-Vi` lines), 2026-09-13 |
-| Other GPU | NVIDIA RTX 3090 Ti on the sibling x8 bridge (`00:03.2`, bus `2f`) | `lspci`, 2026-09-13 |
+| Other GPU | NVIDIA RTX 3090 Ti on the sibling x8 bridge (`00:03.2`, bus `30` since 2026-09-22, `2f` before) | `lspci`, 2026-09-13 and 2026-09-22 |
 | Disk for the card image | WD Black SN850X 1 TB NVMe, xfs, at `/mnt/1TB-NVMe` | `results/2026-09-16-storage.md` |
 
 ## Measured PCIe state (2026-09-13)

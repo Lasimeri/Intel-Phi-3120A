@@ -33,31 +33,27 @@ use phi_regs::sbox;
 use phi_ring::{ChannelKind, Region};
 use phi_rpc::{Decoder, Msg, Traffic};
 
-/// Control socket path when the daemon runs as root.
-pub const ROOT_SOCKET: &str = "/run/phictl/control.sock";
-
-/// Where the control socket lives when nothing says otherwise: the
-/// `PHICTL_SOCKET` variable, else the root path when running as root (or, for
-/// a client, when a root daemon has one), else `/phictl/control.sock`
-/// (`/tmp/phictl-UID` without a runtime directory). The user path is what an
-/// unprivileged `phictl boot --serve` uses: the `phi` group grants the VFIO
-/// device, so no root is needed to run the card without a network bridge.
-pub fn default_socket(for_bind: bool) -> PathBuf {
+/// Where card `index`'s control socket lives when nothing says otherwise:
+/// the `PHICTL_SOCKET` variable, else the root path when running as root
+/// (or, for a client, when a root daemon answers there), else the user's
+/// runtime directory (`/tmp/phictl-UID` without one). Card 0 is
+/// `phictl/control.sock`, card N `phictl/N/control.sock`
+/// (`phi_vfio::cards`). The user path is what an unprivileged `phictl boot
+/// --serve` uses: the `phi` group grants the VFIO device, so no root is
+/// needed to run the card without a network bridge.
+pub fn default_socket(for_bind: bool, index: usize) -> PathBuf {
     if let Ok(p) = std::env::var("PHICTL_SOCKET") {
         return PathBuf::from(p);
     }
     // SAFETY: geteuid has no preconditions.
     let root = unsafe { libc::geteuid() } == 0;
-    if root || (!for_bind && std::os::unix::net::UnixStream::connect(ROOT_SOCKET).is_ok()) {
+    let root_path = phi_vfio::cards::root_socket_path(index);
+    if root || (!for_bind && std::os::unix::net::UnixStream::connect(&root_path).is_ok()) {
         // A root daemon answers there; a stale socket file from an ended one
         // does not, and the user path is tried instead.
-        return PathBuf::from(ROOT_SOCKET);
+        return root_path;
     }
-    let dir = std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        // SAFETY: getuid has no preconditions.
-        .unwrap_or_else(|_| PathBuf::from(format!("/tmp/phictl-{}", unsafe { libc::getuid() })));
-    dir.join("phictl").join("control.sock")
+    phi_vfio::cards::socket_path(index)
 }
 
 /// The uid that may use the socket when none is given: the user behind

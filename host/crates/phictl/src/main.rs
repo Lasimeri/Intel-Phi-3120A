@@ -29,9 +29,13 @@ mod serve;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Cli {
-    /// PCI address, e.g. 0000:2e:00.0 (default: $PHI_BDF or autodetect).
-    #[arg(long, global = true)]
+    /// PCI address, e.g. 0000:2e:00.0 (default: $PHI_BDF, else the card index).
+    #[arg(long, global = true, conflicts_with = "card")]
     bdf: Option<String>,
+    /// Card index, 0 to 15, as listed by `phictl cards` (default: $PHI_CARD, else 0).
+    /// Chooses the device and, for boot, the socket, host-memory file and subnet.
+    #[arg(long, global = true)]
+    card: Option<usize>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -97,9 +101,11 @@ enum Cmd {
         /// (created if absent) so the card is reachable over IP; needs root.
         #[arg(long)]
         net: Option<String>,
-        /// IPv4 address with prefix length assigned to the TAP device.
-        #[arg(long, default_value = "10.9.0.1/24")]
-        net_addr: String,
+        /// IPv4 address with prefix length of the host's end of this card's
+        /// ring network: the TAP device with --net, the userspace stack with
+        /// --forward. Default 10.9.N.1/24 for card N; the card is .2.
+        #[arg(long)]
+        net_addr: Option<String>,
         /// Forward 127.0.0.1:HOSTPORT to the card's CARDPORT through a userspace
         /// network stack on the ring (no root; "2222:22", or "2222" for port 22).
         #[arg(long, conflicts_with = "net")]
@@ -117,8 +123,9 @@ enum Cmd {
         #[arg(long)]
         no_dma: bool,
         /// Give the card this much host memory (e.g. 4G): a pinned shared file
-        /// (/dev/shm/phi-hostmem) served as /dev/phiblk1 (swap or scratch through
-        /// the DMA engine) and mapped as /dev/phihost for direct access.
+        /// (/dev/shm/phi-hostmem, or phi-hostmem-N for card N) served as
+        /// /dev/phiblk1 (swap or scratch through the DMA engine) and mapped as
+        /// /dev/phihost for direct access.
         #[arg(long, value_parser = parse_size)]
         host_mem: Option<u64>,
         /// Uid allowed to use the control socket (default: SUDO_UID, else root).
@@ -175,9 +182,11 @@ enum Cmd {
         /// Bridge the ring network channel to a host TAP device of this name.
         #[arg(long)]
         net: Option<String>,
-        /// IPv4 address with prefix length assigned to the TAP device.
-        #[arg(long, default_value = "10.9.0.1/24")]
-        net_addr: String,
+        /// IPv4 address with prefix length of the host's end of this card's
+        /// ring network: the TAP device with --net, the userspace stack with
+        /// --forward. Default 10.9.N.1/24 for card N; the card is .2.
+        #[arg(long)]
+        net_addr: Option<String>,
         /// Forward 127.0.0.1:HOSTPORT to the card's CARDPORT through a userspace
         /// network stack on the ring (no root; "2222:22", or "2222" for port 22).
         #[arg(long, conflicts_with = "net")]
@@ -235,6 +244,16 @@ enum Cmd {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
+    /// List the cards this host knows about, by index: PCI address, whether
+    /// it is on the bus, its link, driver, IOMMU group, and whether a daemon
+    /// answers on its socket. The order comes from ~/.config/phi/cards when
+    /// that file exists, else from the PCI addresses.
+    Cards {
+        /// One line per card, fields separated by spaces, for scripts:
+        /// INDEX BDF yes|no DISK HOSTMEM ("-" when unset).
+        #[arg(long)]
+        plain: bool,
+    },
 }
 
 fn parse_mode(s: &str) -> std::result::Result<u32, String> {
@@ -258,17 +277,107 @@ fn open(bdf: Option<&str>) -> Result<Card> {
     Card::open(&bdf).with_context(|| format!("opening {bdf}"))
 }
 
+/// The card the command line names, as (index, explicit address).
+///
+/// `--bdf` wins and carries no index (its socket and files are card 0's
+/// unless `PHI_CARD` says otherwise); `--card N` resolves to that card's
+/// address and is refused if the card is not on the bus; neither means
+/// `PHI_CARD`, else card 0, resolved later by `resolve_bdf`.
+fn select_card(cli: &Cli) -> Result<(usize, Option<String>)> {
+    let index = match cli.card {
+        Some(i) => {
+            phi_vfio::cards::check_index(i)?;
+            i
+        }
+        None => phi_vfio::cards::index_from_env()?.unwrap_or(0),
+    };
+    let bdf = match (&cli.bdf, cli.card) {
+        (Some(b), _) => Some(b.clone()),
+        (None, Some(i)) => Some(phi_vfio::cards::resolve(i)?.bdf),
+        (None, None) => None,
+    };
+    Ok((index, bdf))
+}
+
+fn cmd_cards(plain: bool) -> Result<()> {
+    let cards = phi_vfio::cards::list()?;
+    if plain {
+        for c in &cards {
+            println!(
+                "{} {} {} {} {}",
+                c.index,
+                c.bdf,
+                if c.present { "yes" } else { "no" },
+                c.disk.as_deref().unwrap_or("-"),
+                c.host_mem.as_deref().unwrap_or("-")
+            );
+        }
+        return Ok(());
+    }
+    let source = if phi_vfio::cards::config_path().is_file() {
+        format!("order from {}", phi_vfio::cards::config_path().display())
+    } else {
+        "order by PCI address (no ~/.config/phi/cards)".to_string()
+    };
+    println!("{} card(s) known, {source}", cards.len());
+    println!("card  bdf           present link         driver    group  up    hostmem  disk");
+    for c in &cards {
+        let dev = std::path::Path::new("/sys/bus/pci/devices").join(&c.bdf);
+        let read = |f: &str| {
+            std::fs::read_to_string(dev.join(f))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
+        let link = if c.present {
+            let speed = read("current_link_speed");
+            let speed = speed.split(' ').next().unwrap_or("?");
+            format!("{speed} x{}", read("current_link_width"))
+        } else {
+            "-".into()
+        };
+        let driver = if c.present {
+            phi_vfio::sysfs::driver_of(&c.bdf).unwrap_or_else(|| "none".into())
+        } else {
+            "-".into()
+        };
+        let group = if c.present {
+            phi_vfio::sysfs::iommu_group_of(&c.bdf)
+                .map(|g| g.to_string())
+                .unwrap_or_else(|_| "-".into())
+        } else {
+            "-".into()
+        };
+        let sock = serve::default_socket(false, c.index);
+        let up = std::os::unix::net::UnixStream::connect(&sock).is_ok();
+        println!(
+            "{:<5} {:<13} {:<7} {:<12} {:<9} {:<6} {:<5} {:<8} {}",
+            c.index,
+            c.bdf,
+            if c.present { "yes" } else { "no" },
+            link,
+            driver,
+            group,
+            if up { "yes" } else { "no" },
+            c.host_mem.as_deref().unwrap_or("-"),
+            c.disk.as_deref().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
     let cli = Cli::parse();
+    let (card_index, bdf) = select_card(&cli)?;
     match cli.cmd {
-        Cmd::Info => cmd_info(cli.bdf.as_deref()),
-        Cmd::Postcode { watch, timeout } => cmd_postcode(cli.bdf.as_deref(), watch, timeout),
-        Cmd::Spad { n } => cmd_spad(cli.bdf.as_deref(), n),
-        Cmd::Regs => cmd_regs(cli.bdf.as_deref()),
-        Cmd::Reset { timeout } => cmd_reset(cli.bdf.as_deref(), timeout),
+        Cmd::Cards { plain } => cmd_cards(plain),
+        Cmd::Info => cmd_info(bdf.as_deref()),
+        Cmd::Postcode { watch, timeout } => cmd_postcode(bdf.as_deref(), watch, timeout),
+        Cmd::Spad { n } => cmd_spad(bdf.as_deref(), n),
+        Cmd::Regs => cmd_regs(bdf.as_deref()),
+        Cmd::Reset { timeout } => cmd_reset(bdf.as_deref(), timeout),
         Cmd::Boot {
             kernel,
             initrd,
@@ -287,29 +396,37 @@ fn main() -> Result<()> {
             host_mem,
             serve,
             owner,
-        } => cmd_boot(
-            cli.bdf.as_deref(),
-            kernel,
-            initrd,
-            cmdline,
-            ring_base,
-            ring_size,
-            raw_cmdline,
-            !no_console && !load_only,
-            load_only,
-            watch,
-            net.map(|n| (n, net_addr)),
-            forward,
-            disk,
-            no_dma,
-            host_mem,
-            serve.map(|p| {
-                let p = if p.as_os_str() == "auto" { serve::default_socket(true) } else { p };
-                (p, owner.unwrap_or_else(serve::default_owner))
-            }),
-        ),
+        } => {
+            let net_addr = net_addr.unwrap_or_else(|| format!("{}/24", phi_vfio::cards::host_ip(card_index)));
+            cmd_boot(
+                bdf.as_deref(),
+                card_index,
+                kernel,
+                initrd,
+                cmdline,
+                ring_base,
+                ring_size,
+                raw_cmdline,
+                !no_console && !load_only,
+                load_only,
+                watch,
+                net.map(|n| (n, net_addr.clone())),
+                forward.map(|spec| (spec, net_addr)),
+                disk,
+                no_dma,
+                host_mem,
+                serve.map(|p| {
+                    let p = if p.as_os_str() == "auto" {
+                        serve::default_socket(true, card_index)
+                    } else {
+                        p
+                    };
+                    (p, owner.unwrap_or_else(serve::default_owner))
+                }),
+            )
+        }
         Cmd::Peek { addr, len } => {
-            let card = open(cli.bdf.as_deref())?;
+            let card = open(bdf.as_deref())?;
             card.wait_ready(std::time::Duration::from_secs(20))?;
             let mut buf = vec![0u8; len.min(256)];
             card.read_card_memory(addr, &mut buf)?;
@@ -318,7 +435,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Poke { addr, value } => {
-            let card = open(cli.bdf.as_deref())?;
+            let card = open(bdf.as_deref())?;
             card.wait_ready(std::time::Duration::from_secs(20))?;
             card.write_card_memory(addr, &value.to_le_bytes())?;
             println!("{addr:#x} <- {value:#x}");
@@ -330,7 +447,7 @@ fn main() -> Result<()> {
             chunk,
             no_readback,
         } => {
-            let card = open(cli.bdf.as_deref())?;
+            let card = open(bdf.as_deref())?;
             card.wait_ready(std::time::Duration::from_secs(20))?;
             // An address-derived pattern, so the read-back check catches an
             // aperture that returns zeros or stale data.
@@ -352,28 +469,31 @@ fn main() -> Result<()> {
             net_addr,
             forward,
         } => {
-            let card = open(cli.bdf.as_deref())?;
+            let card = open(bdf.as_deref())?;
+            let net_addr = net_addr.unwrap_or_else(|| format!("{}/24", phi_vfio::cards::host_ip(card_index)));
             console(
                 &card,
                 ring_base,
                 ring_size,
                 watch,
-                net.map(|n| (n, net_addr)),
-                forward,
+                net.map(|n| (n, net_addr.clone())),
+                forward.map(|spec| (spec, net_addr)),
                 None,
                 None,
                 false,
             )
         }
         Cmd::Exec { socket, cwd, argv } => {
-            let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false)), cwd, argv)?;
+            let code = client::exec(&socket.unwrap_or_else(|| serve::default_socket(false, card_index)), cwd, argv)?;
             std::process::exit(code);
         }
-        Cmd::Put { socket, src, dst, mode } => client::put(&socket.unwrap_or_else(|| serve::default_socket(false)), &src, dst, mode),
-        Cmd::Get { socket, src, dst } => client::get(&socket.unwrap_or_else(|| serve::default_socket(false)), src, &dst),
-        Cmd::Status { socket } => client::status(&socket.unwrap_or_else(|| serve::default_socket(false))),
-        Cmd::Sensors { socket } => client::sensors(&socket.unwrap_or_else(|| serve::default_socket(false))),
-        Cmd::Traffic { socket } => client::traffic(&socket.unwrap_or_else(|| serve::default_socket(false))),
+        Cmd::Put { socket, src, dst, mode } => {
+            client::put(&socket.unwrap_or_else(|| serve::default_socket(false, card_index)), &src, dst, mode)
+        }
+        Cmd::Get { socket, src, dst } => client::get(&socket.unwrap_or_else(|| serve::default_socket(false, card_index)), src, &dst),
+        Cmd::Status { socket } => client::status(&socket.unwrap_or_else(|| serve::default_socket(false, card_index))),
+        Cmd::Sensors { socket } => client::sensors(&socket.unwrap_or_else(|| serve::default_socket(false, card_index))),
+        Cmd::Traffic { socket } => client::traffic(&socket.unwrap_or_else(|| serve::default_socket(false, card_index))),
     }
 }
 
@@ -539,6 +659,7 @@ fn cmd_reset(bdf: Option<&str>, timeout: u64) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn cmd_boot(
     bdf: Option<&str>,
+    card_index: usize,
     kernel: PathBuf,
     initrd: Option<PathBuf>,
     cmdline: String,
@@ -549,13 +670,14 @@ fn cmd_boot(
     load_only: bool,
     watch: Option<u64>,
     net: Option<(String, String)>,
-    forward: Option<String>,
+    forward: Option<(String, String)>,
     disk: Option<PathBuf>,
     no_dma: bool,
     host_mem: Option<u64>,
     serve: Option<(PathBuf, u32)>,
 ) -> Result<()> {
     let card = open(bdf)?;
+    let hostmem_path = phi_vfio::cards::hostmem_path(card_index);
     let kernel_bytes = std::fs::read(&kernel).with_context(|| format!("reading {}", kernel.display()))?;
     let initrd_bytes = match &initrd {
         Some(p) => Some(std::fs::read(p).with_context(|| format!("reading {}", p.display()))?),
@@ -565,13 +687,8 @@ fn cmd_boot(
     // can be announced in the ring region header.
     let hostmem = match host_mem {
         Some(size) => Some(
-            phi_hw::dma::HostDmaBuffer::from_file(
-                &card,
-                disk::HOSTMEM_IOVA,
-                std::path::Path::new("/dev/shm/phi-hostmem"),
-                size as usize,
-            )
-            .with_context(|| format!("pinning {size} bytes of host memory for the card"))?,
+            phi_hw::dma::HostDmaBuffer::from_file(&card, disk::HOSTMEM_IOVA, &hostmem_path, size as usize)
+                .with_context(|| format!("pinning {size} bytes of host memory for the card"))?,
         ),
         None => None,
     };
@@ -635,16 +752,17 @@ fn console(
     ring_size: u64,
     watch: Option<u64>,
     net: Option<(String, String)>,
-    forward: Option<String>,
+    forward: Option<(String, String)>,
     disk: Option<PathBuf>,
     hostmem: Option<phi_hw::dma::HostDmaBuffer>,
     dma: bool,
 ) -> Result<()> {
     thread::scope(|s| {
-        if let Some(spec) = &forward {
+        if let Some((spec, net_addr)) = &forward {
             let (host_port, card_port) = forward::parse_ports(spec)?;
+            let (host_ip, card_ip) = forward::parse_subnet(net_addr)?;
             s.spawn(move || {
-                if let Err(e) = forward::run(card, ring_base, ring_size, host_port, card_port) {
+                if let Err(e) = forward::run(card, ring_base, ring_size, host_port, card_port, host_ip, card_ip) {
                     eprintln!("[phictl] forward: {e:#}");
                 }
             });

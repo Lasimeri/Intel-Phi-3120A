@@ -44,8 +44,8 @@ stages_full=(libcxx llvm-card clang-pkg)
 describe() {
     case "$1" in
         packages)   echo "host packages, the phi group, the udev rule, memlock" ;;
-        card)       echo "the card is enumerated and its link is healthy" ;;
-        vfio)       echo "vfio-pci owns the card" ;;
+        card)       echo "every card is enumerated and its link is healthy" ;;
+        vfio)       echo "vfio-pci owns every card" ;;
         host-tools) echo "phictl, phitop, phi-isa-audit, the MVEX encoder" ;;
         llvm)       echo "the patched clang and lld that can target this card" ;;
         sysroot)    echo "musl, compiler-rt and libunwind for the card" ;;
@@ -58,7 +58,7 @@ describe() {
         initramfs)  echo "the boot image: init, busybox, dropbear, agent" ;;
         disk)       echo "a persistent disk image the card mounts on /data" ;;
         cli)        echo "phi, phictl and phitop on PATH" ;;
-        autoboot)   echo "a user service that runs the card at boot" ;;
+        autoboot)   echo "user services that run the cards at boot (phi@N)" ;;
         libcxx)     echo "libc++ and libc++abi for the card" ;;
         llvm-card)  echo "clang and lld built to run ON the card" ;;
         clang-pkg)  echo "the native toolchain package pushed to the card" ;;
@@ -82,7 +82,7 @@ produces() {
         initramfs)  echo "card/initramfs/build/initramfs.cpio.gz" ;;
         disk)       echo "${PHI_DISK:-\$PHI_DISK (unset)}" ;;
         cli)        echo "$HOME/.local/bin/phi" ;;
-        autoboot)   echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/phi.service" ;;
+        autoboot)   echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/phi@.service (one instance per card)" ;;
         libcxx)     echo "libc++.a in the sysroot" ;;
         llvm-card)  echo "toolchain/build/llvm-build-card" ;;
         clang-pkg)  echo "card/userland/build/clang/phi-clang.tar.gz" ;;
@@ -97,12 +97,13 @@ needs_root() { case "$1" in packages|vfio) return 0 ;; *) return 1 ;; esac; }
 is_long() { case "$1" in llvm|llvm-dylib|llvm-card) return 0 ;; *) return 1 ;; esac; }
 
 bdf() { lspci -Dn -d 8086:225d 2>/dev/null | awk '{print $1; exit}'; }
+bdfs() { lspci -Dn -d 8086:225d 2>/dev/null | awk '{print $1}'; }
 
 check() {
     case "$1" in
         packages)   getent group phi >/dev/null 2>&1 && command -v clang >/dev/null && command -v tcc >/dev/null ;;
         card)       [ -n "$(bdf)" ] ;;
-        vfio)       local b; b=$(bdf); [ -n "$b" ] && [ "$(basename "$(readlink -f "/sys/bus/pci/devices/$b/driver" 2>/dev/null)" 2>/dev/null)" = vfio-pci ] ;;
+        vfio)       local b ok=1; for b in $(bdfs); do [ "$(basename "$(readlink -f "/sys/bus/pci/devices/$b/driver" 2>/dev/null)" 2>/dev/null)" = vfio-pci ] || ok=0; done; [ -n "$(bdfs)" ] && [ $ok = 1 ] ;;
         host-tools) [ -x host/target/debug/phictl ] ;;
         llvm)       [ -x toolchain/build/llvm/bin/clang ] ;;
         sysroot)    [ -f toolchain/build/sysroot/usr/lib/libc.a ] ;;
@@ -116,7 +117,7 @@ check() {
         initramfs)  [ -s card/initramfs/build/initramfs.cpio.gz ] ;;
         disk)       [ -n "${PHI_DISK:-}" ] && [ -f "${PHI_DISK}" ] ;;
         cli)        [ -x "$HOME/.local/bin/phi" ] ;;
-        autoboot)   [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/phi.service" ] ;;
+        autoboot)   [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/phi@.service" ] ;;
         libcxx)     [ -f toolchain/build/sysroot/usr/lib/libc++.a ] ;;
         llvm-card)  [ -d toolchain/build/llvm-build-card ] ;;
         clang-pkg)  [ -f card/userland/build/clang/phi-clang.tar.gz ] ;;
@@ -142,7 +143,7 @@ run_stage() {
         disk)       [ -n "${PHI_DISK:-}" ] || { echo "phi-install: set PHI_DISK to where the card's disk image should live" >&2; return 1; }
                     scripts/phi-disk.sh create "$PHI_DISK" "${PHI_DISK_SIZE:-64G}" ;;
         cli)        scripts/phi.sh install-cli ;;
-        autoboot)   scripts/phi-autoboot.sh install "${PHI_DISK:-}" "${PHI_HOST_MEM:-6G}" ;;
+        autoboot)   scripts/phi-autoboot.sh install all ;;
         libcxx)     toolchain/libcxx/build.sh ;;
         llvm-card)  PHI_LLVM_VARIANT=card toolchain/llvm/build.sh configure && PHI_LLVM_VARIANT=card toolchain/llvm/build.sh build ;;
         clang-pkg)  card/userland/components/clang.sh ;;

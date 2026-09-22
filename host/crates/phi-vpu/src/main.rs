@@ -29,11 +29,30 @@ use proto::*;
 #[derive(Parser)]
 #[command(about = "Drive the Xeon Phi's vector units as an AVX-512 co-processor", version)]
 struct Cli {
-    /// The shared window, as the host sees it.
-    #[arg(long, default_value = "/dev/shm/phi-hostmem")]
-    window: String,
+    /// Card index, 0 to 15 (default: $PHI_CARD, else 0); picks that card's
+    /// host-memory window, /dev/shm/phi-hostmem or phi-hostmem-N.
+    #[arg(short, long, global = true)]
+    card: Option<usize>,
+    /// The shared window, as the host sees it (default: the card's).
+    #[arg(long, global = true)]
+    window: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// The window path the command line names: `--window`, else the card's.
+fn window_path(cli: &Cli) -> Result<String> {
+    if let Some(w) = &cli.window {
+        return Ok(w.clone());
+    }
+    let index = match cli.card {
+        Some(i) => {
+            phi_vfio::cards::check_index(i)?;
+            i
+        }
+        None => phi_vfio::cards::index_from_env()?.unwrap_or(0),
+    };
+    Ok(phi_vfio::cards::hostmem_path(index).display().to_string())
 }
 
 #[derive(Subcommand)]
@@ -295,15 +314,16 @@ fn status(w: &Window) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let window = window_path(&cli)?;
     match cli.cmd {
         Cmd::Status => {
-            let w = Window::open(&cli.window, OFF_DATA as usize)?;
+            let w = Window::open(&window, OFF_DATA as usize)?;
             status(&w)
         }
         Cmd::Poly { n, threads, repeat } => {
             let n = n - n % CHUNK;
             let len = round_up(OFF_DATA + 2 * round_up(n * 4) + BLOCK + ((DEG + 1) * LANES * 4) as u64) + BLOCK;
-            let w = Window::open(&cli.window, len as usize)?;
+            let w = Window::open(&window, len as usize)?;
             poly(&w, n, threads, repeat)
         }
     }

@@ -1,6 +1,12 @@
 # view.rs: the frame
 
-`render` lays out one frame for a terminal of `cols` by `rows`:
+`render` lays out one card's frame for a terminal of `cols` by `rows`;
+`render_multi` lays out one block per card (`card_block`), each given an
+equal share of the rows, and picks what fits that share: the header line
+always, then the temperatures, memory and the full grid with a few
+processes when there are nine or more lines, else the mean load per core
+and a memory line. A card without a sample shows its error on the header
+line. The single-card frame:
 
 | line | content |
 | --- | --- |

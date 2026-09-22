@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# phi-wait-vfio.sh: block until the card's VFIO group node exists and this
+# phi-wait-vfio.sh: block until a card's VFIO group node exists and this
 # process can open it, or fail after a timeout.
 #
 # Why it is a script and not an ExecStartPre one-liner: systemd expands `$`
@@ -8,16 +8,21 @@
 # a unit whose ConditionPathExists fails is marked *skipped*, and Restart=
 # never acts on a skip. See phi-wait-vfio.md.
 #
-#   scripts/phi-wait-vfio.sh [SECONDS]      # default 60; PHI_BDF selects the card
+#   scripts/phi-wait-vfio.sh [-c N] [SECONDS]   # default 60; PHI_BDF overrides the card
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
+. "$root/scripts/phi-env.sh"
+phi_env "$@"
+set -- "${PHI_ARGS[@]}"
 
 timeout=${1:-60}
-bdf=${PHI_BDF:-}
-
+bdf=${PHI_BDF:-$PHI_BDF_SEL}
 if [ -z "$bdf" ]; then
-    bdf=$(lspci -Dn -d 8086:225d 2>/dev/null | awk '{print $1}' | head -1 || true)
+    # phictl may not be built yet on a fresh clone; fall back to the bus.
+    bdf=$(lspci -Dn -d 8086:225d 2>/dev/null | awk '{print $1}' | sed -n "$((PHI_CARD + 1))p" || true)
 fi
-[ -n "$bdf" ] || { echo "phi-wait-vfio.sh: no Xeon Phi (8086:225d) enumerated" >&2; exit 1; }
+[ -n "$bdf" ] || { echo "phi-wait-vfio.sh: card $PHI_CARD is not enumerated (8086:225d)" >&2; exit 1; }
 
 dev="/sys/bus/pci/devices/$bdf"
 [ -d "$dev" ] || { echo "phi-wait-vfio.sh: $bdf is not a PCI device on this host" >&2; exit 1; }
