@@ -4,6 +4,7 @@
 #   scripts/phi-vpu.sh [-c N] deploy        copy the sources to the card and build there
 #   scripts/phi-vpu.sh [-c N] start [T]     start the worker with T threads (default 57);
 #                                           PHI_VPU_ARGS="-s MS -i US" passes worker options
+#                                           PHI_VPU_HUGEPAGES=N huge pages reserved on the card at start (512)
 #   scripts/phi-vpu.sh [-c N] stop
 #   scripts/phi-vpu.sh [-c N] status        worker process on the card, control words on the host
 #   scripts/phi-vpu.sh [-c N] log           the worker's output
@@ -71,6 +72,13 @@ case "$cmd" in
     start)
         refuse_if_swapping
         n=${1:-$threads_default}
+        # The worker takes its buffers from 2 MiB huge pages when the card has
+        # them (one block record per 512 KiB instead of one per scattered
+        # 4 KiB page; vpu_worker.md). PHI_VPU_HUGEPAGES is the reservation,
+        # 512 pages = 1 GiB by default, enough for 128 M elements in and out.
+        want=${PHI_VPU_HUGEPAGES:-512}
+        have=$(ssh_ "echo $want > /proc/sys/vm/nr_hugepages; cat /proc/sys/vm/nr_hugepages")
+        [ "$have" = "$want" ] || echo "phi-vpu.sh: card $PHI_CARD gave $have of $want huge pages; larger requests fall back to 4 KiB pages" >&2
         if running; then ssh_ "pkill -f '$pat'"; sleep 0.5; fi
         # PHI_VPU_ARGS carries extra worker options (-s MS, -i US). The
         # kill above is a separate ssh call on purpose: a pkill in the same
@@ -86,6 +94,7 @@ case "$cmd" in
         ;;
     stop)
         if running; then ssh_ "pkill -f '$pat'"; echo "worker stopped on card $PHI_CARD"; else echo "no worker running on card $PHI_CARD"; fi
+        ssh_ "echo 0 > /proc/sys/vm/nr_hugepages"
         ;;
     status)
         if running; then echo "card $PHI_CARD: worker running"; else echo "card $PHI_CARD: no worker"; fi

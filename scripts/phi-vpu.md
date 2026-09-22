@@ -30,6 +30,14 @@ its own FMA hardware.
 `PHI_VPU_ARGS="-s 500 -i 1000" scripts/phi-vpu.sh start` passes worker
 options (spin window, idle poll interval) through.
 
+`start` reserves 2 MiB huge pages on the card first (`PHI_VPU_HUGEPAGES`,
+512 by default: 1 GiB, enough for 128 M elements in and out), and
+`stop` releases them. The worker takes its buffers from them, which
+turns a request's transport from one block record per scattered 4 KiB
+page into one per 512 KiB (`card/vpu/vpu_worker.md`, "Moving the
+data"). A card that cannot give the whole reservation says so; the
+worker then falls back to 4 KiB pages for buffers that do not fit.
+
 ## Two refusals
 
 - **`start` refuses while `/dev/phiblk1` is a swap device on the card.**

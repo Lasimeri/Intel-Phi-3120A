@@ -212,7 +212,16 @@ pub fn traffic(socket: &Path) -> Result<()> {
     conn.send(&Msg::Traffic)?;
     match conn.recv()? {
         Msg::TrafficReply(t) => {
-            println!("dma: {} bytes to the card, {} bytes from it", t.dma_to_card, t.dma_from_card);
+            let mean = |bytes: u64, copies: u64| bytes.checked_div(copies).unwrap_or(0);
+            println!(
+                "dma: {} bytes to the card in {} copies (mean {} bytes), {} bytes from it in {} copies (mean {} bytes)",
+                t.dma_to_card,
+                t.dma_copies_to_card,
+                mean(t.dma_to_card, t.dma_copies_to_card),
+                t.dma_from_card,
+                t.dma_copies_from_card,
+                mean(t.dma_from_card, t.dma_copies_from_card)
+            );
             println!(
                 "aperture: {} bytes to the card, {} bytes from it",
                 t.aperture_to_card, t.aperture_from_card

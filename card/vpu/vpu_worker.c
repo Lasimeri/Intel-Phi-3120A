@@ -255,18 +255,38 @@ static int push(const void *src, size_t len, uint64_t off)
 
 /* Buffers persist across requests and only grow. Allocating per request
  * meant every request paid a page fault per 4 KiB of data on first
- * touch; the memset here takes those faults once, outside any timing. */
-struct buf { float *p; size_t cap; };
+ * touch; the memset here takes those faults once, outside any timing.
+ *
+ * They come from 2 MiB huge pages when the card has some reserved
+ * (/proc/sys/vm/nr_hugepages; scripts/phi-vpu.sh start sets it), else
+ * from 4 KiB pages. The difference is the whole transport: /dev/phiblk1
+ * posts one record to the host per physically contiguous run of the
+ * buffer, and a 4 KiB-paged buffer fresh from malloc is scattered, 15
+ * records per 64 KiB and 88 per 512 KiB request, at about 20 us of host
+ * work each; a huge-paged buffer is one record per 512 KiB request.
+ * Measured 2026-09-22 with blkbench.c on card 0: a 512 KiB pread went
+ * from 1.8 ms to 0.34 ms, 16 MiB from 7.4 ms to 5.5 ms (the link). */
+#define HUGE_BYTES (2UL << 20)
+struct buf { float *p; size_t cap; int huge; };
 
 static int reserve(struct buf *b, size_t len)
 {
     size_t need = round_up(len) + VPU_BLOCK;
     if (b->cap >= need) return 0;
-    free(b->p);
+    if (b->huge) munmap(b->p, b->cap); else free(b->p);
     b->p = NULL;
     b->cap = 0;
-    void *p = NULL;
-    if (posix_memalign(&p, VPU_BLOCK, need) != 0) return -1;
+    size_t hneed = (need + HUGE_BYTES - 1) & ~(HUGE_BYTES - 1);
+    void *p = mmap(NULL, hneed, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (p != MAP_FAILED) {
+        b->huge = 1;
+        need = hneed;
+    } else {
+        b->huge = 0;
+        p = NULL;
+        if (posix_memalign(&p, VPU_BLOCK, need) != 0) return -1;
+        if (verbose) fprintf(stderr, "no huge pages for a %zu MiB buffer; 4 KiB pages (slower transport)\n", need >> 20);
+    }
     memset(p, 0, need);
     b->p = p;
     b->cap = need;

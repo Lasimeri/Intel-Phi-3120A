@@ -1,0 +1,285 @@
+From 3368ca98a6e0e6b3ff623805ca00cc03b26443a6 Mon Sep 17 00:00:00 2001
+From: Ian Haapanen <ian.haapanen@gmail.com>
+Date: Tue, 22 Sep 2026 10:51:18 -0500
+Subject: [PATCH] x86/knc: blk: a pinned completion poller that stalls between
+ polls while requests are outstanding
+
+The poller spun 2000 iterations after a completion and then napped in
+200 to 400 us steps, so a request posted after a short idle gap waited
+out a nap before its completion was seen: 0.2 to 0.4 ms on a request
+whose data moves in 0.1 ms, most of the transport of a small
+co-processor request (measured 2026-09-22,
+docs/results/2026-09-22-block-pipeline.md).
+
+Count the requests started and not yet completed; poll while there
+are any and for 5 ms after the last one, nap otherwise, and wake the
+poller from the publish path so a post ends a nap at once.
+
+Two things keep that polling from costing the program whose request it
+is waiting for. The poller is pinned to a hardware thread of its own
+(one per instance, one core below the last, whose fourth thread is
+CPU 0): unpinned, wake affinity put it on the CPU of the thread that
+posted the request, and the two split that CPU through the compute
+phase (a 10 ms spin took the VPU worker 16 M element kernel from
+3.2 ms to 8.7 ms). And between polls it stalls its thread with DELAY
+(knc_delay, new, ISA reference 327364-001 appendix A) instead of
+spinning: a spinning sibling on the same core still took a VPU
+thread slice from 2.6 ms to 5.9 ms. knc_delay.S carries the raw
+encoding, which the assembler does not know; the x86 opcode map (and
+its tools copy) marks the VEX.F3.0F AE /6 slot VEX-capable so that
+the kernel decoder, and objtool through it, can size the instruction.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/knc.h            |  2 +
+ arch/x86/kernel/Makefile              |  2 +-
+ arch/x86/kernel/knc_blk.c             | 61 +++++++++++++++++++++++----
+ arch/x86/kernel/knc_delay.S           | 22 ++++++++++
+ arch/x86/lib/x86-opcode-map.txt       |  4 +-
+ tools/arch/x86/lib/x86-opcode-map.txt |  4 +-
+ 6 files changed, 83 insertions(+), 12 deletions(-)
+ create mode 100644 arch/x86/kernel/knc_delay.S
+
+diff --git a/arch/x86/include/asm/knc.h b/arch/x86/include/asm/knc.h
+index 60fb2afa1..1fece9379 100644
+--- a/arch/x86/include/asm/knc.h
++++ b/arch/x86/include/asm/knc.h
+@@ -95,6 +95,8 @@ bool __init knc_ring_params(u64 *base, u64 *size);
+ 
+ /* Platform layer (knc.c). */
+ void knc_postcode(u32 code);
++/* Stall this hardware thread for `cycles` core clocks (DELAY r32, knc_delay.S). */
++void knc_delay(u32 cycles);
+ /*
+  * A progress word in .data (never .bss: clear_bss() would wipe it) that
+  * head_64.S writes with plain stores from the moment the kernel's own page
+diff --git a/arch/x86/kernel/Makefile b/arch/x86/kernel/Makefile
+index 67e435342..fb3cd73aa 100644
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -145,7 +145,7 @@ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+ obj-$(CONFIG_X86_PMEM_LEGACY_DEVICE) += pmem.o
+ 
+ obj-$(CONFIG_JAILHOUSE_GUEST)	+= jailhouse.o
+-obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o knc_hostmem.o knc_hwmon.o
++obj-$(CONFIG_X86_KNC)		+= knc.o knc_sfi.o knc_earlycon.o knc_tty.o knc_net.o knc_rpc.o knc_blk.o knc_hostmem.o knc_hwmon.o knc_delay.o
+ 
+ obj-$(CONFIG_EISA)		+= eisa.o
+ obj-$(CONFIG_PCSPKR_PLATFORM)	+= pcspeaker.o
+diff --git a/arch/x86/kernel/knc_blk.c b/arch/x86/kernel/knc_blk.c
+index 47559b218..d184b0c3b 100644
+--- a/arch/x86/kernel/knc_blk.c
++++ b/arch/x86/kernel/knc_blk.c
+@@ -18,8 +18,9 @@
+  *
+  * Slots are 512 KiB and there is one per in-flight request, so the tag is
+  * the slot number and the queue depth is the slot count. A kernel thread
+- * polls the completion ring (a spin after activity, 200 us sleeps when
+- * idle), copies read data out of the slot and completes the request.
++ * polls the completion ring (spinning while a request is outstanding,
++ * napping otherwise, woken by the next post), copies read data out of
++ * the slot and completes the request.
+  * Capacity comes from an identify record posted at init; the disk is
+  * registered from a workqueue when the host answers it (add_disk reads
+  * the device, so not from the poller).
+@@ -30,6 +31,7 @@
+ #include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/kthread.h>
++#include <linux/ktime.h>
+ #include <linux/module.h>
+ #include <linux/scatterlist.h>
+ #include <linux/slab.h>
+@@ -50,7 +52,8 @@
+ #define KNC_BLK_MAX_SLOTS	32
+ #define KNC_BLK_IDENT_TAG	0xffffffffu	/* identify; the host answers with this tag when it copies through the aperture */
+ #define KNC_BLK_IDENT_DIRECT	0xfffffffeu	/* the host answers with this tag when its path is coherent (DMA engine) */
+-#define KNC_BLK_SPIN		2000	/* idle polls before sleeping */
++#define KNC_BLK_GRACE_NS	(5 * NSEC_PER_MSEC)	/* keep polling this long after the last outstanding request completed */
++#define KNC_BLK_POLL_CYCLES	3300	/* the poller stalls its thread this long between polls (knc_delay): 3 us at 1.1 GHz, so that its own instructions are a few percent of the core */
+ #define KNC_BLK_MAX_SEGS	64	/* direct mode: records per request; depth * segs * 32 fits the ring */
+ 
+ /*
+@@ -92,6 +95,8 @@ struct knc_blk {
+ 	const struct knc_blk_kind *what;
+ 	bool direct;			/* this instance hands pages to the host */
+ 	u32 depth;			/* requests in flight: slots, or KNC_BLK_MAX_SLOTS when direct */
++	atomic_t outstanding;		/* requests started and not yet completed; the poller spins while there are any */
++	u64 active_ns;			/* when the last one completed; the poller spins KNC_BLK_GRACE_NS past it, then naps */
+ };
+ 
+ /* One instance per channel kind: kind 4 is /dev/phiblk0 (the disk image), kind 5 /dev/phiblk1 (host memory). */
+@@ -145,10 +150,21 @@ static void knc_blk_post(struct knc_blk *b, u32 tag, u32 op, u32 len, u64 sector
+ 	b->tx_head += KNC_BLK_REQ_SIZE;
+ }
+ 
++/*
++ * Publish the posted records, and make sure the poller is looking for
++ * their completions: it naps in 200 to 400 us steps while nothing is
++ * outstanding, and a request posted into a nap would otherwise wait it
++ * out before its completion was seen (0.2 to 0.4 ms on a request whose
++ * data moves in 0.1 ms; measured 2026-09-22,
++ * docs/results/2026-09-22-block-pipeline.md). The caller has already
++ * counted the request in `outstanding`, so the woken poller spins.
++ */
+ static void knc_blk_publish(struct knc_blk *b)
+ {
+ 	wmb();	/* records before the head that publishes them */
+ 	writel(b->tx_head, b->tx + RING_HEAD);
++	if (b->poller)
++		wake_up_process(b->poller);
+ }
+ 
+ static u32 knc_blk_tx_free(struct knc_blk *b)
+@@ -197,6 +213,7 @@ static blk_status_t knc_blk_queue_rq(struct blk_mq_hw_ctx *hctx, const struct bl
+ 			return BLK_STS_DEV_RESOURCE;
+ 		}
+ 		blk_mq_start_request(rq);
++		atomic_inc(&b->outstanding);
+ 		cmd->status = BLK_STS_OK;
+ 		atomic_set(&cmd->pending, nsegs);
+ 		b->reqs[tag] = rq;
+@@ -378,6 +395,8 @@ static void knc_blk_complete_one(struct knc_blk *b, u32 tag, u32 status)
+ 	spin_lock_irqsave(&b->lock, flags);
+ 	b->reqs[tag >> 8] = NULL;
+ 	spin_unlock_irqrestore(&b->lock, flags);
++	WRITE_ONCE(b->active_ns, ktime_get_ns());
++	atomic_dec(&b->outstanding);
+ 	if (cmd->status == BLK_STS_OK && !b->direct && req_op(rq) == REQ_OP_READ)
+ 		knc_blk_copy(rq, knc_blk_slot(b, tag >> 8), false);
+ 	blk_mq_complete_request(rq);
+@@ -386,7 +405,6 @@ static void knc_blk_complete_one(struct knc_blk *b, u32 tag, u32 status)
+ static int knc_blk_poll(void *data)
+ {
+ 	struct knc_blk *b = data;
+-	unsigned int idle = 0;
+ 
+ 	while (!kthread_should_stop()) {
+ 		u32 n = readl(b->rx + RING_HEAD) - b->rx_tail;
+@@ -399,13 +417,22 @@ static int knc_blk_poll(void *data)
+ 			continue;
+ 		}
+ 		if (n < KNC_BLK_CPL_SIZE) {
+-			if (++idle < KNC_BLK_SPIN)
+-				cpu_relax();
++			/*
++			 * Spin while a request is outstanding and for a few
++			 * milliseconds after the last one completed (the gaps
++			 * between one program's requests), nap otherwise; a post
++			 * ends the nap early (knc_blk_publish). The spin is on
++			 * this thread's own CPU (knc_blk_probe) and stalls the
++			 * thread between polls (knc_delay), so it costs the
++			 * program nothing.
++			 */
++			if (atomic_read(&b->outstanding) > 0 ||
++			    ktime_get_ns() - READ_ONCE(b->active_ns) < KNC_BLK_GRACE_NS)
++				knc_delay(KNC_BLK_POLL_CYCLES);
+ 			else
+ 				usleep_range(200, 400);
+ 			continue;
+ 		}
+-		idle = 0;
+ 		while (n >= KNC_BLK_CPL_SIZE) {
+ 			u8 rec[KNC_BLK_CPL_SIZE];
+ 
+@@ -425,7 +452,7 @@ static int __init knc_blk_probe(const struct knc_blk_kind *k, void __iomem *regi
+ {
+ 	struct knc_blk *b;
+ 	void __iomem *desc;
+-	u32 h2c_off, h2c_size, c2h_off, c2h_size, data_off, data_size, i;
++	u32 h2c_off, h2c_size, c2h_off, c2h_size, data_off, data_size, i, last;
+ 
+ 	if (!knc_ring_find(region, size, k->kind, &h2c_off, &h2c_size, &c2h_off, &c2h_size))
+ 		return -ENODEV;
+@@ -456,13 +483,29 @@ static int __init knc_blk_probe(const struct knc_blk_kind *k, void __iomem *regi
+ 	b->slots = min_t(u32, data_size / KNC_BLK_SLOT, KNC_BLK_MAX_SLOTS);
+ 	spin_lock_init(&b->lock);
+ 	INIT_WORK(&b->register_work, knc_blk_register_work);
+-	b->poller = kthread_run(knc_blk_poll, b, "%s-poll", k->name);
++	/*
++	 * The poller gets a hardware thread of its own, counted down from
++	 * the last CPU (one per instance), so that its spinning never
++	 * time-shares a CPU with the program whose request it is waiting
++	 * for. Unpinned, wake affinity put it on the CPU of the thread that
++	 * posted the request, and the two then split that CPU through the
++	 * program's compute phase (measured 2026-09-22: the VPU worker's
++	 * 16 M element kernel went from 3.2 ms to 8.7 ms). The upper
++	 * hardware threads of a core are free (the worker uses one per
++	 * core); not those of the last core, whose fourth thread is CPU 0
++	 * (the worker's dispatcher) on this SKU, so one core down from it.
++	 */
++	b->poller = kthread_create(knc_blk_poll, b, "%s-poll", k->name);
+ 	if (IS_ERR(b->poller)) {
+ 		int err = PTR_ERR(b->poller);
+ 
+ 		kfree(b);
+ 		return err;
+ 	}
++	last = cpumask_last(cpu_online_mask);
++	i = 4 + (k - knc_blk_kinds);
++	kthread_bind(b->poller, last >= i ? last - i : last);
++	wake_up_process(b->poller);
+ 	spin_lock_irq(&b->lock);
+ 	knc_blk_post(b, KNC_BLK_IDENT_TAG, KNC_BLK_OP_IDENT, 0, 0, 0);
+ 	knc_blk_publish(b);
+diff --git a/arch/x86/kernel/knc_delay.S b/arch/x86/kernel/knc_delay.S
+new file mode 100644
+index 000000000..8c8e534c7
+--- /dev/null
++++ b/arch/x86/kernel/knc_delay.S
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * knc_delay(cycles): stall the calling hardware thread for `cycles` core
++ * clocks. DELAY r32 (ISA reference 327364-001, appendix A, "DELAY - Stall
++ * Thread": VEX.128.F3.0F.W0 AE /6) stops the thread's fetch and issue for
++ * that long, so the core's other threads have it to themselves; a plain
++ * spin does not give them that (measured 2026-09-22: a poller spinning on
++ * readl beside a VPU worker thread on the same core took its slice of a
++ * 16 M element kernel from 2.6 ms to 5.9 ms). An interrupt on any thread
++ * of the core ends the stall early, which is fine for a poll loop.
++ *
++ * Raw bytes because the assembler does not know the mnemonic; the x86
++ * opcode map (arch/x86/lib and its tools copy) marks the slot VEX-capable
++ * so that the kernel decoder, and objtool with it, can size the
++ * instruction. ModRM F7 names edi, the first argument.
++ */
++#include <linux/linkage.h>
++
++SYM_FUNC_START(knc_delay)
++	.byte 0xc5, 0xfa, 0xae, 0xf7	/* delay %edi */
++	RET
++SYM_FUNC_END(knc_delay)
+diff --git a/arch/x86/lib/x86-opcode-map.txt b/arch/x86/lib/x86-opcode-map.txt
+index 2a4e69ecc..d63b2bfa8 100644
+--- a/arch/x86/lib/x86-opcode-map.txt
++++ b/arch/x86/lib/x86-opcode-map.txt
+@@ -1342,7 +1342,9 @@ GrpTable: Grp15
+ 3: vstmxcsr Md (v1) | WRGSBASE Ry (F3),(11B)
+ 4: XSAVE | ptwrite Ey (F3),(11B)
+ 5: XRSTOR | lfence (11B) | INCSSPD/Q Ry (F3),(11B)
+-6: XSAVEOPT | clwb (66) | mfence (11B) | TPAUSE Rd (66),(11B) | UMONITOR Rv (F3),(11B) | UMWAIT Rd (F2),(11B) | CLRSSBSY Mq (F3)
++# Knights Corner encodes DELAY r32 as VEX.128.F3.0F.W0 AE /6 (ISA reference 327364-001,
++# appendix A), the slot UMONITOR has here; (v1) lets the decoder size it (objtool).
++6: XSAVEOPT | clwb (66) | mfence (11B) | TPAUSE Rd (66),(11B) | UMONITOR Rv (F3),(11B),(v1) | UMWAIT Rd (F2),(11B) | CLRSSBSY Mq (F3)
+ 7: clflush | clflushopt (66) | sfence (11B)
+ EndTable
+ 
+diff --git a/tools/arch/x86/lib/x86-opcode-map.txt b/tools/arch/x86/lib/x86-opcode-map.txt
+index 2a4e69ecc..d63b2bfa8 100644
+--- a/tools/arch/x86/lib/x86-opcode-map.txt
++++ b/tools/arch/x86/lib/x86-opcode-map.txt
+@@ -1342,7 +1342,9 @@ GrpTable: Grp15
+ 3: vstmxcsr Md (v1) | WRGSBASE Ry (F3),(11B)
+ 4: XSAVE | ptwrite Ey (F3),(11B)
+ 5: XRSTOR | lfence (11B) | INCSSPD/Q Ry (F3),(11B)
+-6: XSAVEOPT | clwb (66) | mfence (11B) | TPAUSE Rd (66),(11B) | UMONITOR Rv (F3),(11B) | UMWAIT Rd (F2),(11B) | CLRSSBSY Mq (F3)
++# Knights Corner encodes DELAY r32 as VEX.128.F3.0F.W0 AE /6 (ISA reference 327364-001,
++# appendix A), the slot UMONITOR has here; (v1) lets the decoder size it (objtool).
++6: XSAVEOPT | clwb (66) | mfence (11B) | TPAUSE Rd (66),(11B) | UMONITOR Rv (F3),(11B),(v1) | UMWAIT Rd (F2),(11B) | CLRSSBSY Mq (F3)
+ 7: clflush | clflushopt (66) | sfence (11B)
+ EndTable
+ 
+-- 
+2.55.0
+

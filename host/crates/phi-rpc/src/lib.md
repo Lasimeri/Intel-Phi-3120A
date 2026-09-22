@@ -36,6 +36,9 @@ process state a byte, temperatures `i16` with -1 for absent). Unlike a
 session request, `Stat` may be sent while a session is open: the agent
 answers it from every state, and the daemon routes replies to requesters
 in order (`phictl/src/serve.md`). `Traffic` (tag 20) and `TrafficReply`
-(tag 21) are host-only like `Sensors`: the daemon's PCIe byte counters,
-four `u64`. `phitop` is the consumer of both; `phictl traffic` prints
-the counters.
+(tag 21) are host-only like `Sensors`: the daemon's PCIe counters, six
+`u64`: bytes by DMA into the card and out of it, bytes by the aperture
+in each direction, and DMA copies in each direction (2026-09-22; a
+daemon and a client are always the same build, so the two new fields
+are plain trailing fields, not optional ones). `phitop` is the consumer
+of both; `phictl traffic` prints the counters.

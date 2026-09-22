@@ -1,6 +1,6 @@
 # card/kernel
 
-A mainline Linux kernel for Knights Corner: a twenty-eight-patch series against
+A mainline Linux kernel for Knights Corner: a twenty-nine-patch series against
 a pinned stable tag (`patches/SERIES`), a Kconfig fragment
 (`config/knc.config`), and `build.sh`, which fetches, patches, configures,
 builds with the project's patched clang and audits the result.
@@ -41,6 +41,7 @@ Twenty-eight patches. Each patch is a reviewable commit whose message cites the 
 | 0026 | `x86/knc: host memory for the card: /dev/phiblk1 over ring channel 5, /dev/phihost` | `kernel/knc_blk.c`, `kernel/knc_hostmem.c`, `asm/knc_ring.h` | host RAM pinned by phictl --host-mem, announced in the region header; a second block device (swap by init) served by DMA, and /dev/phihost mapping the window uncached for zero-copy exchange with host processes |
 | 0027 | `x86/knc: the card's sensors as a hwmon device` | `kernel/knc_hwmon.c`, `kernel/knc.c`, `asm/knc.h` | die (9), board and TMU temperatures, core voltage (VR12 SVID) and clock (PLL ratio) from the SBOX as hwmon "knc"; decoding from Intel's RAS module; the platform layer decodes COREFREQ for the core clock when CURRENT_CLK_RATIO reads 0; the ratio register is CURRENTRATIO at 0x402C (KNC), not the KNF offset 0x3004 the merged MPSS header lists |
 | 0028 | `x86/knc: blk: report a request the host has not completed` | `kernel/knc_blk.c` | a blk-mq timeout operation: after 30 s without a completion it logs the tag, operation, size, sector, outstanding records and both rings' indices, then keeps waiting (the pages belong to the host's DMA engine until the completion arrives) |
+| 0029 | `x86/knc: blk: a pinned completion poller that stalls between polls while requests are outstanding` | `kernel/knc_blk.c`, `kernel/knc_delay.S`, `asm/knc.h`, `lib/x86-opcode-map.txt` (both copies) | the completion poller polls while requests are outstanding and 5 ms past the last one, naps otherwise and is woken by the next post (a nap cost 0.2 to 0.4 ms on a request whose data moves in 0.1 ms); pinned one core below the last so it never shares a CPU with the requester, and stalling its thread with DELAY r32 (knc_delay, ISA 327364-001 appendix A) between polls so a sibling VPU thread keeps its core; the opcode map marks the VEX.F3.0F AE /6 slot VEX-capable so objtool can size the instruction |
 
 Not in the series, deliberately: every card device is a patch rather than a
 module, because the console has to exist before a module could be loaded

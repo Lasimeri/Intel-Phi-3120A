@@ -227,6 +227,11 @@ pub struct Traffic {
     pub dma_from_card: u64,
     pub aperture_to_card: u64,
     pub aperture_from_card: u64,
+    /// DMA copies (descriptors) to the card and from it; the bytes above
+    /// divided by these are the mean copy sizes (added 2026-09-22: a
+    /// daemon and a client must be the same build, as they always are).
+    pub dma_copies_to_card: u64,
+    pub dma_copies_from_card: u64,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -543,7 +548,14 @@ impl Msg {
             }
             Msg::Traffic => TAG_TRAFFIC,
             Msg::TrafficReply(t) => {
-                for v in [t.dma_to_card, t.dma_from_card, t.aperture_to_card, t.aperture_from_card] {
+                for v in [
+                    t.dma_to_card,
+                    t.dma_from_card,
+                    t.aperture_to_card,
+                    t.aperture_from_card,
+                    t.dma_copies_to_card,
+                    t.dma_copies_from_card,
+                ] {
                     put_u64(&mut body, v);
                 }
                 TAG_TRAFFIC_REPLY
@@ -614,6 +626,8 @@ impl Msg {
                 dma_from_card: r.u64()?,
                 aperture_to_card: r.u64()?,
                 aperture_from_card: r.u64()?,
+                dma_copies_to_card: r.u64()?,
+                dma_copies_from_card: r.u64()?,
             }),
             t => return Err(DecodeError::Tag(t)),
         };
@@ -740,6 +754,8 @@ mod tests {
                 dma_from_card: 2,
                 aperture_to_card: 3,
                 aperture_from_card: u64::MAX,
+                dma_copies_to_card: 4,
+                dma_copies_from_card: 5,
             }),
         ]
     }

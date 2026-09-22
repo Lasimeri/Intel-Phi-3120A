@@ -115,12 +115,22 @@ the page cache would serve whatever the last reader saw:
   allocated and freed them per request, paying a page fault per 4 KiB
   on first touch
 
-The transport is now what bounds a request. The host-memory block path
-serves one 512 KiB record at a time with about 500 us of fixed latency
-each (`docs/results/2026-09-16-dma.md`), so 4 MiB each way costs about
-9 ms in and 4 ms out against 0.3 ms of compute. Pipelining records in
-the host daemon and the card driver is the next lever, and it is not in
-this file.
+- buffers come from 2 MiB huge pages when the card has some reserved
+  (`/proc/sys/vm/nr_hugepages`, which `scripts/phi-vpu.sh start` sets;
+  `-v` reports a fall-back to 4 KiB pages). The block driver posts one
+  record to the host per physically contiguous run of a buffer, so a
+  4 KiB-paged buffer fresh from `malloc` cost 15 records per 64 KiB and
+  88 per 512 KiB request, each a round trip of host work; a huge-paged
+  buffer is one record per 512 KiB request. Measured 2026-09-22 with
+  `blkbench.c` on card 0: a 512 KiB `pread` went from 1.8 ms to 0.24 ms,
+  16 MiB from 7.4 ms to 5.2 ms, the Gen2 x8 link.
+
+With the host daemon pipelining records, the card driver's poller
+staying awake around requests (kernel patch 0029) and huge pages, the
+transport for 65536 elements is 0.25 ms in and 0.17 ms out on card 0,
+against 0.05 ms of compute: 0.49 ms wall for a request that cost 2.9 ms
+the day it first worked (`docs/results/2026-09-22-block-pipeline.md`).
+64 MiB each way moves at the link, 21 ms in and 20 ms out.
 
 ## Status codes
 

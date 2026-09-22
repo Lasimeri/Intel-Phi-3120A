@@ -67,7 +67,8 @@ output and a reading. In date order:
 | [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
 | [2026-09-21-avx512-translation.md](results/2026-09-21-avx512-translation.md) | AVX-512 to MVEX is a two-bit rewrite; a translated kernel runs on all 57 vector units bit-identically to the host; four wrong guesses corrected by measurement |
 | [2026-09-22-avx512-coprocessor.md](results/2026-09-22-avx512-coprocessor.md) | The card as an AVX-512 co-processor end to end: doorbell, DMA, persistent pool, bit-exact results; where a request's time goes now |
-| [2026-09-22-second-card.md](results/2026-09-22-second-card.md) | A second card on the chipset: why it did not enumerate (aux power), the 3608 subsystem with an 8 GiB BAR, both cards booted and offloading side by side, phitop per card |
+| [2026-09-22-second-card.md](results/2026-09-22-second-card.md) | A second card on the chipset: why it did not enumerate (seating), the 3608 subsystem with an 8 GiB BAR, both cards booted and offloading side by side, phitop per card |
+| [2026-09-22-block-pipeline.md](results/2026-09-22-block-pipeline.md) | The transport, taken apart: one record per scattered 4 KiB page, 20 us of host work each; pipelined DMA, huge pages on the card, a poller that stays awake (patch 0029) and the KNC DELAY instruction; 65536 elements in 0.49 ms, 64 MiB each way at the link |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.

@@ -292,11 +292,14 @@ impl Relay {
 /// The daemon's PCIe byte counters as a message.
 fn traffic_now() -> Traffic {
     let [dma_to_card, dma_from_card, aperture_to_card, aperture_from_card] = phi_vfio::traffic::snapshot();
+    let [dma_copies_to_card, dma_copies_from_card] = phi_vfio::traffic::copies();
     Traffic {
         dma_to_card,
         dma_from_card,
         aperture_to_card,
         aperture_from_card,
+        dma_copies_to_card,
+        dma_copies_from_card,
     }
 }
 

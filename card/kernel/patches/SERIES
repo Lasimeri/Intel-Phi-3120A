@@ -27,3 +27,4 @@
 0026-x86-knc-host-memory-for-the-card-dev-phiblk1-over-ri.patch
 0027-x86-knc-the-card-s-sensors-as-a-hwmon-device.patch
 0028-x86-knc-blk-report-a-request-the-host-has-not-comple.patch
+0029-x86-knc-blk-a-pinned-completion-poller-that-stalls-b.patch

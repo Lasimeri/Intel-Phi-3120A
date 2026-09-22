@@ -11,6 +11,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub static DMA_TO_CARD: AtomicU64 = AtomicU64::new(0);
 /// Bytes the DMA engine copied into host memory.
 pub static DMA_FROM_CARD: AtomicU64 = AtomicU64::new(0);
+/// DMA copies (descriptors) into card memory; with the bytes, the mean
+/// copy size, which is what the block services are bound by.
+pub static DMA_COPIES_TO_CARD: AtomicU64 = AtomicU64::new(0);
+/// DMA copies into host memory.
+pub static DMA_COPIES_FROM_CARD: AtomicU64 = AtomicU64::new(0);
 /// Bytes written through the aperture (BAR0) by the host CPU.
 pub static APERTURE_TO_CARD: AtomicU64 = AtomicU64::new(0);
 /// Bytes read through the aperture by the host CPU.
@@ -28,6 +33,14 @@ pub fn snapshot() -> [u64; 4] {
         DMA_FROM_CARD.load(Ordering::Relaxed),
         APERTURE_TO_CARD.load(Ordering::Relaxed),
         APERTURE_FROM_CARD.load(Ordering::Relaxed),
+    ]
+}
+
+/// The two copy counts: DMA copies to the card, DMA copies from it.
+pub fn copies() -> [u64; 2] {
+    [
+        DMA_COPIES_TO_CARD.load(Ordering::Relaxed),
+        DMA_COPIES_FROM_CARD.load(Ordering::Relaxed),
     ]
 }
 

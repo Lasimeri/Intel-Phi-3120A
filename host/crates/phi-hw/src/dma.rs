@@ -174,7 +174,19 @@ pub fn smpt_identity(card: &Card, pages: u32) {
 /// set up from different threads.
 static DCR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Submissions the ring can hold at once: one 64-byte line (four
+/// descriptors) each, minus one line so the head never meets the tail.
+pub const MAX_IN_FLIGHT: u64 = (RING_DESCRIPTORS / 4 - 1) as u64;
+
+/// How long a submitted copy may stay incomplete before the channel is
+/// declared stuck.
+const COPY_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// A host-owned DMA channel with its descriptor ring in host memory.
+///
+/// Copies are submitted and completed separately, so many can be in the
+/// engine at once (`submit`, `poll`, `wait`); `copy` is the pair for a
+/// caller that wants one at a time.
 pub struct DmaChannel<'a> {
     card: &'a Card,
     chan: u32,
@@ -183,8 +195,16 @@ pub struct DmaChannel<'a> {
     /// Card address of a status word for host-to-card copies.
     status_card: u64,
     head: u32,
-    /// Copies completed, also the sequence number written by status descriptors.
+    /// Sequence number of the last submitted copy.
+    submitted: u64,
+    /// Sequence number of the last submitted copy whose status word lives
+    /// in card memory (a copy into the card); 0 when none is outstanding.
+    pending_to_card: u64,
+    /// Copies known complete, also the sequence number written by status
+    /// descriptors. Everything up to it is done: the engine completes in order.
     pub completed: u64,
+    /// When `completed` last advanced, or the last moment nothing was in flight.
+    progress: Instant,
 }
 
 impl<'a> DmaChannel<'a> {
@@ -202,6 +222,10 @@ impl<'a> DmaChannel<'a> {
         smpt_identity(card, 4);
         let mut ring = HostDmaBuffer::new(card, ring_iova, 8192)?;
         let addr = ring.card_addr();
+        // The card-side status word outlives this process: a previous daemon
+        // left its last sequence number there, which would read as completion
+        // of this one's first copies.
+        card.write_card_memory(status_card, &[0u8; 8])?;
         // Owner host, disabled while the ring is set. DCR is shared by all channels.
         let guard = DCR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dcr = card.sbox_read(sbox::DCR) & !(3 << (2 * chan));
@@ -215,7 +239,7 @@ impl<'a> DmaChannel<'a> {
         let dcar = card.sbox_read(sbox::dma_reg(chan, sbox::DCAR));
         card.sbox_write(sbox::dma_reg(chan, sbox::DCAR), dcar | sbox::DCAR_IM0 | sbox::DCAR_IM1);
         card.sbox_write(sbox::dma_reg(chan, sbox::DCHERRMSK), 0);
-        // Start on a cache line boundary (see `copy`): a fresh channel reports
+        // Start on a cache line boundary (see `submit`): a fresh channel reports
         // tail 0; anything else is realigned upwards with NOPs.
         let tail = card.sbox_read(sbox::dma_reg(chan, sbox::DTPR)) % RING_DESCRIPTORS;
         let head = tail.div_ceil(4) * 4 % RING_DESCRIPTORS;
@@ -244,7 +268,10 @@ impl<'a> DmaChannel<'a> {
             ring,
             status_card,
             head,
+            submitted: 0,
+            pending_to_card: 0,
             completed: 0,
+            progress: Instant::now(),
         };
         if head != tail {
             me.wait_idle()?;
@@ -257,6 +284,11 @@ impl<'a> DmaChannel<'a> {
         self.chan
     }
 
+    /// Copies submitted and not yet known complete.
+    pub fn in_flight(&self) -> u64 {
+        self.submitted - self.completed
+    }
+
     /// Wait until the engine has consumed everything up to the head.
     fn wait_idle(&self) -> Result<()> {
         let start = Instant::now();
@@ -265,7 +297,7 @@ impl<'a> DmaChannel<'a> {
             if tail == self.head {
                 return Ok(());
             }
-            if start.elapsed() > Duration::from_secs(2) {
+            if start.elapsed() > COPY_TIMEOUT {
                 return Err(Error::Dma(format!(
                     "channel {} did not drain (head {} tail {tail})",
                     self.chan, self.head
@@ -275,10 +307,23 @@ impl<'a> DmaChannel<'a> {
         }
     }
 
-    /// Copy `len` bytes from card address `src` to card address `dst`
-    /// (either may be host memory through the SMPT window) and wait until
-    /// the data is visible at the destination. Addresses and length must be
-    /// multiples of 64; the length at most 1 MiB minus 64.
+    /// The channel's registers, for a stuck-copy message.
+    fn describe(&self) -> String {
+        let tail = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DTPR)) % RING_DESCRIPTORS;
+        let err = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DCHERR));
+        let stat = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DSTAT));
+        format!(
+            "channel {}: head {} tail {tail}, completed {} of {} submitted, DCHERR {err:#x}, DSTAT {stat:#x}",
+            self.chan, self.head, self.completed, self.submitted
+        )
+    }
+
+    /// Submit a copy of `len` bytes from card address `src` to card address
+    /// `dst` (either may be host memory through the SMPT window) and return
+    /// its sequence number; `wait` or `poll` tell when the data is visible
+    /// at the destination. Addresses and length must be multiples of 64;
+    /// the length at most 1 MiB minus 64. Blocks only while the ring is
+    /// full (`MAX_IN_FLIGHT` copies outstanding).
     ///
     /// Completion is not the tail pointer: the engine advances it before its
     /// writes are visible in memory (measured 2026-09-16: 225 of 10000 rapid
@@ -288,27 +333,29 @@ impl<'a> DmaChannel<'a> {
     /// path, and two NOPs. The status word lives in host memory for copies
     /// into host memory and in card memory (read back through the aperture)
     /// for copies into the card, so its arrival implies the data's. This is
-    /// what MPSS's DMA library does with its poll ring.
-    pub fn copy(&mut self, src: u64, dst: u64, len: usize) -> Result<()> {
+    /// what MPSS's DMA library does with its poll ring. Sequence numbers
+    /// only grow and the engine runs the ring in order, so the larger of the
+    /// two words is the last copy done and everything before it is done too.
+    pub fn submit(&mut self, src: u64, dst: u64, len: usize) -> Result<u64> {
         if len == 0 || !len.is_multiple_of(64) || len >= 1 << 20 || !src.is_multiple_of(64) || !dst.is_multiple_of(64) {
             return Err(Error::Range(format!(
                 "DMA copy {src:#x} -> {dst:#x}, {len:#x} bytes: not 64-byte granular"
             )));
         }
+        while self.in_flight() >= MAX_IN_FLIGHT {
+            self.poll()?;
+            std::hint::spin_loop();
+        }
         let to_host = dst >= memory::SMPT_BASE;
-        let seq = self.completed + 1;
+        let seq = self.submitted + 1;
         let status_addr = if to_host { self.ring.card_addr() + 4096 } else { self.status_card };
         let (q0, q1) = sbox::dma_memcpy_desc(src, dst, len as u64);
         let (s0, s1) = sbox::dma_status_desc(seq, status_addr);
         debug_assert!(self.head.is_multiple_of(4));
         let slot = (self.head % RING_DESCRIPTORS) as usize * 16;
         let base = self.ring.as_mut_slice().as_mut_ptr();
-        // SAFETY: slot + 64 <= 4096 (the ring) and the status word at 4096 lie
-        // inside the 8 KiB buffer.
+        // SAFETY: slot + 64 <= 4096 (the ring) lies inside the 8 KiB buffer.
         unsafe {
-            if to_host {
-                ptr::write_volatile(base.add(4096) as *mut u64, 0);
-            }
             ptr::write_volatile(base.add(slot) as *mut u64, q0);
             ptr::write_volatile(base.add(slot + 8) as *mut u64, q1);
             ptr::write_volatile(base.add(slot + 16) as *mut u64, s0);
@@ -318,43 +365,76 @@ impl<'a> DmaChannel<'a> {
                 ptr::write_volatile(base.add(slot + nop * 16 + 8) as *mut u64, 0);
             }
         }
-        if !to_host {
-            let zero = [0u8; 8];
-            self.card.write_card_memory(self.status_card, &zero)?;
-        }
         std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         self.head = (self.head + 4) % RING_DESCRIPTORS;
         self.card.sbox_write(sbox::dma_reg(self.chan, sbox::DHPR), self.head);
-        let start = Instant::now();
-        loop {
-            let seen = if to_host {
-                // SAFETY: the status word is inside the pinned buffer.
-                unsafe { ptr::read_volatile(self.ring.as_slice().as_ptr().add(4096) as *const u64) }
-            } else {
-                let mut w = [0u8; 8];
-                self.card.read_card_memory(self.status_card, &mut w)?;
-                u64::from_le_bytes(w)
-            };
-            if seen == seq {
-                self.completed = seq;
-                if to_host {
-                    traffic::add(&traffic::DMA_FROM_CARD, len);
-                } else if src >= memory::SMPT_BASE {
-                    traffic::add(&traffic::DMA_TO_CARD, len);
-                }
-                return Ok(());
+        if self.in_flight() == 0 {
+            self.progress = Instant::now();
+        }
+        self.submitted = seq;
+        if !to_host {
+            self.pending_to_card = seq;
+        }
+        if to_host {
+            traffic::add(&traffic::DMA_FROM_CARD, len);
+            traffic::add(&traffic::DMA_COPIES_FROM_CARD, 1);
+        } else if src >= memory::SMPT_BASE {
+            traffic::add(&traffic::DMA_TO_CARD, len);
+            traffic::add(&traffic::DMA_COPIES_TO_CARD, 1);
+        }
+        Ok(seq)
+    }
+
+    /// The sequence number of the last completed copy, read from the status
+    /// words (the card's only when a copy into the card is outstanding: that
+    /// read is an aperture transaction). Fails when a copy has been
+    /// outstanding for `COPY_TIMEOUT`.
+    pub fn poll(&mut self) -> Result<u64> {
+        if self.in_flight() == 0 {
+            self.progress = Instant::now();
+            return Ok(self.completed);
+        }
+        // SAFETY: the status word is inside the pinned buffer; an aligned
+        // 8-byte load is atomic against the engine's 8-byte write.
+        let mut seen = unsafe { ptr::read_volatile(self.ring.as_slice().as_ptr().add(4096) as *const u64) };
+        if self.pending_to_card > seen {
+            let mut w = [0u8; 8];
+            self.card.read_card_memory(self.status_card, &mut w)?;
+            seen = seen.max(u64::from_le_bytes(w));
+        }
+        if seen > self.submitted {
+            return Err(Error::Dma(format!(
+                "status word {seen} is ahead of the {} copies submitted; {}",
+                self.submitted,
+                self.describe()
+            )));
+        }
+        if seen > self.completed {
+            self.completed = seen;
+            self.progress = Instant::now();
+            if self.pending_to_card <= seen {
+                self.pending_to_card = 0;
             }
-            if start.elapsed() > Duration::from_secs(2) {
-                let tail = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DTPR)) % RING_DESCRIPTORS;
-                let err = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DCHERR));
-                let stat = self.card.sbox_read(sbox::dma_reg(self.chan, sbox::DSTAT));
-                return Err(Error::Dma(format!(
-                    "channel {} timed out: head {} tail {tail}, status {seen} (want {seq}), DCHERR {err:#x}, DSTAT {stat:#x}",
-                    self.chan, self.head
-                )));
-            }
+        } else if self.progress.elapsed() > COPY_TIMEOUT {
+            return Err(Error::Dma(format!("copy {} timed out; {}", self.completed + 1, self.describe())));
+        }
+        Ok(self.completed)
+    }
+
+    /// Wait until the copy with sequence number `seq` is complete.
+    pub fn wait(&mut self, seq: u64) -> Result<()> {
+        while self.poll()? < seq {
             std::hint::spin_loop();
         }
+        Ok(())
+    }
+
+    /// Copy `len` bytes from card address `src` to card address `dst` and
+    /// wait until the data is visible at the destination: `submit` then
+    /// `wait`, for one copy at a time.
+    pub fn copy(&mut self, src: u64, dst: u64, len: usize) -> Result<()> {
+        let seq = self.submit(src, dst, len)?;
+        self.wait(seq)
     }
 }
 

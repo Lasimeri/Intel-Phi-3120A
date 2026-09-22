@@ -12,6 +12,7 @@
 //! in order; the image lives in the host's page cache and a flush request
 //! becomes fdatasync, so the card filesystem's barriers hold across a host
 //! crash the way a host filesystem's would.
+use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
 use std::thread;
@@ -22,7 +23,7 @@ use phi_hw::dma::{DmaChannel, HostDmaBuffer};
 use phi_hw::ringmem::ApertureRegion;
 use phi_hw::Card;
 use phi_ring::layout::ring_hdr;
-use phi_ring::{ChannelKind, Region, RingMemory};
+use phi_ring::{ChannelKind, Producer, Region, RingMemory};
 
 use crate::serve::wait_for_init;
 
@@ -45,6 +46,9 @@ pub const IDENT_TAG_DIRECT: u32 = 0xffff_fffe;
 pub const SECTOR: u64 = 512;
 /// Largest data length in one record (the card driver's slot size).
 pub const MAX_LEN: usize = 524_288;
+/// How long the service keeps polling after its last record before it
+/// sleeps between polls.
+const SPIN_AFTER_ACTIVITY: Duration = Duration::from_millis(20);
 
 /// IOMMU addresses of the DMA descriptor rings and staging buffers, one
 /// set per DMA channel (any unused range below the first SMPT page will do).
@@ -140,11 +144,13 @@ fn serve_one(
             }
         }
         OP_READ | OP_WRITE => {
-            let len = r.len as usize;
-            if len == 0 || len > MAX_LEN || !(len as u64).is_multiple_of(SECTOR) || r.sector + len as u64 / SECTOR > capacity {
-                stats.errors += 1;
-                return EINVAL;
-            }
+            let len = match check(r, capacity) {
+                Ok(len) => len,
+                Err(status) => {
+                    stats.errors += 1;
+                    return status;
+                }
+            };
             let off = r.sector * SECTOR;
             if r.op == OP_READ {
                 stats.reads += 1;
@@ -207,7 +213,6 @@ fn serve_one(
     }
 }
 
-/// Serve `path` on the block channel until the process ends.
 /// Open a disk image as a backend.
 pub fn open_image(path: &std::path::Path) -> Result<Backend> {
     let file = OpenOptions::new()
@@ -218,7 +223,88 @@ pub fn open_image(path: &std::path::Path) -> Result<Backend> {
     Ok(Backend::File(file))
 }
 
+/// A record the DMA engine is working on: its tag, and the sequence number
+/// of the copy that serves it.
+struct InFlight {
+    tag: u32,
+    seq: u64,
+}
+
+/// Check a read or write record against the limits; the data length, or
+/// the completion status that refuses it.
+fn check(r: &Request, capacity: u64) -> std::result::Result<usize, u32> {
+    let len = r.len as usize;
+    if len == 0 || len > MAX_LEN || !(len as u64).is_multiple_of(SECTOR) || r.sector + len as u64 / SECTOR > capacity {
+        return Err(EINVAL);
+    }
+    Ok(len)
+}
+
+/// Answer one record, waiting for room in the completion ring.
+fn complete(producer: &Producer, mem: &mut ApertureRegion<'_>, what: &str, anomalies: &mut u64, tag: u32, status: u32) {
+    let mut waited = 0u32;
+    while (producer.free(mem) as usize) < CPL_SIZE {
+        thread::sleep(Duration::from_millis(1));
+        waited += 1;
+        if waited == 100 || waited.is_multiple_of(10_000) {
+            let (h, t) = producer.indices(mem);
+            *anomalies += 1;
+            eprintln!("[phictl] disk: {what}: completion ring full for {waited} ms (head {h:#x} tail {t:#x}); anomaly {anomalies}");
+        }
+    }
+    producer.push(mem, &completion(tag, status));
+}
+
+/// Answer every record whose copy is done (`upto` is the last completed
+/// sequence number), oldest first.
+fn complete_done(
+    inflight: &mut VecDeque<InFlight>,
+    upto: u64,
+    producer: &Producer,
+    mem: &mut ApertureRegion<'_>,
+    what: &str,
+    anomalies: &mut u64,
+) {
+    while inflight.front().is_some_and(|f| f.seq <= upto) {
+        let f = inflight.pop_front().expect("checked non-empty");
+        complete(producer, mem, what, anomalies, f.tag, 0);
+    }
+}
+
+/// The engine failed or stalled: say so once, answer every outstanding
+/// record with an I/O error.
+fn fail_all(
+    inflight: &mut VecDeque<InFlight>,
+    e: &phi_hw::Error,
+    producer: &Producer,
+    mem: &mut ApertureRegion<'_>,
+    what: &str,
+    anomalies: &mut u64,
+    stats: &mut Stats,
+) {
+    eprintln!(
+        "[phictl] disk: {what}: DMA engine: {e}; failing {} record(s) in flight",
+        inflight.len()
+    );
+    stats.errors += inflight.len() as u64;
+    for f in inflight.drain(..) {
+        complete(producer, mem, what, anomalies, f.tag, EIO);
+    }
+}
+
 /// Serve `backend` on the channel of `kind` (DMA channel `chan_no`) until the process ends.
+///
+/// Records that the DMA engine can serve straight from the host memory
+/// window (a read or write of `Backend::Ram` on `Path::Dma`) are submitted
+/// as they arrive and answered as their copies complete, up to
+/// `MAX_IN_FLIGHT` at once; the card's driver posts one record per
+/// physical segment and keeps 32 requests open, so a 16 MiB transfer
+/// arrives as hundreds of records and the round trip per record, not the
+/// link, is what a serialised service is bound by (measured 2026-09-22,
+/// docs/results/2026-09-22-block-pipeline.md). Everything else (an image
+/// file, an aperture path, identify, flush) is served one at a time in
+/// order, after the pipeline has drained, so a flush never overtakes a
+/// write.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     card: &Card,
@@ -260,7 +346,15 @@ pub fn run(
     let mut trace: u32 = if std::env::var_os("PHICTL_DISK_TRACE").is_some() { 40 } else { 0 };
     let mut last_active = Instant::now();
     let mut anomalies: u64 = 0;
+    let mut inflight: VecDeque<InFlight> = VecDeque::new();
     loop {
+        // Copies the engine has finished since the last pass.
+        if let (false, Path::Dma { chan, .. }) = (inflight.is_empty(), &mut data_path) {
+            match chan.poll() {
+                Ok(done) => complete_done(&mut inflight, done, &producer, &mut mem, what, &mut anomalies),
+                Err(e) => fail_all(&mut inflight, &e, &producer, &mut mem, what, &mut anomalies, &mut stats),
+            }
+        }
         // The indices are handled here rather than by the generic consumer:
         // its resynchronisation on an impossible count discards records, and
         // a discarded block request hangs the card. An impossible count is
@@ -279,9 +373,14 @@ pub fn run(
             continue;
         }
         if (avail as usize) < REQ_SIZE {
-            // Spin briefly after activity (a request in flight usually has
-            // company), then back off to a short sleep.
-            if last_active.elapsed() < Duration::from_millis(3) {
+            // Completions are due: keep polling. Otherwise keep spinning for
+            // a while after activity, then back off to a short sleep: the
+            // sleep plus its wake-up is 0.25 ms on the first record of the
+            // next burst, which for a co-processor request of a few hundred
+            // KiB is most of its transport (measured 2026-09-22, the block
+            // pipeline results). Twenty milliseconds covers the gaps between
+            // the requests of one host program; an idle card costs nothing.
+            if !inflight.is_empty() || last_active.elapsed() < SPIN_AFTER_ACTIVITY {
                 std::hint::spin_loop();
             } else {
                 thread::sleep(Duration::from_micros(200));
@@ -303,6 +402,51 @@ pub fn run(
                 r.tag, r.op, r.len, r.sector, r.phys
             );
         }
+        // The pipelined path: the engine moves the bytes straight between the
+        // window and the card's page; the record is answered when its copy
+        // completes, in a later pass.
+        if let (OP_READ | OP_WRITE, Path::Dma { chan, .. }, Backend::Ram(ram)) = (r.op, &mut data_path, &backend) {
+            let len = match check(&r, capacity) {
+                Ok(len) => len,
+                Err(status) => {
+                    stats.errors += 1;
+                    complete(&producer, &mut mem, what, &mut anomalies, r.tag, status);
+                    continue;
+                }
+            };
+            let off = r.sector * SECTOR;
+            let submitted = if r.op == OP_READ {
+                stats.reads += 1;
+                stats.bytes_read += len as u64;
+                chan.submit(ram.card_addr() + off, r.phys, len)
+            } else {
+                stats.writes += 1;
+                stats.bytes_written += len as u64;
+                chan.submit(r.phys, ram.card_addr() + off, len)
+            };
+            match submitted {
+                Ok(seq) => inflight.push_back(InFlight { tag: r.tag, seq }),
+                Err(e) => {
+                    stats.errors += 1;
+                    eprintln!(
+                        "[phictl] disk: {what}: {} at sector {} ({len} bytes): {e}",
+                        if r.op == OP_READ { "read" } else { "write" },
+                        r.sector
+                    );
+                    complete(&producer, &mut mem, what, &mut anomalies, r.tag, EIO);
+                }
+            }
+            continue;
+        }
+        // Everything else keeps its place in the order: the pipeline drains
+        // first, so a flush or identify answers after every earlier copy.
+        if let (false, Path::Dma { chan, .. }) = (inflight.is_empty(), &mut data_path) {
+            let last = inflight.back().map_or(0, |f| f.seq);
+            match chan.wait(last) {
+                Ok(()) => complete_done(&mut inflight, last, &producer, &mut mem, what, &mut anomalies),
+                Err(e) => fail_all(&mut inflight, &e, &producer, &mut mem, what, &mut anomalies, &mut stats),
+            }
+        }
         let status = serve_one(card, &mut data_path, &mut backend, capacity, &r, &mut buf, &mut stats);
         // The identify answer tells the card whether to hand its pages over
         // (direct) or to bounce through its uncached slots. Both host paths are
@@ -318,17 +462,7 @@ pub fn run(
         } else {
             r.tag
         };
-        let mut waited = 0u32;
-        while (producer.free(&mem) as usize) < CPL_SIZE {
-            thread::sleep(Duration::from_millis(1));
-            waited += 1;
-            if waited == 100 || waited.is_multiple_of(10_000) {
-                let (h, t) = producer.indices(&mem);
-                anomalies += 1;
-                eprintln!("[phictl] disk: {what}: completion ring full for {waited} ms (head {h:#x} tail {t:#x}); anomaly {anomalies}");
-            }
-        }
-        producer.push(&mut mem, &completion(tag, status));
+        complete(&producer, &mut mem, what, &mut anomalies, tag, status);
     }
 }
 
