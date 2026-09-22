@@ -105,6 +105,15 @@ fn mem(insn: &Instruction) -> Result<Mem, Unsupported> {
     if insn.segment_prefix() != Register::None {
         return Err(refuse(insn, "segment prefix"));
     }
+    // Refused here, at the site that reports reasons, rather than left to
+    // the register map below: `Mem::new` asserts on these two and this
+    // tool must never panic on input it can describe.
+    if matches!(insn.memory_base(), Register::RSP | Register::R12) {
+        return Err(refuse(
+            insn,
+            "rsp or r12 as a memory base needs a SIB byte, which the MVEX encoder does not emit",
+        ));
+    }
     let base = insn.memory_base().pipe(gpr).ok_or_else(|| {
         refuse(
             insn,
@@ -127,6 +136,27 @@ impl<T> Pipe for T {}
 /// The checks that apply to every EVEX instruction before its mnemonic is
 /// even considered.
 fn check_common(insn: &Instruction) -> Result<(), Unsupported> {
+    // AVX-512VL. An EVEX instruction with L'L naming 128 or 256 bits is
+    // still EVEX, so it reaches here rather than being caught as legacy
+    // AVX, and its mnemonic is in the table below. Translating it would
+    // emit a 512-bit MVEX instruction that writes four times the width the
+    // program expects. Knights Corner vector instructions are 512-bit only
+    // and the machine has no xmm or ymm registers at all (ISA reference
+    // appendix B.2), so this is refused explicitly and by name rather than
+    // being left to the register-type helpers to reject as a side effect.
+    for i in 0..insn.op_count() {
+        if insn.op_kind(i) == OpKind::Register {
+            let r = insn.op_register(i);
+            if r.is_xmm() || r.is_ymm() {
+                return Err(refuse(
+                    insn,
+                    "AVX-512VL: the card is 512-bit only and has no xmm or ymm registers, so a \
+                     128-bit or 256-bit operation has to be re-expressed at 512 bits under a \
+                     write-mask that limits the active lanes",
+                ));
+            }
+        }
+    }
     if insn.zeroing_masking() {
         return Err(refuse(
             insn,
@@ -387,6 +417,34 @@ mod tests {
         assert!(refusal(&[0x62, 0xf1, 0x74, 0x48, 0x5f, 0xc2]).contains("NaN"));
         // vaddps zmm0 {k1}{z}, zmm1, zmm2: no zeroing masking on the card
         assert!(refusal(&[0x62, 0xf1, 0x74, 0xc9, 0x58, 0xc2]).contains("zeroing"));
+    }
+
+    /// The one path that could have produced a silently wrong answer.
+    ///
+    /// An AVX-512VL operation is EVEX-encoded, so it is not caught as
+    /// legacy AVX, and its mnemonic is in the translation table. If the
+    /// vector length were ignored it would become a 512-bit card
+    /// instruction writing four times the width the program asked for.
+    ///
+    /// EVEX bytes from `llvm-mc -mattr=+avx512f,+avx512vl`; a write mask
+    /// is present because without one the assembler picks the shorter VEX
+    /// form, which this tool rejects elsewhere.
+    #[test]
+    fn narrow_evex_forms_are_refused_not_widened() {
+        // vaddps xmm0 {k1}, xmm1, xmm2
+        assert!(refusal(&[0x62, 0xf1, 0x74, 0x09, 0x58, 0xc2]).contains("AVX-512VL"));
+        // vaddps ymm0 {k1}, ymm1, ymm2
+        assert!(refusal(&[0x62, 0xf1, 0x74, 0x29, 0x58, 0xc2]).contains("AVX-512VL"));
+    }
+
+    /// The encoder asserts on these two bases, so the translator has to
+    /// refuse them before it gets there. A panic is not an acceptable
+    /// answer for input the tool can name.
+    #[test]
+    fn sib_only_bases_are_refused_rather_than_panicking() {
+        // vmovaps zmm0, [rsp]
+        let out = refusal(&[0x62, 0xf1, 0x7c, 0x48, 0x28, 0x04, 0x24]);
+        assert!(out.contains("SIB") || out.contains("rsp"), "got: {out}");
     }
 
     /// A write mask is carried through unchanged, because both machines
