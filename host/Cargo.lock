@@ -369,6 +369,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "phi512"
+version = "0.1.0"
+dependencies = [
+ "iced-x86",
+ "libc",
+]
+
+[[package]]
 name = "phictl"
 version = "0.1.0"
 dependencies = [

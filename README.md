@@ -115,6 +115,33 @@ phi down              # stop; unmounts the card's disk first
 `scripts/phi-install.md` documents the stages, `scripts/phi.md` the rest of
 the commands. To do it by hand instead, or to understand what any stage is
 doing, `docs/reproducibility.md` is the walkthrough with durations.
+## Running AVX-512 on a host that has none
+
+This host is a Ryzen 7 5800X: AVX2 and FMA3, and no AVX-512 at all. The
+card's vector unit is 512 bits wide but speaks MVEX, an ancestor of the
+EVEX encoding AVX-512 uses. Two pieces bridge that:
+
+```sh
+scripts/phi512.sh ./a-program-built-for-avx512      # it just runs
+```
+
+The program is not modified, recompiled, or aware of any of this. It
+executes an AVX-512 instruction, the processor refuses it, and
+`libphi512` performs the instruction and lets it continue, bit-identically
+to what AVX-512 hardware would have produced.
+
+| piece | what it does |
+| --- | --- |
+| `host/crates/phi512` | catches the fault and performs the instruction on the host. Correctness first: the whole 512-bit register file is imaginary, held in memory, because this CPU has none. |
+| `host/crates/avx512-xlate` | rewrites AVX-512 into the card's own instruction set ahead of time, for kernels meant to run on the card's 57 vector units |
+
+Measured: a translated AVX-512 kernel runs on the card at **0.97x the speed
+this host reaches with its own native AVX2**, on an instruction set the host
+cannot execute at all
+([`docs/results/2026-09-21-avx512-translation.md`](docs/results/2026-09-21-avx512-translation.md)).
+What transparency costs, what is built and what is not:
+[`docs/research/avx512-transparency.md`](docs/research/avx512-transparency.md).
+
 ## Conventions
 
 Every source file has a sibling Markdown file with the same stem that explains

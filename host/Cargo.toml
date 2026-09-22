@@ -12,6 +12,7 @@ members = [
     "crates/phi-isa-audit",
     "crates/knc-mvex",
     "crates/avx512-xlate",
+    "crates/phi512",
     "crates/phitop",
 ]
 

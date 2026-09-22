@@ -1,0 +1,15 @@
+[package]
+name = "phi512"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "phi512"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iced-x86 = { workspace = true }
+libc = { workspace = true }
