@@ -248,19 +248,54 @@ extern "C" fn report() {
     }
 }
 
+/// Does this processor already have AVX-512? If so there is nothing to do
+/// and the handler is not installed: catching SIGILL on a machine where
+/// these instructions work would only add risk.
+fn host_has_avx512() -> bool {
+    // SAFETY: CPUID leaf 7 is architectural on anything running this code.
+    {
+        if core::arch::x86_64::__cpuid(0).eax < 7 {
+            return false;
+        }
+        core::arch::x86_64::__cpuid_count(7, 0).ebx & (1 << 16) != 0
+    }
+}
+
 /// Installed by the loader before the program's own `main` runs.
+///
+/// This may be loaded into **every process on the system** through
+/// `/etc/ld.so.preload`, including setuid binaries like `sudo`, so the
+/// contract here is strict: if anything is not as expected, return
+/// quietly and leave the process exactly as it would have been. It must
+/// never abort, never print unless asked, and never prevent a program
+/// from starting. A library that can brick the machine it is installed on
+/// is not worth the instructions it emulates.
 extern "C" fn init() {
+    // An explicit off switch that needs no root and no file edit. If this
+    // library ever makes a machine unbootable, this is the thing that can
+    // be set in a rescue shell.
+    if std::env::var_os("PHI512_DISABLE").is_some() {
+        return;
+    }
+    if host_has_avx512() {
+        return;
+    }
+
     VERBOSE.store(std::env::var_os("PHI512_VERBOSE").is_some(), Ordering::Relaxed);
     TRACE.store(std::env::var_os("PHI512_TRACE").is_some(), Ordering::Relaxed);
     YMM_OFFSET.store(probe_ymm_offset(), Ordering::Relaxed);
 
-    // SAFETY: standard sigaction installation.
+    // SAFETY: standard sigaction installation. A failure here is not
+    // fatal: without the handler the process behaves exactly as it would
+    // without this library loaded.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = on_sigill as *const () as usize;
         sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART | libc::SA_ONSTACK;
         libc::sigemptyset(&mut sa.sa_mask);
-        libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut());
+        if libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut()) != 0 {
+            return;
+        }
         libc::atexit(report);
     }
 

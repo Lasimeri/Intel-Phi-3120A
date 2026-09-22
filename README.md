@@ -117,30 +117,35 @@ the commands. To do it by hand instead, or to understand what any stage is
 doing, `docs/reproducibility.md` is the walkthrough with durations.
 ## Running AVX-512 on a host that has none
 
-This host is a Ryzen 7 5800X: AVX2 and FMA3, and no AVX-512 at all. The
-card's vector unit is 512 bits wide but speaks MVEX, an ancestor of the
-EVEX encoding AVX-512 uses. Two pieces bridge that:
+This host is a Ryzen 7 5800X: AVX2 and FMA3, and no AVX-512 at all. Two
+pieces bridge that, and they are different products:
 
 ```sh
-scripts/phi512.sh ./a-program-built-for-avx512      # it just runs
+scripts/phi512-install.sh --system     # every process, automatically
+phi512 ./a-program-built-for-avx512    # or one at a time
 ```
 
-The program is not modified, recompiled, or aware of any of this. It
-executes an AVX-512 instruction, the processor refuses it, and
-`libphi512` performs the instruction and lets it continue, bit-identically
-to what AVX-512 hardware would have produced.
+An unmodified program that executes an AVX-512 instruction then works. It
+is not recompiled, not patched on disk, and not aware of any of this: the
+processor refuses the instruction, `libphi512` performs it, and the program
+continues with the bits AVX-512 hardware would have produced.
 
-| piece | what it does |
-| --- | --- |
-| `host/crates/phi512` | catches the fault and performs the instruction on the host. Correctness first: the whole 512-bit register file is imaginary, held in memory, because this CPU has none. |
-| `host/crates/avx512-xlate` | rewrites AVX-512 into the card's own instruction set ahead of time, for kernels meant to run on the card's 57 vector units |
+| piece | what it does | where it runs |
+| --- | --- | --- |
+| `host/crates/phi512` | catches the fault and performs the instruction | the host, in software |
+| `host/crates/avx512-xlate` | rewrites AVX-512 into the card's own instruction set, ahead of time | the card's 57 vector units |
+
+Conformance is checked by compiling one source twice, native and AVX-512,
+and diffing the output (`scripts/phi512-check.sh`), so the reference is a
+real execution rather than a model. Fifteen kernels pass identically.
 
 Measured: a translated AVX-512 kernel runs on the card at **0.97x the speed
 this host reaches with its own native AVX2**, on an instruction set the host
 cannot execute at all
 ([`docs/results/2026-09-21-avx512-translation.md`](docs/results/2026-09-21-avx512-translation.md)).
-What transparency costs, what is built and what is not:
-[`docs/research/avx512-transparency.md`](docs/research/avx512-transparency.md).
+The software path is correct but slow, and
+[`docs/research/avx512-transparency.md`](docs/research/avx512-transparency.md)
+has what each stage costs, what is built and what is not.
 
 ## Conventions
 

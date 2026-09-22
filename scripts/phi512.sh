@@ -33,20 +33,27 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ $# -ge 1 ] || { echo "usage: $0 [--verbose] PROGRAM [args...]" >&2; exit 2; }
+# Where the library is. Three places, in order: an explicit override, the
+# build tree when this script is being run from a clone, and the installed
+# copy. The build tree wins during development so a fresh build is picked
+# up without reinstalling.
+lib="${PHI512_LIB:-}"
 
-# LD_PRELOAD splits its value on spaces and colons, and this repository is
-# normally cloned to a path with a space in it ("Intel Phi 3120A"). The
-# space-free symlink that toolchain/env.sh maintains is the way in; if it is
-# missing, make one, because there is no quoting that would help here.
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/intel-phi-3120a"
-if [ ! -e "$cache" ]; then ln -sfn "$root" "$cache"; fi
-
-lib=""
-for cand in "$cache/host/target/release/libphi512.so" "$cache/host/target/debug/libphi512.so"; do
-    [ -f "$cand" ] && { lib="$cand"; break; }
-done
-[ -n "$lib" ] || { echo "$0: libphi512.so not built; run: make build" >&2; exit 1; }
-case "$lib" in *" "*) echo "$0: the library path still contains a space, LD_PRELOAD cannot express it: $lib" >&2; exit 1 ;; esac
+if [ -z "$lib" ] && [ -d "$root/host/target" ]; then
+    # LD_PRELOAD splits its value on spaces and colons, and this repository
+    # is normally cloned to a path with a space in it ("Intel Phi 3120A").
+    # The space-free symlink that toolchain/env.sh maintains is the way in;
+    # if it is missing, make one, because no quoting would help here.
+    cache="${XDG_CACHE_HOME:-$HOME/.cache}/intel-phi-3120a"
+    if [ ! -e "$cache" ]; then ln -sfn "$root" "$cache"; fi
+    for cand in "$cache/host/target/release/libphi512.so" "$cache/host/target/debug/libphi512.so"; do
+        [ -f "$cand" ] && { lib="$cand"; break; }
+    done
+fi
+[ -n "$lib" ] || { [ -f /usr/lib/libphi512.so ] && lib=/usr/lib/libphi512.so; }
+[ -n "$lib" ] || { echo "$0: libphi512.so not found; run 'make build' or scripts/phi512-install.sh" >&2; exit 1; }
+[ -f "$lib" ] || { echo "$0: $lib is missing" >&2; exit 1; }
+case "$lib" in *" "*) echo "$0: the library path contains a space, which LD_PRELOAD cannot express: $lib" >&2; exit 1 ;; esac
 
 [ "$verbose" = 1 ] && export PHI512_VERBOSE=1
 exec env LD_PRELOAD="$lib${LD_PRELOAD:+:$LD_PRELOAD}" "$@"
