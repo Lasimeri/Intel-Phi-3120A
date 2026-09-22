@@ -50,5 +50,6 @@ into a hang, and it must not paper over its own gaps.
   how a thread's vector state actually begins.
 - `thread_local!` with `const` initialisation is used so that first touch
   inside a signal handler does not allocate.
-- Nothing is patched yet: every execution of every site faults. That is the
-  next thing to change, and it is where the 1909 ns goes.
+- After the instruction has been performed once, `patch::try_patch` rewrites
+  the site so it never faults again (`patch.md`). Only sites shorter than a
+  five-byte jump, the VEX-encoded mask instructions, keep faulting.

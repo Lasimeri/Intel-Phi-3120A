@@ -238,63 +238,20 @@ pub fn step(insn: &Instruction, st: &mut VState, cpu: &mut dyn Cpu) -> Result<()
     use Mnemonic::*;
     let m = insn.mnemonic();
 
-    // Each family below has a different shape: a different destination
-    // kind, a different meaning for the write-mask, or a different lane
-    // count on each side. They dispatch before the plain lane arithmetic.
-    if is_extend(m) {
-        return do_extend(insn, st, cpu);
-    }
-    if is_extract_insert(m) {
-        return do_extract_insert(insn, st, cpu);
-    }
-    if is_scalar(m) {
-        return do_scalar(insn, st, cpu);
-    }
-    if is_misc_int(m) {
-        return do_misc_int(insn, st, cpu);
-    }
-    if is_lane_move(m) {
-        return do_lane_move(insn, st, cpu);
-    }
-    if is_shift(m) {
-        return do_shift(insn, st, cpu);
-    }
-    if is_permute(m) {
-        return do_permute(insn, st, cpu);
-    }
-    if is_mask_op(m) {
-        return do_mask(insn, st, cpu);
-    }
-    if is_compare(m) {
-        return do_compare(insn, st, cpu);
-    }
-    if is_blend(m) {
-        return do_blend(insn, st, cpu);
-    }
-    if is_convert(m) {
-        return do_convert(insn, st, cpu);
-    }
-    if matches!(m, Vpternlogd | Vpternlogq) {
-        return do_ternlog(insn, st, cpu);
-    }
-
-    // Moves are their own shape: one of the two operands is memory, and
-    // there is no arithmetic.
-    if matches!(
-        m,
-        Vmovups | Vmovupd | Vmovaps | Vmovapd | Vmovdqu32 | Vmovdqu64 | Vmovdqa32 | Vmovdqa64
-    ) {
-        return do_move(insn, st, cpu);
-    }
-
+    // afterwards; putting eleven of those tests in front of the common
+    // case cost real time on every execution of every patched site.
     let lanes = match m {
         Vaddps | Vsubps | Vmulps | Vdivps | Vmaxps | Vminps | Vsqrtps | Vfmadd132ps | Vfmadd213ps | Vfmadd231ps | Vfmsub132ps
-        | Vfmsub213ps | Vfmsub231ps | Vxorps | Vandps | Vorps | Vbroadcastss => Lanes::F32,
+        | Vfmsub213ps | Vfmsub231ps | Vxorps | Vandps | Vorps | Vbroadcastss => Some(Lanes::F32),
         Vaddpd | Vsubpd | Vmulpd | Vdivpd | Vmaxpd | Vminpd | Vsqrtpd | Vfmadd132pd | Vfmadd213pd | Vfmadd231pd | Vxorpd | Vandpd
-        | Vorpd | Vbroadcastsd => Lanes::F64,
-        Vpaddd | Vpsubd | Vpmulld | Vpandd | Vpord | Vpxord | Vpandnd | Vpbroadcastd => Lanes::I32,
-        Vpaddq | Vpsubq | Vpmullq | Vpandq | Vporq | Vpxorq | Vpandnq | Vpbroadcastq => Lanes::I64,
-        _ => return Err(Unsupported(format!("{m:?} is not in the emulator's table"))),
+        | Vorpd | Vbroadcastsd => Some(Lanes::F64),
+        Vpaddd | Vpsubd | Vpmulld | Vpandd | Vpord | Vpxord | Vpandnd | Vpbroadcastd => Some(Lanes::I32),
+        Vpaddq | Vpsubq | Vpmullq | Vpandq | Vporq | Vpxorq | Vpandnq | Vpbroadcastq => Some(Lanes::I64),
+        _ => None,
+    };
+
+    let Some(lanes) = lanes else {
+        return step_uncommon(insn, st, cpu);
     };
 
     let dst = zmm_index(insn.op0_register())
@@ -1710,6 +1667,72 @@ fn do_extend(insn: &Instruction, st: &mut VState, cpu: &dyn Cpu) -> Result<(), U
     }
     Ok(())
 }
+/// Everything that is not plain lane arithmetic.
+///
+/// Each family here has a different shape: a different kind of
+/// destination, a different meaning for the write-mask, or a different
+/// number of lanes on each side. They are behind the common case
+/// rather than in front of it because every one of these tests used to
+/// run before an ordinary add could be recognised.
+#[cold]
+fn step_uncommon(insn: &Instruction, st: &mut VState, cpu: &mut dyn Cpu) -> Result<(), Unsupported> {
+    use Mnemonic::*;
+    let m = insn.mnemonic();
+    // Each family below has a different shape: a different destination
+    // kind, a different meaning for the write-mask, or a different lane
+    // count on each side. They dispatch before the plain lane arithmetic.
+    if is_extend(m) {
+        return do_extend(insn, st, cpu);
+    }
+    if is_extract_insert(m) {
+        return do_extract_insert(insn, st, cpu);
+    }
+    if is_scalar(m) {
+        return do_scalar(insn, st, cpu);
+    }
+    if is_misc_int(m) {
+        return do_misc_int(insn, st, cpu);
+    }
+    if is_lane_move(m) {
+        return do_lane_move(insn, st, cpu);
+    }
+    if is_shift(m) {
+        return do_shift(insn, st, cpu);
+    }
+    if is_permute(m) {
+        return do_permute(insn, st, cpu);
+    }
+    if is_mask_op(m) {
+        return do_mask(insn, st, cpu);
+    }
+    if is_compare(m) {
+        return do_compare(insn, st, cpu);
+    }
+    if is_blend(m) {
+        return do_blend(insn, st, cpu);
+    }
+    if is_convert(m) {
+        return do_convert(insn, st, cpu);
+    }
+    if matches!(m, Vpternlogd | Vpternlogq) {
+        return do_ternlog(insn, st, cpu);
+    }
+
+    // Moves are their own shape: one of the two operands is memory, and
+    // there is no arithmetic.
+    if matches!(
+        m,
+        Vmovups | Vmovupd | Vmovaps | Vmovapd | Vmovdqu32 | Vmovdqu64 | Vmovdqa32 | Vmovdqa64
+    ) {
+        return do_move(insn, st, cpu);
+    }
+
+    // The plain lane arithmetic is by far the most common thing a
+    // vectorised program does, so it is recognised first. The families
+    // below it each need a different shape of handling and are checked
+    Err(Unsupported(format!("{m:?} is not in the emulator's table")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

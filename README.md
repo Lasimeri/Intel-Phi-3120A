@@ -62,12 +62,12 @@ Dated measurements: [`docs/README.md`](docs/README.md#results) lists them.
 
 | Path | What lives there |
 | --- | --- |
-| `host/` | Rust workspace. Binaries: `phictl` (boot, console, control socket daemon, disk and host-memory service, SSH forwarder, sensors), `phitop` (live viewer), `phi-isa-audit` (flags KNC-illegal instructions in any x86-64 ELF), `knc-mvex-gen` (emits the vector-code files). Libraries: `phi-vfio` (VFIO device access, DMA mapping, PCIe byte counters), `phi-regs` (SBOX/DBOX register map, POST codes, bzImage header offsets), `phi-hw` (reset, boot, image loading, DMA engine), `phi-ring` (host side of the ring transport), `phi-rpc` (frames of the control channel, shared with the card agent), `knc-mvex` (MVEX encoder). |
-| `card/` | Everything that runs on the card: `kernel/` (28-patch series against v7.2.3, config fragment, build script), `agent/` (`phi-agent`, Rust, the card end of the control socket), `initramfs/` (`init` and the assembly script), `userland/components/` (busybox, dropbear, zlib, ncurses, CPython build scripts; clang packaging; gcc, tcc, QuickJS notes), `examples/` (benchmarks and probes compiled on the card), `drivers/phinet/include/phi_ring.h` (the C mirror of the ring layout). |
+| `host/` | Rust workspace. Binaries: `phictl` (boot, console, control socket daemon, disk and host-memory service, SSH forwarder, sensors), `phitop` (live viewer), `phi-isa-audit` (flags KNC-illegal instructions in any x86-64 ELF), `knc-mvex-gen` (emits the vector-code files). Libraries: `phi-vfio` (VFIO device access, DMA mapping, PCIe byte counters), `phi-regs` (SBOX/DBOX register map, POST codes, bzImage header offsets), `phi-hw` (reset, boot, image loading, DMA engine), `phi-ring` (host side of the ring transport), `phi-rpc` (frames of the control channel, shared with the card agent), `knc-mvex` (MVEX encoder). AVX-512: `avx512-xlate` (EVEX to MVEX translator), `phi512` (the `LD_PRELOAD` library that performs AVX-512 in software on a host without it), `phi-vpu` (hands AVX-512 work to the card's vector units). |
+| `card/` | Everything that runs on the card: `kernel/` (28-patch series against v7.2.3, config fragment, build script), `agent/` (`phi-agent`, Rust, the card end of the control socket), `initramfs/` (`init` and the assembly script), `userland/components/` (busybox, dropbear, zlib, ncurses, CPython build scripts; clang packaging; gcc, tcc, QuickJS notes), `examples/` (benchmarks and probes compiled on the card), `vpu/` (the resident AVX-512 co-processor worker and its host/card protocol), `drivers/phinet/include/phi_ring.h` (the C mirror of the ring layout). |
 | `toolchain/` | How code for the card is compiled: the LLVM patch series and build script (three variants), `knc-cc`/`knc-c++` wrappers, musl, compiler-rt, libunwind, libc++, the Rust target JSON and `build-std`, the phase P2 exit check. |
-| `scripts/` | `phi.sh`, the one command a person uses (`phi up/run/sh/top/status/down`), plus what it drives: host setup (`setup-arch.sh`), card verification and VFIO binding, the card's daily drivers (`phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh`), reference fetching, documentation lint. Each script has a sibling `.md`. |
+| `scripts/` | `phi.sh`, the one command a person uses (`phi up/run/sh/top/status/down`), plus what it drives: host setup (`setup-arch.sh`), card verification and VFIO binding, the card's daily drivers (`phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh`), reference fetching, documentation lint, and the AVX-512 pieces (`phi-vpu.sh` deploys and drives the card worker; `phi512.sh`, `phi512-check.sh`, `phi512-install.sh`, `phi512-ground.sh` run, verify, install and ground the software path). Each script has a sibling `.md`. |
 | `docs/` | `reproducibility.md` (the fresh-clone walkthrough), `hardware.md`, `plan.md`, `howto/` (build and run, direct access, monitoring, secure access), `spec/` (ring protocol, SBOX registers), `decisions/` (ADRs), `research/`, `results/` (dated measurements). |
-| `tools/` | Two C helpers compiled with `tcc`: the ring layout cross-check and a boot-path bisection stub. |
+| `tools/` | C helpers compiled with `tcc` or `gcc`: the two layout cross-checks (ring transport, offload protocol), a boot-path bisection stub, and the AVX-512 conformance, demo and vector-generation programs. |
 | `vendor/` | Git-ignored. Reference material fetched by `scripts/fetch-vendor.sh` (MPSS 3.8.6 archives, Intel's k1om kernel tree, PDFs). Never committed, never linked into builds. |
 
 ## Where to start
@@ -117,35 +117,53 @@ the commands. To do it by hand instead, or to understand what any stage is
 doing, `docs/reproducibility.md` is the walkthrough with durations.
 ## Running AVX-512 on a host that has none
 
-This host is a Ryzen 7 5800X: AVX2 and FMA3, and no AVX-512 at all. Two
-pieces bridge that, and they are different products:
+This host is a Ryzen 7 5800X: AVX2 and FMA3, and no AVX-512 at all. **The
+card executes AVX-512 on its behalf.** A kernel's AVX-512 machine code is
+rewritten into the card's own instruction set ahead of time (a two-bit
+change per instruction for the arithmetic that maps 1:1), a resident worker
+on the card runs it across the 57 vector units, and every result lane is
+the bit AVX-512 hardware would have produced.
+
+```sh
+scripts/phi-vpu.sh poly --n 16777216 --threads 57   # deploy, start, run, verify
+```
+
+| piece | what it does | where it runs |
+| --- | --- | --- |
+| `host/crates/avx512-xlate` | rewrites AVX-512 into the card's own instruction set, ahead of time | the host, once |
+| `card/vpu` | the resident worker: doorbell in host memory, DMA in, 57 pinned vector threads, DMA out | the card |
+| `host/crates/phi-vpu` | fills the window, rings the doorbell, checks every lane against this host's FMA hardware | the host |
+| `host/crates/phi512` | the fallback: catches the `SIGILL` and performs the instruction in software, rewriting the site so it never faults again | the host |
+
+Measured 2026-09-22: **316 GFLOP/s on the vector units** for a
+16-million-element kernel, bit-identical to the host's FMA3 throughout;
+0.3 ms of compute per million elements once the thread pool is warm. The
+transport is now the bound: the host-memory block path serves one 512 KiB
+record at a time, so moving that kernel's data costs about 70 ms against
+3 ms of compute
+([`docs/results/2026-09-22-avx512-coprocessor.md`](docs/results/2026-09-22-avx512-coprocessor.md)).
+
+The comparison that matters for a host with no AVX-512 is against running
+the same code in software, which is the only other way to run it at all.
+The same 65536-element kernel takes 26.5 ms under `phi512` and 4.0 ms on
+the card, transport included.
+
+The software path is also what makes unmodified binaries work at all:
 
 ```sh
 scripts/phi512-install.sh --system     # every process, automatically
 phi512 ./a-program-built-for-avx512    # or one at a time
 ```
 
-An unmodified program that executes an AVX-512 instruction then works. It
-is not recompiled, not patched on disk, and not aware of any of this: the
-processor refuses the instruction, `libphi512` performs it, and the program
-continues with the bits AVX-512 hardware would have produced.
-
-| piece | what it does | where it runs |
-| --- | --- | --- |
-| `host/crates/phi512` | catches the fault and performs the instruction | the host, in software |
-| `host/crates/avx512-xlate` | rewrites AVX-512 into the card's own instruction set, ahead of time | the card's 57 vector units |
-
-Conformance is checked by compiling one source twice, native and AVX-512,
-and diffing the output (`scripts/phi512-check.sh`), so the reference is a
-real execution rather than a model. Fifteen kernels pass identically.
-
-Measured: a translated AVX-512 kernel runs on the card at **0.97x the speed
-this host reaches with its own native AVX2**, on an instruction set the host
-cannot execute at all
-([`docs/results/2026-09-21-avx512-translation.md`](docs/results/2026-09-21-avx512-translation.md)).
-The software path is correct but slow, and
+The program is not recompiled, not patched on disk, and not aware of any of
+this. Conformance is checked by compiling one source twice, native and
+AVX-512, and diffing the output (`scripts/phi512-check.sh`), and
+`scripts/phi512-ground.sh` requires the host's FMA3 hardware, the software
+path and the card to agree to the bit on one program.
+[`docs/research/avx512-on-knc.md`](docs/research/avx512-on-knc.md) is the
+precision audit that gates all of it;
 [`docs/research/avx512-transparency.md`](docs/research/avx512-transparency.md)
-has what each stage costs, what is built and what is not.
+has what each stage of the software path costs.
 
 ## Conventions
 

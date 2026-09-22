@@ -33,6 +33,8 @@
 use iced_x86::{CpuidFeature, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
 pub mod emulate;
+pub mod frame;
+pub mod patch;
 pub mod state;
 
 #[cfg(not(test))]
@@ -118,4 +120,17 @@ pub fn touches_memory(insn: &Instruction) -> bool {
 /// a precise message instead of a crash when it meets something new.
 pub fn is_supported(m: Mnemonic) -> bool {
     emulate::supported(m)
+}
+
+/// Diagnostic hook: name an instruction that could not be rewritten
+/// because it is shorter than a jump. Wired to the handler's reporting so
+/// the cost shows up as a list of mnemonics rather than only a count.
+pub fn report_short(rip: u64, len: usize, bytes: &[u8]) {
+    if std::env::var_os("PHI512_VERBOSE").is_none() {
+        return;
+    }
+    let insn = decode_at(&bytes[..len.min(15)], rip);
+    let msg = format!("phi512: cannot rewrite {:?} ({len} bytes, a jump needs 5)\n", insn.mnemonic());
+    // SAFETY: writing a byte buffer we own to stderr.
+    unsafe { libc::write(2, msg.as_ptr() as *const libc::c_void, msg.len()) };
 }

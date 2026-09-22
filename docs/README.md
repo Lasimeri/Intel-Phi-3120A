@@ -64,6 +64,8 @@ output and a reading. In date order:
 | [2026-09-19-zstd.md](results/2026-09-19-zstd.md) | zstd 1.5.7 against the host: 0.03 to 0.07x, why cheap-per-byte algorithms lose here, and a CMOV the patched LLVM still emits |
 | [2026-09-19-xz.md](results/2026-09-19-xz.md) | xz 5.8.3 on the card against the host: 0.22 to 0.26x, block count is the real thread limit, and a portability bug in liblzma's range decoder |
 | [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
+| [2026-09-21-avx512-translation.md](results/2026-09-21-avx512-translation.md) | AVX-512 to MVEX is a two-bit rewrite; a translated kernel runs on all 57 vector units bit-identically to the host; four wrong guesses corrected by measurement |
+| [2026-09-22-avx512-coprocessor.md](results/2026-09-22-avx512-coprocessor.md) | The card as an AVX-512 co-processor end to end: doorbell, DMA, persistent pool, bit-exact results; where a request's time goes now |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.

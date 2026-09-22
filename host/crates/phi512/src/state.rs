@@ -85,8 +85,8 @@ impl VState {
     /// Record the low 256 bits of every aliasable register as this
     /// library is leaving them.
     pub fn note_write(&mut self) {
-        for i in 0..16 {
-            self.last_low[i].copy_from_slice(&self.zmm[i][..32]);
+        for (last, reg) in self.last_low.iter_mut().zip(&self.zmm) {
+            last.copy_from_slice(&reg[..32]);
         }
     }
 
@@ -115,5 +115,90 @@ impl VState {
     /// coincidence in 256 bits.
     pub fn upper_is_stale(&self, i: usize, live_low: &[u8]) -> bool {
         i < 16 && live_low != self.last_low[i]
+    }
+}
+
+/// The imaginary registers, one set per thread.
+///
+/// Both ways into the emulator use this same storage: the fault handler,
+/// and a patched site calling back. A program that has some of its
+/// AVX-512 sites patched and some not must still see one coherent set of
+/// registers, so there is exactly one of these per thread and not one per
+/// entry path.
+///
+/// `const` initialisation matters: the first touch may be inside a signal
+/// handler, where allocating would be a deadlock waiting to happen.
+pub mod tls {
+    use super::VState;
+    use std::cell::UnsafeCell;
+
+    thread_local! {
+        static STATE: UnsafeCell<VState> = const { UnsafeCell::new(VState::new()) };
+    }
+
+    /// Run `f` with this thread's registers.
+    ///
+    /// The `&mut` is sound because the state is thread-local and neither
+    /// caller re-enters: a signal handler cannot interrupt itself, and a
+    /// patched site cannot fault while inside the emulator.
+    pub fn with<R>(f: impl FnOnce(&mut VState) -> R) -> R {
+        STATE.with(|s| f(unsafe { &mut *s.get() }))
+    }
+}
+
+impl VState {
+    /// Take the live low 256 bits of `zmm0` to `zmm15` from wherever the
+    /// caller found them, applying the VEX-zeroing rule on the way in.
+    ///
+    /// Both entry paths need this and both get the values from somewhere
+    /// different: the fault handler reads them out of the signal frame's
+    /// XSAVE area, a patched site reads them off its own stack. The rule
+    /// applied to them is the same, so it lives here rather than in
+    /// either one.
+    pub fn sync_in(&mut self, live: &[[u8; 32]; 16]) {
+        self.sync_in_masked(live, u32::MAX);
+    }
+
+    /// Write the low 256 bits back and remember them, so the next
+    /// `sync_in` can tell whether anything else has been at them.
+    pub fn sync_out(&mut self, live: &mut [[u8; 32]; 16]) {
+        self.sync_out_masked(live, u32::MAX);
+    }
+}
+
+impl VState {
+    /// The same as [`VState::sync_in`], but only for the registers named
+    /// by `mask`.
+    ///
+    /// An instruction names at most three or four vector registers, so
+    /// synchronising all sixteen copies about a kilobyte per execution to
+    /// no purpose. The set is worked out once, when the site is rewritten.
+    ///
+    /// Skipping a register is safe for the staleness rule as well as for
+    /// the value: `last_low` is only updated for registers that were
+    /// synchronised, so a register left alone still carries whatever it
+    /// was last seen holding, and the comparison that detects an outside
+    /// write is still valid the next time it is looked at.
+    pub fn sync_in_masked(&mut self, live: &[[u8; 32]; 16], mask: u32) {
+        for (i, live) in live.iter().enumerate() {
+            if mask & (1 << i) == 0 {
+                continue;
+            }
+            if self.upper_is_stale(i, live) {
+                self.zmm[i][32..].fill(0);
+            }
+            self.zmm[i][..32].copy_from_slice(live);
+        }
+    }
+
+    /// The counterpart of [`VState::sync_in_masked`].
+    pub fn sync_out_masked(&mut self, live: &mut [[u8; 32]; 16], mask: u32) {
+        for (i, live) in live.iter_mut().enumerate() {
+            if mask & (1 << i) == 0 {
+                continue;
+            }
+            live.copy_from_slice(&self.zmm[i][..32]);
+            self.last_low[i].copy_from_slice(&self.zmm[i][..32]);
+        }
     }
 }

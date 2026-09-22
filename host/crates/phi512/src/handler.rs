@@ -4,7 +4,7 @@
 //! Installed from `.init_array`, so `LD_PRELOAD` is enough and the program
 //! needs no cooperation of any kind.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use iced_x86::Register;
 
@@ -33,13 +33,8 @@ const REG_EFL: usize = 17;
 static EMULATED: AtomicU64 = AtomicU64::new(0);
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static TRACE: AtomicBool = AtomicBool::new(false);
-
-// The imaginary register file, one per thread. `const` initialisation
-// means no allocation happens on first touch, which matters because the
-// first touch is inside a signal handler.
-thread_local! {
-    static STATE: std::cell::UnsafeCell<VState> = const { std::cell::UnsafeCell::new(VState::new()) };
-}
+static PREV_SIGTRAP: AtomicUsize = AtomicUsize::new(0);
+static PATCHING_ON: AtomicBool = AtomicBool::new(true);
 
 /// The program's scalar registers, read and written straight in the signal
 /// frame. Writing here is how a result reaches the program: when the
@@ -162,14 +157,57 @@ extern "C" fn on_sigill(_sig: i32, _info: *mut libc::siginfo_t, ctx: *mut libc::
     // SAFETY: the kernel handed us this frame.
     let rip = unsafe { (*uc).uc_mcontext.gregs[REG_RIP] } as u64;
 
+    // A fault can outlive the instruction that caused it. Between the
+    // processor raising this signal and the handler running, another
+    // thread may have rewritten this very site, so the bytes here are now
+    // a jump rather than the AVX-512 instruction that faulted. Decoding
+    // them would find a perfectly legal `jmp`, conclude the fault was not
+    // ours, and kill the program.
+    //
+    // Returning without moving the instruction pointer re-executes the
+    // site, which now jumps to the stub and does the work properly.
+    if let Some(index) = crate::patch::site_at(rip) {
+        crate::patch::await_ready(index);
+        crate::patch::RACED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+
     // The longest x86-64 instruction is 15 bytes. Reading them is safe:
     // the processor just fetched from here.
     let bytes = unsafe { std::slice::from_raw_parts(rip as *const u8, 15) };
     let insn = decode_at(bytes, rip);
 
     if !is_avx512(&insn) {
-        // Not ours. Restore the default action and return, so the process
-        // dies the way it would have without this library loaded.
+        // Check again before giving up. The first check happened before
+        // these bytes were read, and another thread can rewrite the site
+        // in between: the fault was raised for an AVX-512 instruction
+        // that no longer exists, and what was read is the jump that
+        // replaced it. Giving up here would kill a program that is
+        // perfectly healthy.
+        if let Some(index) = crate::patch::site_at(rip) {
+            crate::patch::await_ready(index);
+            crate::patch::RACED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        // Genuinely not ours. Restore the default action and return, so
+        // the process dies the way it would have without this library.
+        if VERBOSE.load(Ordering::Relaxed) {
+            let mut hb = [0u8; 64];
+            let mut nb = [0u8; 24];
+            let mut cb = [0u8; 24];
+            let mut sb = [0u8; 24];
+            say(&[
+                "phi512: illegal instruction that is not AVX-512 at ",
+                num(rip, &mut nb),
+                ": ",
+                hex(&bytes[..8], &mut hb),
+                " sites=",
+                num(crate::patch::site_count() as u64, &mut cb),
+                " nearest=",
+                num(crate::patch::nearest_site(rip), &mut sb),
+                "\n",
+            ]);
+        }
         unsafe {
             libc::signal(libc::SIGILL, libc::SIG_DFL);
         }
@@ -209,10 +247,7 @@ extern "C" fn on_sigill(_sig: i32, _info: *mut libc::siginfo_t, ctx: *mut libc::
     // instructions use without faulting, so they are read fresh from the
     // frame rather than remembered.
     let mut frame = Frame(uc);
-    let result = STATE.with(|s| {
-        // SAFETY: one thread, one state, and a signal handler on that
-        // thread cannot run concurrently with itself.
-        let st = unsafe { &mut *s.get() };
+    let result = crate::state::tls::with(|st| {
         pull_live_registers(uc, st);
         let r = emulate::step(&insn, st, &mut frame);
         if r.is_ok() {
@@ -231,21 +266,84 @@ extern "C" fn on_sigill(_sig: i32, _info: *mut libc::siginfo_t, ctx: *mut libc::
     }
 
     EMULATED.fetch_add(1, Ordering::Relaxed);
+
+    // Now that the instruction has been performed once, rewrite the site
+    // so it never faults again. This happens after the emulation, not
+    // instead of it: the program is mid-instruction and still needs this
+    // one done. Failure is not an error, it only means the site keeps
+    // faulting.
+    if PATCHING_ON.load(Ordering::Relaxed) {
+        crate::patch::try_patch(rip, insn.len(), bytes);
+    }
+
     // Step over the instruction we just performed.
     unsafe {
         (*uc).uc_mcontext.gregs[REG_RIP] = insn.next_ip() as i64;
     }
 }
 
-extern "C" fn report() {
-    if VERBOSE.load(Ordering::Relaxed) {
-        let mut b = [0u8; 24];
-        say(&[
-            "phi512: performed ",
-            num(EMULATED.load(Ordering::Relaxed), &mut b),
-            " AVX-512 instructions\n",
-        ]);
+/// Someone executed the breakpoint that sits in a site for the few stores
+/// it takes to rewrite it.
+///
+/// This is not an error: it means another thread reached the instruction
+/// while it was being replaced. Wait for the rewrite to finish, put the
+/// instruction pointer back to the start of the site, and let it run the
+/// jump that is now there.
+///
+/// A breakpoint anywhere else belongs to somebody else, most likely a
+/// debugger, and is passed on untouched.
+extern "C" fn on_sigtrap(sig: i32, info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
+    let uc = ctx as *mut libc::ucontext_t;
+    // SAFETY: the kernel handed us this frame.
+    let after = unsafe { (*uc).uc_mcontext.gregs[REG_RIP] } as u64;
+    // int3 is one byte, and the reported address is the one after it.
+    let site_addr = after.wrapping_sub(1);
+
+    crate::patch::TRAPS.fetch_add(1, Ordering::Relaxed);
+    if let Some(index) = crate::patch::site_at(site_addr) {
+        crate::patch::await_ready(index);
+        // SAFETY: as above. Re-executing the site now runs the jump.
+        unsafe { (*uc).uc_mcontext.gregs[REG_RIP] = site_addr as i64 };
+        return;
     }
+
+    crate::patch::TRAPS_FOREIGN.fetch_add(1, Ordering::Relaxed);
+    // Not ours. Hand it to whoever had SIGTRAP before, or to the default.
+    let prev = PREV_SIGTRAP.load(Ordering::Relaxed);
+    if prev != 0 && prev != libc::SIG_DFL && prev != libc::SIG_IGN {
+        // SAFETY: the value came from a previous sigaction, so it is a
+        // handler of this shape.
+        let f: extern "C" fn(i32, *mut libc::siginfo_t, *mut libc::c_void) = unsafe { std::mem::transmute(prev) };
+        f(sig, info, ctx);
+        return;
+    }
+    // SAFETY: restoring the default action for a signal we installed.
+    unsafe {
+        libc::signal(libc::SIGTRAP, libc::SIG_DFL);
+    }
+}
+extern "C" fn report() {
+    if !VERBOSE.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut a = [0u8; 24];
+    let mut b = [0u8; 24];
+    let mut c = [0u8; 24];
+    let mut d = [0u8; 24];
+    let mut e = [0u8; 24];
+    say(&[
+        "phi512: performed ",
+        num(EMULATED.load(Ordering::Relaxed), &mut a),
+        " AVX-512 instructions, rewrote ",
+        num(crate::patch::PATCHED.load(Ordering::Relaxed), &mut b),
+        " sites (",
+        num(crate::patch::TOO_SHORT.load(Ordering::Relaxed), &mut c),
+        " too short to rewrite), ",
+        num(crate::patch::TRAPS.load(Ordering::Relaxed), &mut d),
+        " breakpoints (",
+        num(crate::patch::TRAPS_FOREIGN.load(Ordering::Relaxed), &mut e),
+        " unrecognised)\n",
+    ]);
 }
 
 /// Does this processor already have AVX-512? If so there is nothing to do
@@ -283,6 +381,7 @@ extern "C" fn init() {
 
     VERBOSE.store(std::env::var_os("PHI512_VERBOSE").is_some(), Ordering::Relaxed);
     TRACE.store(std::env::var_os("PHI512_TRACE").is_some(), Ordering::Relaxed);
+    PATCHING_ON.store(std::env::var_os("PHI512_NOPATCH").is_none(), Ordering::Relaxed);
     YMM_OFFSET.store(probe_ymm_offset(), Ordering::Relaxed);
 
     // SAFETY: standard sigaction installation. A failure here is not
@@ -295,6 +394,25 @@ extern "C" fn init() {
         libc::sigemptyset(&mut sa.sa_mask);
         if libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut()) != 0 {
             return;
+        }
+
+        // The breakpoint handler only matters while a site is being
+        // rewritten, but it has to be in place before the first rewrite,
+        // and whatever had SIGTRAP before is kept so a debugger still
+        // works.
+        if PATCHING_ON.load(Ordering::Relaxed) {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            let mut t: libc::sigaction = std::mem::zeroed();
+            t.sa_sigaction = on_sigtrap as *const () as usize;
+            t.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART | libc::SA_ONSTACK;
+            libc::sigemptyset(&mut t.sa_mask);
+            if libc::sigaction(libc::SIGTRAP, &t, &mut old) == 0 {
+                PREV_SIGTRAP.store(old.sa_sigaction, Ordering::Relaxed);
+            } else {
+                // Without it a rewrite could lose a thread to an
+                // unhandled breakpoint, so do not rewrite anything.
+                PATCHING_ON.store(false, Ordering::Relaxed);
+            }
         }
         libc::atexit(report);
     }

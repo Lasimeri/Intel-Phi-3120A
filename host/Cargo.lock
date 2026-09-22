@@ -369,6 +369,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phi-vpu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+]
+
+[[package]]
 name = "phi512"
 version = "0.1.0"
 dependencies = [

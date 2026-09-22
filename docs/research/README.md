@@ -15,4 +15,6 @@ rather than a documented fact it is labeled as such.
 | [intel-card-kernel.md](intel-card-kernel.md) | What did Intel's own card kernel (linux-2.6.38.8+mpss3.5.1) actually do, hook by hook? The hardware contract the forward-port had to reproduce. |
 | [runtimes.md](runtimes.md) | Can gcc, tcc, Bun, Python actually run on the card? |
 | [compression-on-knc.md](compression-on-knc.md) | Which compression algorithms suit a machine with no byte vector instructions? Why LZ77 loses and columnar bit-packing should not |
+| [avx512-on-knc.md](avx512-on-knc.md) | Can the card execute AVX-512 bit-exactly? The precision audit of 327364-001: what maps 1:1, what is absent (divide, square root), what differs (min/max NaN rule, gather) |
+| [avx512-transparency.md](avx512-transparency.md) | What running unmodified AVX-512 binaries on a host without it costs: no CPUID faulting on Zen 3, 1909 ns per SIGILL, why a site can always be rewritten, the shadow-file cost table |
 | [sources.md](sources.md) | Every URL and document number used |
