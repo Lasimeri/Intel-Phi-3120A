@@ -78,6 +78,16 @@ impl Mem {
         );
         Mem { base, disp }
     }
+
+    /// The same base with the displacement moved by `delta`, or `None` if
+    /// that overflows. Used for the high half of an unaligned access pair,
+    /// which addresses the cache line 64 bytes above the low half.
+    pub fn offset(self, delta: i32) -> Option<Mem> {
+        Some(Mem {
+            base: self.base,
+            disp: self.disp.checked_add(delta)?,
+        })
+    }
 }
 
 /// The second source of a three-operand instruction: a register or memory.
@@ -333,6 +343,86 @@ pub fn vcmppd(dst: K, src1: Zmm, src2: Src, pred: Cmp, k: K) -> Insn {
     Insn {
         bytes: mvex(Map::M0F, Pp::P66, true, dst.0, src1.0, src_rm(src2), k.0, 0xc2, Some(pred as u8)),
         text: format!("vcmppd {dst}{}, {src1}, {src2}, {}", mask_text(k), pred as u8),
+    }
+}
+
+// The float32 forms. They differ from the float64 forms above in the two
+// bits that select the data type: no legacy prefix instead of 66, and W0
+// instead of W1. The opcodes are the same. This pairing is what makes an
+// AVX-512 to MVEX translation mostly mechanical, since EVEX uses the same
+// pp and W fields to make the same distinction.
+
+#[allow(clippy::too_many_arguments)]
+fn arith_ps(name: &str, map: Map, opcode: u8, dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    Insn {
+        bytes: mvex(map, Pp::None, false, dst.0, src1.0, src_rm(src2), k.0, opcode, None),
+        text: format!("{name} {dst}{}, {src1}, {src2}", mask_text(k)),
+    }
+}
+
+/// `vaddps zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.0F.W0 58 /r).
+pub fn vaddps(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith_ps("vaddps", Map::M0F, 0x58, dst, src1, src2, k)
+}
+
+/// `vsubps zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.0F.W0 5C /r).
+pub fn vsubps(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith_ps("vsubps", Map::M0F, 0x5c, dst, src1, src2, k)
+}
+
+/// `vmulps zmm1 {k}, zmm2, zmm3/mt` (MVEX.NDS.512.0F.W0 59 /r).
+pub fn vmulps(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith_ps("vmulps", Map::M0F, 0x59, dst, src1, src2, k)
+}
+
+/// `vfmadd231ps zmm1 {k}, zmm2, zmm3/mt`: zmm1 = zmm2 * zmm3 + zmm1
+/// `vfmadd213ps zmm1 {k}, zmm2, zmm3/mt`: zmm1 = zmm2 * zmm1 + zmm3
+/// (MVEX.NDS.512.66.0F38.W0 A8 /r). This is the Horner form: the
+/// accumulator is both a source and the destination.
+pub fn vfmadd213ps(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vfmadd213ps", Map::M0F38, false, 0xa8, dst, src1, src2, k)
+}
+
+/// (MVEX.NDS.512.66.0F38.W0 B8 /r).
+///
+/// Note the 66 prefix, which `vaddps` and the other 0F-map float32 forms do
+/// not carry. The float32 and float64 FMAs are separated by W alone.
+pub fn vfmadd231ps(dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
+    arith("vfmadd231ps", Map::M0F38, false, 0xb8, dst, src1, src2, k)
+}
+
+/// `vcmpps k2 {k1}, zmm1, zmm2/mt, imm8` (MVEX.NDS.512.0F.W0 C2 /r ib).
+/// As with `vcmppd`, a zero bit in `k1` clears the result bit rather than
+/// leaving it, so the result is `k1 & cmp`.
+pub fn vcmpps(dst: K, src1: Zmm, src2: Src, pred: Cmp, k: K) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F, Pp::None, false, dst.0, src1.0, src_rm(src2), k.0, 0xc2, Some(pred as u8)),
+        text: format!("vcmpps {dst}{}, {src1}, {src2}, {}", mask_text(k), pred as u8),
+    }
+}
+
+/// `vpackstoreld mt {k}, zmm1` (MVEX.512.66.0F38.W0 D0 /r) and
+/// `vpackstorehd` (D4 /r) are the store half of the unaligned pair, the
+/// mirror of `vloadunpackld` and `vloadunpackhd`. The low form writes the
+/// part of the stream that lands in the cache line containing `mt`, the
+/// high form the part in the line containing `mt + 64`.
+///
+/// Unlike the load pair these carry a 66 prefix, which is easy to get
+/// wrong: the loads are `MVEX.512.0F38.W0` and the stores are
+/// `MVEX.512.66.0F38.W0`, same opcodes, different prefix.
+pub fn vpackstoreld(mem: Mem, src: Zmm, k: K) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F38, Pp::P66, false, src.0, 0, Rm::Mem(mem), k.0, 0xd0, None),
+        text: format!("vpackstoreld {mem}{}, {src}", mask_text(k)),
+    }
+}
+
+/// The high half of the unaligned store pair; see `vpackstoreld`. The
+/// address passed is 64 bytes above the one given to the low half.
+pub fn vpackstorehd(mem: Mem, src: Zmm, k: K) -> Insn {
+    Insn {
+        bytes: mvex(Map::M0F38, Pp::P66, false, src.0, 0, Rm::Mem(mem), k.0, 0xd4, None),
+        text: format!("vpackstorehd {mem}{}, {src}", mask_text(k)),
     }
 }
 

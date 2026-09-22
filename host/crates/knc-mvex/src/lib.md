@@ -77,3 +77,27 @@ Three sources pin the bytes, in decreasing strength:
 
 The generator's tests (`main.md`) compare its output with the committed
 files, so an encoder change is visible until they are regenerated.
+
+## The float32 and unaligned-store forms (2026-09-21)
+
+Added for the AVX-512 translator (`host/crates/avx512-xlate`), which needed
+the float32 side of the arithmetic the crate already had in float64.
+
+`vaddps`, `vsubps`, `vmulps` and `vcmpps` differ from their float64
+counterparts in exactly the two bits that select the data type: no legacy
+prefix instead of `66`, and `W0` instead of `W1`. The opcodes are the same.
+EVEX makes the same distinction with the same two fields, which is a large
+part of why the translation is mechanical.
+
+`vfmadd213ps` and `vfmadd231ps` are the exception and it is easy to get
+wrong: they are in the `0F38` map and *do* carry the `66` prefix, so the
+float32 and float64 FMAs are separated by `W` alone.
+
+`vpackstoreld` and `vpackstorehd` complete the unaligned pair whose load
+half (`vloadunpackld`, `vloadunpackhd`) was already here. Same opcodes as
+the loads, `D0` and `D4`, and the same `0F38` map, but the stores carry a
+`66` prefix and the loads must not have one.
+
+All of these are verified by execution: `card/examples/avx512_poly.S` uses
+them and produces results bit-identical to the host's FMA3 hardware over
+65536 lanes. No assembler for this vector ISA exists to check them against.
