@@ -46,4 +46,3 @@ clean: ## Remove build outputs
 
 layout-check: ## Compare the C ring layout with the Rust constants (tcc)
 	tcc -run tools/ring-layout-check.c
-	tcc -run tools/vpu-layout-check.c

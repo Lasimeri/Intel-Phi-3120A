@@ -6,7 +6,7 @@ which 0.08 ms was compute, and 16 M elements 70 ms of which 3.2 ms.
 This is what that time was, and what is left. All numbers are card 0
 (3120A, Gen2 x8) unless a row says card 1 (Gen2 x4, on the chipset);
 `phi -c N vpu poly --n N --repeat 6`, the last runs of each, and
-`card/vpu/blkbench.c` for the raw block path.
+`card/examples/blkbench.c` for the raw block path.
 
 | elements | before (morning) | after | of which compute |
 | --- | --- | --- | --- |
@@ -159,6 +159,6 @@ fails the link with "can't decode instruction". The poller now stalls
 
 Both cards on kernel build #45 (patches 0001 to 0029), swap off on
 `/dev/phiblk1`, a huge-page worker on each (`phi -c N vpu status`),
-`phi traffic` reporting copies. `card/vpu/blkbench.c` stays as the
+`phi traffic` reporting copies. `card/examples/blkbench.c` stays as the
 transport's timer: `phi -c N put`, `cc` on the card, `/tmp/blkbench
 /dev/phiblk1 16 0 huge`.

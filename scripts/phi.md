@@ -53,7 +53,7 @@ the stack the day the second card arrived.
 | `phi console` | Follows the card's console: the log file for an unprivileged boot, the journal for the unit |
 | `phi log` | The unit's journal, or the console log |
 | `phi disk ARGS` | `scripts/phi-disk.sh` (create, check, usage) |
-| `phi vpu ARGS` | `scripts/phi-vpu.sh -c N ARGS`: the AVX-512 co-processor worker on this card (`deploy`, `start`, `stop`, `status`, `log`, `poly`) |
+| `phi vpu ARGS` | The AVX-512 co-processor worker on this card, from its own repository (`Intel-Phi-AVX512`, next to this one or `PHI_AVX512_ROOT`): `deploy`, `start`, `stop`, `status`, `log`, `poly` |
 | `phi ssh-config [--apply]` | One `~/.ssh/config` stanza per known card (`ssh phi`, `ssh phi1`, ...), each on its own forward port with the one pinned host key; printed, or appended with `--apply` |
 | `phi install-cli` | The symlink and the completions |
 

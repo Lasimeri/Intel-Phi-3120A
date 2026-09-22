@@ -14,6 +14,6 @@ data area (which starts at 1 MiB), so a run while a worker is idle
 changes nothing the worker reads. Do not run it while a request is in
 flight on the same card.
 
-Built on the card: `phi -c N put card/vpu/blkbench.c /tmp/blkbench.c`,
+Built on the card: `phi -c N put card/examples/blkbench.c /tmp/blkbench.c`,
 `phi -c N run cc -O2 -o /tmp/blkbench /tmp/blkbench.c`,
 `phi -c N run /tmp/blkbench`. Results: `docs/results/2026-09-22-block-pipeline.md`.

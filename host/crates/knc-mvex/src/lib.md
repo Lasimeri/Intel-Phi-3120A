@@ -98,6 +98,8 @@ half (`vloadunpackld`, `vloadunpackhd`) was already here. Same opcodes as
 the loads, `D0` and `D4`, and the same `0F38` map, but the stores carry a
 `66` prefix and the loads must not have one.
 
-All of these are verified by execution: `card/examples/avx512_poly.S` uses
-them and produces results bit-identical to the host's FMA3 hardware over
-65536 lanes. No assembler for this vector ISA exists to check them against.
+All of these are verified by execution: the AVX-512 co-processor's
+translated kernel (`card/examples/avx512_poly.S` in Intel-Phi-AVX512, where
+a copy of this library lives too) uses them and produces results
+bit-identical to the host's FMA3 hardware over 65536 lanes. No assembler
+for this vector ISA exists to check them against.

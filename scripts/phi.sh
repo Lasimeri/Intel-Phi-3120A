@@ -323,8 +323,11 @@ disk)
     ;;
 
 vpu)
-    # The AVX-512 co-processor worker on this card (scripts/phi-vpu.md).
-    exec "$root/scripts/phi-vpu.sh" -c "$PHI_CARD" "$@"
+    # The AVX-512 co-processor lives in its own repository (Intel-Phi-AVX512),
+    # next to this one or where PHI_AVX512_ROOT says; this verb hands over.
+    avx="${PHI_AVX512_ROOT:-$root/../Intel Phi AVX-512}"
+    [ -x "$avx/scripts/phi-vpu.sh" ] || { echo "phi: the AVX-512 co-processor is a separate repository: clone https://github.com/Lasimeri/Intel-Phi-AVX512 next to this one (or set PHI_AVX512_ROOT)" >&2; exit 1; }
+    PHI_STACK_ROOT="$root" exec "$avx/scripts/phi-vpu.sh" -c "$PHI_CARD" "$@"
     ;;
 
 ssh-config)

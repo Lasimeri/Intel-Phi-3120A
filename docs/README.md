@@ -65,12 +65,17 @@ output and a reading. In date order:
 | [2026-09-19-zstd.md](results/2026-09-19-zstd.md) | zstd 1.5.7 against the host: 0.03 to 0.07x, why cheap-per-byte algorithms lose here, and a CMOV the patched LLVM still emits |
 | [2026-09-19-xz.md](results/2026-09-19-xz.md) | xz 5.8.3 on the card against the host: 0.22 to 0.26x, block count is the real thread limit, and a portability bug in liblzma's range decoder |
 | [2026-09-19-boot-without-login.md](results/2026-09-19-boot-without-login.md) | The card from host boot with nobody logged in: lingering instead of a system unit, what that costs, and the VFIO race it opened |
-| [2026-09-21-avx512-translation.md](results/2026-09-21-avx512-translation.md) | AVX-512 to MVEX is a two-bit rewrite; a translated kernel runs on all 57 vector units bit-identically to the host; four wrong guesses corrected by measurement |
-| [2026-09-22-avx512-coprocessor.md](results/2026-09-22-avx512-coprocessor.md) | The card as an AVX-512 co-processor end to end: doorbell, DMA, persistent pool, bit-exact results; where a request's time goes now |
 | [2026-09-22-second-card.md](results/2026-09-22-second-card.md) | A second card on the chipset: why it did not enumerate (seating), the 3608 subsystem with an 8 GiB BAR, both cards booted and offloading side by side, phitop per card |
 | [2026-09-22-block-pipeline.md](results/2026-09-22-block-pipeline.md) | The transport, taken apart: one record per scattered 4 KiB page, 20 us of host work each; pipelined DMA, huge pages on the card, a poller that stays awake (patch 0029) and the KNC DELAY instruction; 65536 elements in 0.49 ms, 64 MiB each way at the link |
-| [2026-09-22-seamless-test.md](results/2026-09-22-seamless-test.md) | The transparent path tested from the user side: an ordinary AVX-512 program is intercepted and runs bit-exact, on the HOST emulator; the cards see nothing (counters unchanged); what wiring them in would take |
-| [2026-09-22-seamless-card.md](results/2026-09-22-seamless-card.md) | The join, done: an unmodified AVX-512 program has its instructions executed by the card, as MVEX, from the SIGILL handler; then made fast: a planner, phases, a 57-thread loop split, exact ranges, overlapped transport; 65536 elements in 7.7 ms, 1 M in 16 ms, bit-identical at every size |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 
 Images: `results/images/`.
+
+## The AVX-512 co-processor (its own repository)
+
+The records of the card executing AVX-512 for the host (the translation
+verified on the card, the explicit co-processor path, the seamless path
+from a program's own SIGILL, and its planner and loop split) moved with
+that code to [Intel-Phi-AVX512](https://github.com/Lasimeri/Intel-Phi-AVX512)
+on 2026-09-22 (this repository's commit 0f49eac). The transport they
+run on stays here: `2026-09-16-dma.md` and `2026-09-22-block-pipeline.md`.
