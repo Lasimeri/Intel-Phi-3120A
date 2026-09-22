@@ -6,13 +6,14 @@ set ahead of time by `host/crates/avx512-xlate`, across the vector units,
 and writes the result back where the host can read it.
 
 ```
-phi-vpu-worker [-v] [-s MS] [threads]
+phi-vpu-worker [-v] [-s MS] [-i US] [threads]
 ```
 
 `threads` is the most the worker will spread one request across (1 to
 228, default 57). `-v` logs one line per request. `-s` is the spin window
-described below. `scripts/phi-vpu.sh` deploys, builds, starts and stops
-it from the host.
+and `-i` the idle poll interval, both described below.
+`scripts/phi-vpu.sh` deploys, builds, starts and stops it from the host
+(`PHI_VPU_ARGS` passes these options through `start`).
 
 ## The pool, and why it exists
 
@@ -59,6 +60,30 @@ doing something else. Measured 2026-09-22, 1048576 elements, 57 threads:
 Waking 56 parked threads costs about 0.5 ms. The dispatcher issues the
 wake only when the parked counter says someone is asleep, so the warm
 path makes no system call at all.
+
+## The dispatcher's own idle
+
+The doorbell poll is one PCIe read per iteration, and the first version
+did it flat out for ever: one hardware thread (CPU 0) at 100 percent,
+reading host memory a million times a second to learn nothing, visible
+in phitop as a pegged core. Now it spins only for the same `-s` window
+after the last request and then sleeps `-i` microseconds between polls
+(default 500). `nanosleep` on this kernel costs about 60 us over what is
+asked (10 us asks for 72, 100 us for 162, 500 us for 563, measured
+2026-09-22), which sets the idle doorbell latency. Measured on CPU 0
+while idle, over 3 s, with the first doorbell after 1 s of quiet:
+
+| `-i` | CPU 0 busy | idle doorbell (host wall minus card total) |
+| --- | --- | --- |
+| 100 us | 23.5% | 79 to 157 us |
+| **500 us** | **0.8%** | 70 to 681 us |
+| 1000 us | 3.3% | 259 to 775 us |
+| 2000 us | 2.7% | 983 to 1857 us |
+
+A warm doorbell is 21 us by the same measure. The cost of the default is
+therefore up to 0.7 ms on the first request after 200 ms of silence,
+against a transport that costs 3 ms for the smallest request, for a card
+that is 99.9 percent idle when nothing is happening.
 
 The card's musl ships no `linux/futex.h`; the syscall number (202) and
 the two operation codes are defined in the source.

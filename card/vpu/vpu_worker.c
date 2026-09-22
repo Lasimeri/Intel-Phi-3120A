@@ -10,7 +10,9 @@
  * the mapping is uncached and streams at 50 MB/s while the DMA engine
  * behind the block device does 1.2 GB/s. See vpu_proto.md.
  *
- *   phi-vpu-worker [-v] [-s MS] [threads]   threads 1 to 228 (57); spin MS after a job (200)
+ *   phi-vpu-worker [-v] [-s MS] [-i US] [threads]
+ *     threads 1 to 228 (57); spin MS after a job before parking (200);
+ *     once parked, poll the doorbell every US microseconds (500)
  *
  * The threads are created once. Creating one costs about 0.58 ms on
  * this card, and the first version of this worker created and joined
@@ -40,6 +42,7 @@ void poly_kernel_x8(float *d, const float *x, const float *coef, long n);
 #define MAX_POOL 227          /* 228 hardware threads less the dispatcher */
 #define SPIN_ROUNDS 2000      /* polls of the generation word between clock reads */
 static uint64_t spin_ns = 200000000ULL;  /* spin this long after the last job, then park; -s MS */
+static long idle_us = 500;               /* doorbell poll interval once idle; -i US */
 
 /* musl on the card ships no linux/futex.h; these are the x86-64 numbers. */
 #ifndef SYS_futex
@@ -278,6 +281,7 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) verbose = 1;
         else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) spin_ns = (uint64_t)atol(argv[++i]) * 1000000ULL;
+        else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) idle_us = atol(argv[++i]);
         else max_threads = atoi(argv[i]);
     }
     if (max_threads < 1) max_threads = 1;
@@ -322,6 +326,17 @@ int main(int argc, char **argv)
 
     struct buf in = {0}, out = {0}, coef = {0};
 
+    /* The doorbell is polled flat out for the spin window after the last
+     * request, one PCIe read per iteration, which is where the 2.36 us
+     * doorbell comes from. After that the poll sleeps between reads so a
+     * quiet card is quiet: without this the dispatcher sat at 100 percent
+     * of its hardware thread for ever, reading host memory over PCIe a
+     * million times a second to learn nothing. nanosleep on this kernel
+     * costs about 60 us on top of what is asked (measured 2026-09-22:
+     * 10 us asks for 72, 100 us for 162), so the first doorbell after a
+     * quiet spell is seen within about idle_us + 60 us. */
+    uint64_t idle_since = now_ns();
+    unsigned polls = 0;
     for (;;) {
         uint64_t seq = req->seq;
         if (seq == last) {
@@ -329,6 +344,10 @@ int main(int argc, char **argv)
              * window before its first request and would otherwise wipe
              * the flag it is about to wait for. */
             *ready = VPU_MAGIC;
+            if ((++polls & 63) == 0 && now_ns() - idle_since > spin_ns) {
+                struct timespec rest = { 0, (long)idle_us * 1000L };
+                nanosleep(&rest, NULL);
+            }
             continue;
         }
         last = seq;
@@ -370,6 +389,7 @@ int main(int argc, char **argv)
         rep->threads = live;
         COMPILER_BARRIER();
         rep->seq = seq;   /* written last: it is what the host polls */
+        idle_since = now_ns();
 
         if (verbose) {
             printf("seq=%llu kernel=%u n=%ld threads=%d status=%d pull=%.3fms compute=%.3fms push=%.3fms\n",

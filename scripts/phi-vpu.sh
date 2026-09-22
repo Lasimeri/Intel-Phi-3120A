@@ -2,7 +2,8 @@
 # phi-vpu.sh: put the AVX-512 co-processor worker on the card and drive it.
 #
 #   scripts/phi-vpu.sh deploy        copy the sources to the card and build there
-#   scripts/phi-vpu.sh start [N]     start the worker with N threads (default 57)
+#   scripts/phi-vpu.sh start [N]     start the worker with N threads (default 57);
+#                                    PHI_VPU_ARGS="-s MS -i US" passes worker options
 #   scripts/phi-vpu.sh stop
 #   scripts/phi-vpu.sh status        worker process on the card, control words on the host
 #   scripts/phi-vpu.sh log           the worker's output
@@ -57,7 +58,10 @@ case "$cmd" in
         if running; then ssh_ "pkill -f '$pat'"; sleep 0.5; fi
         # setsid plus a trailing sleep in the same command, or the process
         # dies with the ssh session.
-        ssh_ "cd '$dir' && setsid ./phi-vpu-worker -v $n > worker.log 2>&1 < /dev/null & sleep 1"
+        # PHI_VPU_ARGS carries extra worker options (-s MS, -i US). The
+        # kill above is a separate ssh call on purpose: a pkill in the same
+        # command line as "./phi-vpu-worker" matches its own shell.
+        ssh_ "cd '$dir' && setsid ./phi-vpu-worker -v ${PHI_VPU_ARGS:-} $n > worker.log 2>&1 < /dev/null & sleep 1"
         if running; then
             echo "worker started with $n threads; log: $dir/worker.log on the card"
         else

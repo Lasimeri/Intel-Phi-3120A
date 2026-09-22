@@ -22,6 +22,9 @@ is the one-line demonstration: the host hands a million-element AVX-512
 kernel to the card, gets the answer back, and checks every lane against
 its own FMA hardware.
 
+`PHI_VPU_ARGS="-s 500 -i 1000" scripts/phi-vpu.sh start` passes worker
+options (spin window, idle poll interval) through.
+
 ## Two refusals
 
 - **`start` refuses while `/dev/phiblk1` is a swap device on the card.**
@@ -32,7 +35,12 @@ its own FMA hardware.
 - **`stop` uses `pkill -f 'phi-vpu-worke[r]'`.** The bracket class keeps
   the pattern from matching the ssh command line that carries it, which
   is what happens with the plain name and kills the ssh session instead
-  of the worker.
+  of the worker. The kill and the start are separate ssh calls for the
+  same reason: a `pkill` in the same command line as `./phi-vpu-worker`
+  matches its own shell and nothing starts, while the host still sees the
+  dead worker's readiness word (the driver now clears that word and waits
+  for a live worker to re-assert it, so this fails in five seconds with a
+  message instead of waiting a minute for an answer).
 
 ## Backgrounding on the card
 

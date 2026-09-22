@@ -120,7 +120,16 @@ fn worker_ready(w: &Window) -> bool {
     w.read::<u64>(OFF_READY) == MAGIC
 }
 
+/// Wait for a worker that is alive now, not one that was alive once.
+///
+/// The readiness word stays in the window after a worker dies, so a
+/// check that only reads it is satisfied by a corpse and the request
+/// then waits its full timeout for an answer that never comes. The word
+/// is cleared first; a live worker re-asserts it on every poll, within
+/// a millisecond even when it is idle and sleeping between polls.
 fn wait_ready(w: &Window, timeout: Duration) -> Result<()> {
+    w.write(OFF_READY, 0u64);
+    fence(Ordering::SeqCst);
     let give_up = Instant::now() + timeout;
     while !worker_ready(w) {
         if Instant::now() > give_up {

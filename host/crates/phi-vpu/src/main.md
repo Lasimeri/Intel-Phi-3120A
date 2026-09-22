@@ -33,6 +33,15 @@ for a host with no AVX-512 is against running the same code in software:
 rewritten, so a million elements of this kernel is roughly 300 ms there
 against 14 ms end to end on the card.
 
+## A live worker, not a remembered one
+
+The readiness word stays in the window after a worker dies, and a check
+that only reads it is satisfied by a corpse: the request then waits its
+full minute for an answer that never comes. `wait_ready` clears the word
+first and waits for the card to re-assert it, which a live worker does
+on every poll, within a millisecond even while sleeping between polls.
+With no worker at all this fails in five seconds and says so.
+
 ## The doorbell protocol
 
 The request's fields are written first, then a fence, then the sequence

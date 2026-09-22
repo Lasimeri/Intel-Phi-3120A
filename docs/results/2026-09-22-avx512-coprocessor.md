@@ -83,6 +83,32 @@ Waking 56 parked threads costs about 0.3 to 0.5 ms. The default window
 is therefore 200 ms; while parked the card is 99 percent idle (`top` on
 the card), which is the point of parking at all.
 
+## The dispatcher was pegging a core
+
+The doorbell poll ran flat out for ever: CPU 0 at 100 percent in phitop,
+one PCIe read of the request word per iteration. It now spins for the
+200 ms window after the last request and then sleeps between polls.
+`nanosleep` on the card kernel costs about 60 us over the requested
+time (10 us asks for 72, 100 for 162, 500 for 563), so the interval sets
+the idle doorbell latency:
+
+| idle poll | CPU 0 busy, idle | first doorbell after 1 s quiet |
+| --- | --- | --- |
+| 100 us | 23.5% | 79 to 157 us |
+| **500 us (default)** | **0.8%** | 70 to 681 us |
+| 1000 us | 3.3% | 259 to 775 us |
+| 2000 us | 2.7% | 983 to 1857 us |
+
+Warm doorbell by the same measure (host wall minus the card's own total):
+21 us. The whole card at 228 CPUs is under 0.1 percent busy with the
+worker up and nothing to do.
+
+Found while measuring this: a `pkill` in the same ssh command line as
+`./phi-vpu-worker` matches its own shell, so nothing started, and the
+host driver accepted the dead worker's readiness word and waited a
+minute per request. The driver now clears the word and waits for a live
+worker to re-assert it (five seconds, then a message).
+
 ## Where a request's time goes now
 
 The same runs, whole request, 57 threads:
