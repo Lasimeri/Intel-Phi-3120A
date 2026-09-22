@@ -19,7 +19,7 @@ root=$(cd "$here/.." && pwd)
 . "$root/scripts/phi-env.sh"
 phi_env "$@"
 set -- "${PHI_ARGS[@]}"
-dir=${PHI_VPU_DIR:-/opt/phi-vpu}
+dir=${PHI_VPU_DIR:-/opt/phi/vpu}
 threads_default=57
 
 # The card over its own SSH forward, with the pinned host key: every card
@@ -63,7 +63,8 @@ cmd=${1:-}; shift || true
 case "$cmd" in
     deploy)
         ssh_ "mkdir -p '$dir'"
-        scp_ "$root/card/vpu/vpu_proto.h" "$root/card/vpu/vpu_worker.c" "$root/card/vpu/build.sh" \
+        scp_ "$root/card/vpu/vpu_proto.h" "$root/card/vpu/vpu_exec.h" "$root/card/vpu/vpu_exec_regs.h" \
+            "$root/card/vpu/vpu_worker.c" "$root/card/vpu/vpu_exec.c" "$root/card/vpu/build.sh" \
             "$root/card/examples/avx512_poly.S" "root@127.0.0.1:$dir/"
         # A non-login shell over ssh has no /opt/phi/bin on PATH until the
         # card's next boot links the toolchain into /usr/bin; name it.

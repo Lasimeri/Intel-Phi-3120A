@@ -61,3 +61,12 @@ worker then falls back to 4 KiB pages for buffers that do not fit.
 `worker.log`, and a `sleep 1` in the same ssh command. Without the sleep
 the ssh session closes before the process has detached and takes it
 along.
+
+## Where the worker lives (2026-09-22)
+
+`/opt/phi/vpu` on the card, inside the `/opt/phi` bind mount of the
+persistent disk (`PHI_VPU_DIR` to change). The earlier `/opt/phi-vpu` was
+in the initramfs and vanished at every reboot; `poly` redeployed it
+silently, which is how nobody noticed. The worker now also carries the
+seamless path's exec engine (`card/vpu/vpu_exec.c`), so a deploy copies
+those sources too.

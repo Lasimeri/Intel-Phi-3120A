@@ -154,3 +154,11 @@ the day it first worked (`docs/results/2026-09-22-block-pipeline.md`).
   wait for.
 - `pkill -f phi-vpu-worker` typed over ssh matches the ssh command line
   and kills the session. `scripts/phi-vpu.sh` uses a bracket class.
+
+## The exec request (2026-09-22)
+
+`VPU_K_EXEC` hands the request to `vpu_exec_run` (`vpu_exec.c`,
+`vpu_exec.md`): a region of the host program's own code, run on this
+card as it is. The control mapping grew to 16 KiB for the mailbox and
+the exec descriptor. The element count and offsets are not checked for
+that kind; they belong to the polynomial request.

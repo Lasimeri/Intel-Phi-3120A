@@ -23,6 +23,8 @@
 //! answer is the one failure mode that would make the whole exercise
 //! worthless.
 
+pub mod rewrite;
+
 use iced_x86::{Instruction, Mnemonic, OpKind, Register};
 use knc_mvex::{Gpr, Insn, Mem, Src, Zmm, K};
 

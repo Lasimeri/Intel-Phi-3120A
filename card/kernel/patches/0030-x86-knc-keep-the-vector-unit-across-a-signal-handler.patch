@@ -1,0 +1,85 @@
+From c8bc53162a792275f485594a5859f3e567b2f98e Mon Sep 17 00:00:00 2001
+From: Ian Haapanen <ian.haapanen@gmail.com>
+Date: Tue, 22 Sep 2026 11:45:15 -0500
+Subject: [PATCH] x86/knc: keep the vector unit across a signal handler
+
+The signal frame carries the FXSAVE image only, so delivery left the
+handler with the vector unit in its init state and sigreturn restored
+whatever the task area held from the last context switch: a program
+interrupted by a signal came back with other zmm and mask registers.
+
+Save the 32 zmm and 8 mask registers into a second per-task area
+(KNC_VPU_SIG_OFFSET) when the frame is built, with the registers live,
+and load them after the FXRSTOR from the frame at sigreturn. A handler
+that executes no vector instruction is now transparent; one interrupted
+by a further signal loses the copy, which is per task, not per frame.
+
+Needed by the VPU worker exec engine (card/vpu/vpu_exec.c), which pages
+the host program memory in from SIGSEGV while a region runs.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/include/asm/knc_vpu.h |  9 ++++++++-
+ arch/x86/kernel/fpu/signal.c   | 12 ++++++++++++
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/include/asm/knc_vpu.h b/arch/x86/include/asm/knc_vpu.h
+index 77c5d7a9d..f2b1f3d5b 100644
+--- a/arch/x86/include/asm/knc_vpu.h
++++ b/arch/x86/include/asm/knc_vpu.h
+@@ -17,7 +17,14 @@
+ #define KNC_VPU_STATE_OFFSET	512	/* right after the FXSAVE image */
+ #define KNC_VPU_K_OFFSET	2048	/* the mask registers, after the zmm registers */
+ #define KNC_VPU_STATE_SIZE	2112	/* zmm and masks, rounded up to 64 bytes */
+-#define KNC_FPSTATE_SIZE	(KNC_VPU_STATE_OFFSET + KNC_VPU_STATE_SIZE)
++/*
++ * A second copy, written at signal delivery and loaded at sigreturn, so a
++ * handler that does not touch the vector unit is transparent to the
++ * interrupted code (the frame itself carries the FXSAVE image only). A
++ * handler interrupted by another signal loses it: the copy is per task.
++ */
++#define KNC_VPU_SIG_OFFSET	(KNC_VPU_STATE_OFFSET + KNC_VPU_STATE_SIZE)
++#define KNC_FPSTATE_SIZE	(KNC_VPU_SIG_OFFSET + KNC_VPU_STATE_SIZE)
+ 
+ #ifndef __ASSEMBLY__
+ 
+diff --git a/arch/x86/kernel/fpu/signal.c b/arch/x86/kernel/fpu/signal.c
+index 20b638c50..9c032d663 100644
+--- a/arch/x86/kernel/fpu/signal.c
++++ b/arch/x86/kernel/fpu/signal.c
+@@ -8,6 +8,7 @@
+ #include <linux/pagemap.h>
+ 
+ #include <asm/fpu/signal.h>
++#include <asm/knc_vpu.h>
+ #include <asm/fpu/regset.h>
+ #include <asm/fpu/xstate.h>
+ 
+@@ -218,6 +219,13 @@ bool copy_fpstate_to_sigframe(void __user *buf, void __user *buf_fx, int size, u
+ 	fpregs_lock();
+ 	if (test_thread_flag(TIF_NEED_FPU_LOAD))
+ 		fpregs_restore_userregs();
++	/*
++	 * Knights Corner: the frame carries the FXSAVE image only, and the
++	 * handler starts from the init state; keep the vector unit for
++	 * sigreturn (asm/knc_vpu.h, KNC_VPU_SIG_OFFSET).
++	 */
++	if (IS_ENABLED(CONFIG_X86_KNC))
++		knc_vpu_save((void *)&fpstate->regs + KNC_VPU_SIG_OFFSET);
+ 
+ 	pagefault_disable();
+ 	ret = copy_fpregs_to_sigframe(buf_fx, pkru);
+@@ -319,6 +327,10 @@ static bool restore_fpregs_from_user(void __user *buf, u64 xrestore, bool fx_onl
+ 	if (test_thread_flag(TIF_NEED_FPU_LOAD) && xfeatures_mask_supervisor())
+ 		os_xrstor_supervisor(fpu->fpstate);
+ 
++	/* Knights Corner: after the FXRSTOR above, which cleared the low 128 bits of every zmm. */
++	if (IS_ENABLED(CONFIG_X86_KNC))
++		knc_vpu_restore((const void *)&fpu->fpstate->regs + KNC_VPU_SIG_OFFSET);
++
+ 	fpregs_mark_activate();
+ 	fpregs_unlock();
+ 	return true;
+-- 
+2.55.0
+

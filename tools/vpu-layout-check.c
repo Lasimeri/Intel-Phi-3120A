@@ -8,6 +8,7 @@
 #include <stdio.h>
 
 #include "../card/vpu/vpu_proto.h"
+#include "../card/vpu/vpu_exec.h"
 
 static int fails;
 
@@ -35,6 +36,18 @@ int main(void)
 	check("request.aux_len", offsetof(struct vpu_request, aux_len), 48);
 
 	check("sizeof(vpu_reply)", sizeof(struct vpu_reply), 48);
+	check("sizeof(vpu_regs)", sizeof(struct vpu_regs), 2256);
+	check("regs.k", offsetof(struct vpu_regs, k), 2048);
+	check("regs.gpr", offsetof(struct vpu_regs, gpr), 2112);
+	check("regs.rflags", offsetof(struct vpu_regs, rflags), 2240);
+	check("regs.rip", offsetof(struct vpu_regs, rip), 2248);
+	check("sizeof(vpu_exec)", sizeof(struct vpu_exec), 2512);
+	check("exec.exit_rip", offsetof(struct vpu_exec, exit_rip), 128);
+	check("exec.exit_kind", offsetof(struct vpu_exec, exit_kind), 144);
+	check("exec.regs", offsetof(struct vpu_exec, regs), 256);
+	check("sizeof(vpu_mail)", sizeof(struct vpu_mail), 48);
+	check("mail.ack", offsetof(struct vpu_mail, ack), 32);
+	check("mail.status", offsetof(struct vpu_mail, status), 40);
 	check("reply.seq", offsetof(struct vpu_reply, seq), 0);
 	check("reply.compute_ns", offsetof(struct vpu_reply, compute_ns), 8);
 	check("reply.total_ns", offsetof(struct vpu_reply, total_ns), 16);

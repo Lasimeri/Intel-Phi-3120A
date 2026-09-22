@@ -158,7 +158,7 @@ and QuickJS have design notes only (`card/userland/components/*.md`).
 ## 8. Kernel (recorded, 2026-09-13)
 
 ```sh
-card/kernel/build.sh all        # fetch v7.2.3 (shallow), apply the 29 patches, configure, build, audit
+card/kernel/build.sh all        # fetch v7.2.3 (shallow), apply the 30 patches, configure, build, audit
 ```
 
 About 6 minutes clean. Output: `card/kernel/build/out/arch/x86/boot/bzImage`

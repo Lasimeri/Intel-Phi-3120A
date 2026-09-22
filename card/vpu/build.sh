@@ -11,5 +11,5 @@ here=$(cd "$(dirname "$0")" && pwd)
 kernel="$here/avx512_poly.S"
 [ -f "$kernel" ] || kernel="$here/../examples/avx512_poly.S"
 [ -f "$kernel" ] || { echo "build.sh: no avx512_poly.S next to this script or in ../examples" >&2; exit 1; }
-cc -O2 -I"$here" -o "$here/phi-vpu-worker" "$here/vpu_worker.c" "$kernel" -lpthread
+cc -O2 -I"$here" -o "$here/phi-vpu-worker" "$here/vpu_worker.c" "$here/vpu_exec.c" "$kernel" -lpthread
 echo "built $here/phi-vpu-worker"

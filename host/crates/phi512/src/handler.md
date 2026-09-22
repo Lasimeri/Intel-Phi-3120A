@@ -53,3 +53,14 @@ into a hang, and it must not paper over its own gaps.
 - After the instruction has been performed once, `patch::try_patch` rewrites
   the site so it never faults again (`patch.md`). Only sites shorter than a
   five-byte jump, the VEX-encoded mask instructions, keep faulting.
+
+## The card path (2026-09-22)
+
+At load, unless `PHI512_EMULATE` is set, the handler opens the card's
+window (`offload::init`) and installs an alternate signal stack for the
+thread. A SIGILL on an AVX-512 instruction then goes to `offload::run`,
+which returns with the frame at the region's exit; the emulator, site
+rewriting and breakpoints are not used at all in that mode. Without a
+card and without `PHI512_EMULATE`, the first AVX-512 instruction ends
+the program with the reason: nothing is interpreted silently. The exit
+report says how many regions the card ran.

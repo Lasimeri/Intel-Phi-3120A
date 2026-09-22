@@ -72,3 +72,9 @@ twice and produce different bits from the hardware.
   are not implemented yet.
 - This is the host path. It does not use the card; `avx512-xlate` is the
   piece that targets the card, and connecting the two is future work.
+
+## Modules (2026-09-22)
+
+`offload` is the seamless path to the card (the product); `emulate`,
+`patch` and `frame` are the software fallback behind `PHI512_EMULATE`;
+`state` is the vector register file both share; `handler` chooses.

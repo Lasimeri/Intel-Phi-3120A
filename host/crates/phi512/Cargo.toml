@@ -13,3 +13,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 iced-x86 = { workspace = true }
 libc = { workspace = true }
+avx512-xlate = { path = "../avx512-xlate" }
+phi-vpu = { path = "../phi-vpu" }
+phi-vfio = { path = "../phi-vfio" }

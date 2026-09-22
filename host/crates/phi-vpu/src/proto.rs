@@ -20,6 +20,97 @@ pub const MAGIC: u64 = 0x5650_555F_5245_4144;
 
 /// Degree-30 Horner in float32: `out[i] = poly(in[i])`.
 pub const K_POLY30: u32 = 1;
+/// Run a region of the host program on the card (card/vpu/vpu_exec.h).
+pub const K_EXEC: u32 = 2;
+
+// The seamless path (card/vpu/vpu_exec.h).
+pub const EXEC_CHUNK: u64 = 2 << 20;
+pub const EXEC_THUNK_MAX: u64 = 64 << 10;
+pub const OFF_MAIL: usize = 4096;
+pub const OFF_EXEC: usize = 8192;
+pub const OFF_EXEC_FETCH: u64 = 32 << 20;
+pub const OFF_EXEC_CODE: u64 = OFF_EXEC_FETCH + EXEC_CHUNK;
+pub const OFF_EXEC_THUNK: u64 = OFF_EXEC_CODE + EXEC_CHUNK;
+pub const OFF_EXEC_WB: u64 = OFF_EXEC_THUNK + EXEC_CHUNK;
+
+/// The register file: zmm0..31, k0..7, then the integer registers in x86
+/// encoding order (rax rcx rdx rbx rsp rbp rsi rdi r8..r15), flags, rip.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Regs {
+    pub zmm: [[u8; 64]; 32],
+    pub k: [u16; 8],
+    pub pad: [u8; 48],
+    pub gpr: [u64; 16],
+    pub rflags: u64,
+    pub rip: u64,
+}
+
+impl Default for Regs {
+    fn default() -> Self {
+        Regs {
+            zmm: [[0; 64]; 32],
+            k: [0; 8],
+            pad: [0; 48],
+            gpr: [0; 16],
+            rflags: 0,
+            rip: 0,
+        }
+    }
+}
+
+pub const EXIT_LEFT: u32 = 0;
+pub const EXIT_FAULT: u32 = 1;
+pub const EXIT_ILLEGAL: u32 = 2;
+pub const EXIT_COLLISION: u32 = 3;
+pub const EXIT_LIMIT: u32 = 4;
+
+/// The exec descriptor at `OFF_EXEC`: the region in, the exit out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Exec {
+    pub code_addr: u64,
+    pub code_len: u64,
+    pub thunk_addr: u64,
+    pub thunk_len: u64,
+    pub region_lo: u64,
+    pub region_hi: u64,
+    pub entry: u64,
+    pub reserved: [u64; 9],
+    pub exit_rip: u64,
+    pub fault_addr: u64,
+    pub exit_kind: u32,
+    pub chunks: u32,
+    pub dirty: u32,
+    pub faults: u32,
+    pub fetch_ns: u64,
+    pub wb_ns: u64,
+    pub run_ns: u64,
+    pub reserved2: [u64; 9],
+    pub regs: Regs,
+}
+
+pub const MAIL_FETCH: u32 = 0;
+pub const MAIL_WRITEBACK: u32 = 1;
+
+/// The mailbox at `OFF_MAIL`: the card writes addr, len, kind, then seq;
+/// the host serves, writes status, then ack = seq.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Mail {
+    pub seq: u64,
+    pub addr: u64,
+    pub len: u64,
+    pub kind: u32,
+    pub pad: u32,
+    pub ack: u64,
+    pub status: i32,
+    pub pad2: u32,
+}
+
+const _: [(); 2256] = [(); std::mem::size_of::<Regs>()];
+const _: [(); 256 + 2256] = [(); std::mem::size_of::<Exec>()];
+const _: [(); 48] = [(); std::mem::size_of::<Mail>()];
 
 /// The card moves data with `O_DIRECT`, so every offset and every
 /// transfer is a whole number of these.
@@ -140,3 +231,16 @@ mod tests {
         assert_eq!(round_up(4097), 8192);
     }
 }
+
+/// A page written back by the card (`MAIL_WRITEBACK`): only the 64-byte
+/// lines whose bit is set in `lines` changed. The table of `WB_TABLE`
+/// bytes leads the slot, the pages follow in table order.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct WbPage {
+    pub addr: u64,
+    pub lines: u64,
+}
+pub const WB_TABLE: u64 = 64 << 10;
+pub const WB_MAX_PAGES: u64 = (EXEC_CHUNK - WB_TABLE) / 4096;
+const _: [(); 16] = [(); std::mem::size_of::<WbPage>()];

@@ -34,6 +34,7 @@ use iced_x86::{CpuidFeature, Decoder, DecoderOptions, Instruction, Mnemonic, OpK
 
 pub mod emulate;
 pub mod frame;
+pub mod offload;
 pub mod patch;
 pub mod state;
 

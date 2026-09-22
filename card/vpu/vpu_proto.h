@@ -38,6 +38,7 @@
 /* Kernels the worker can run. Each is AVX-512 translated to this card's
  * own instruction set by host/crates/avx512-xlate. */
 #define VPU_K_POLY30 1   /* degree-30 Horner, float32: out[i] = poly(in[i]) */
+#define VPU_K_EXEC   2   /* run a region of the host program on the card: vpu_exec.h */
 
 /* Alignment rules, all consequences of the card reading and writing the
  * window with O_DIRECT (the page cache would otherwise serve stale data):

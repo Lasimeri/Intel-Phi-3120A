@@ -35,6 +35,14 @@ static VERBOSE: AtomicBool = AtomicBool::new(false);
 static TRACE: AtomicBool = AtomicBool::new(false);
 static PREV_SIGTRAP: AtomicUsize = AtomicUsize::new(0);
 static PATCHING_ON: AtomicBool = AtomicBool::new(true);
+/// AVX-512 is executed by the card (`offload`), the default when a card
+/// is up. `PHI512_EMULATE=1` selects the software emulator instead.
+static CARD_ON: AtomicBool = AtomicBool::new(false);
+static EMULATE_ON: AtomicBool = AtomicBool::new(false);
+/// Regions run on the card.
+static OFFLOADED: AtomicU64 = AtomicU64::new(0);
+/// Why the card is not available, for the first fault's message.
+static CARD_ERROR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// The program's scalar registers, read and written straight in the signal
 /// frame. Writing here is how a result reaches the program: when the
@@ -214,6 +222,55 @@ extern "C" fn on_sigill(_sig: i32, _info: *mut libc::siginfo_t, ctx: *mut libc::
         return;
     }
 
+    // The card path: the region around this instruction runs on the
+    // card's vector units, and the frame comes back at the region's exit.
+    if CARD_ON.load(Ordering::Relaxed) {
+        let result = crate::state::tls::with(|st| {
+            pull_live_registers(uc, st);
+            // SAFETY: uc is the frame the kernel handed this handler.
+            let r = unsafe { crate::offload::run(uc, rip, st) };
+            if r.is_ok() {
+                push_live_registers(uc, st);
+                st.note_write();
+            }
+            r
+        });
+        match result {
+            Ok(s) => {
+                OFFLOADED.fetch_add(1, Ordering::Relaxed);
+                if VERBOSE.load(Ordering::Relaxed) {
+                    say(&[&format!(
+                        "phi512: card ran {:#x}..{:#x} ({} instructions, {} AVX-512{}) to {:#x}: {} chunks, {} written back, {} faults; fetch {} us, run {} us, write back {} us, total {} us\n",
+                        s.lo, s.hi, s.insns, s.avx512, if s.cached { ", cached" } else { "" }, s.exit,
+                        s.chunks, s.dirty, s.faults, s.fetch_us, s.run_us, s.wb_us, s.total_us
+                    )]);
+                }
+            }
+            Err(e) => {
+                say(&[
+                    "phi512: ",
+                    &e,
+                    "\nphi512: the program cannot continue; PHI512_EMULATE=1 would run its AVX-512 in software instead\n",
+                ]);
+                unsafe {
+                    libc::signal(libc::SIGILL, libc::SIG_DFL);
+                }
+            }
+        }
+        return;
+    }
+    if !EMULATE_ON.load(Ordering::Relaxed) {
+        say(&[
+            "phi512: this program needs AVX-512 and no card is executing it: ",
+            &CARD_ERROR.lock().unwrap_or_else(|p| p.into_inner()),
+            "\nphi512: bring a card up (phi up; phi vpu start), or set PHI512_EMULATE=1 to run it in software\n",
+        ]);
+        unsafe {
+            libc::signal(libc::SIGILL, libc::SIG_DFL);
+        }
+        return;
+    }
+
     if !emulate::supported(insn.mnemonic()) {
         let mut b = [0u8; 24];
         say(&[
@@ -326,6 +383,15 @@ extern "C" fn report() {
     if !VERBOSE.load(Ordering::Relaxed) {
         return;
     }
+    if CARD_ON.load(Ordering::Relaxed) {
+        let mut a = [0u8; 24];
+        say(&[
+            "phi512: the card ran ",
+            num(OFFLOADED.load(Ordering::Relaxed), &mut a),
+            " region(s); nothing was emulated\n",
+        ]);
+        return;
+    }
     let mut a = [0u8; 24];
     let mut b = [0u8; 24];
     let mut c = [0u8; 24];
@@ -384,6 +450,46 @@ extern "C" fn init() {
     PATCHING_ON.store(std::env::var_os("PHI512_NOPATCH").is_none(), Ordering::Relaxed);
     YMM_OFFSET.store(probe_ymm_offset(), Ordering::Relaxed);
 
+    // The card executes the program's AVX-512 unless the emulator is asked
+    // for. Without a card and without that request, the first AVX-512
+    // instruction stops the program with the reason: nothing is silently
+    // interpreted.
+    EMULATE_ON.store(std::env::var_os("PHI512_EMULATE").is_some(), Ordering::Relaxed);
+    if !EMULATE_ON.load(Ordering::Relaxed) {
+        match crate::offload::init() {
+            Ok(_) => CARD_ON.store(true, Ordering::Relaxed),
+            Err(e) => {
+                *CARD_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = e;
+            }
+        }
+        // The card writes the program's memory back whole chunks at a
+        // time, the stack included, so the handler must not keep its own
+        // frame on the program's stack: an alternate stack for this thread.
+        // SAFETY: an anonymous mapping handed to sigaltstack for the life
+        // of the process.
+        unsafe {
+            let size = 1 << 20;
+            let p = libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            );
+            if p != libc::MAP_FAILED {
+                let ss = libc::stack_t {
+                    ss_sp: p,
+                    ss_flags: 0,
+                    ss_size: size,
+                };
+                libc::sigaltstack(&ss, std::ptr::null_mut());
+            }
+        }
+        // Sites are not rewritten in card mode: a region runs whole.
+        PATCHING_ON.store(false, Ordering::Relaxed);
+    }
+
     // SAFETY: standard sigaction installation. A failure here is not
     // fatal: without the handler the process behaves exactly as it would
     // without this library loaded.
@@ -418,7 +524,13 @@ extern "C" fn init() {
     }
 
     if VERBOSE.load(Ordering::Relaxed) {
-        say(&["phi512: AVX-512 will be performed in software on this host\n"]);
+        if CARD_ON.load(Ordering::Relaxed) {
+            say(&["phi512: AVX-512 will be executed by the Xeon Phi card's vector units\n"]);
+        } else if EMULATE_ON.load(Ordering::Relaxed) {
+            say(&["phi512: AVX-512 will be performed in software on this host (PHI512_EMULATE)\n"]);
+        } else {
+            say(&["phi512: no card: ", &CARD_ERROR.lock().unwrap_or_else(|p| p.into_inner()), "\n"]);
+        }
     }
 }
 

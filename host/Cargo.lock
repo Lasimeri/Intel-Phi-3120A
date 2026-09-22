@@ -382,8 +382,11 @@ dependencies = [
 name = "phi512"
 version = "0.1.0"
 dependencies = [
+ "avx512-xlate",
  "iced-x86",
  "libc",
+ "phi-vfio",
+ "phi-vpu",
 ]
 
 [[package]]

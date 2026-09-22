@@ -34,11 +34,12 @@
 #include <time.h>
 #include <unistd.h>
 #include "vpu_proto.h"
+#include "vpu_exec.h"
 
 /* Translated from AVX-512 by avx512-xlate; see card/examples/avx512_poly.S */
 void poly_kernel_x8(float *d, const float *x, const float *coef, long n);
 
-#define CTRL_BYTES 4096
+#define CTRL_BYTES 16384   /* control words, the mailbox and the exec descriptor (vpu_exec.h) */
 #define MAX_POOL 227          /* 228 hardware threads less the dispatcher */
 #define SPIN_ROUNDS 2000      /* polls of the generation word between clock reads */
 static uint64_t spin_ns = 200000000ULL;  /* spin this long after the last job, then park; -s MS */
@@ -325,6 +326,7 @@ int main(int argc, char **argv)
      * hardware threads are taken. */
     pin(0);
     if (pool_start(max_threads - 1) != 0) return 1;
+    if (vpu_exec_init() != 0) return 1;
 
     printf("phi-vpu-worker: %d threads pinned (%d in the pool plus this one), polling\n",
            max_threads, max_threads - 1);
@@ -383,16 +385,17 @@ int main(int argc, char **argv)
         uint64_t pull_ns = 0, push_ns = 0, compute_ns = 0;
         size_t bytes = (size_t)n * 4;
 
-        if (n <= 0 || (in_off | out_off | aux_off) % VPU_BLOCK != 0) status = VPU_E_REQUEST;
+        if (kernel == VPU_K_EXEC) status = vpu_exec_run(ctrl, blk, verbose);
         else if (kernel != VPU_K_POLY30) status = VPU_E_KERNEL;
+        else if (n <= 0 || (in_off | out_off | aux_off) % VPU_BLOCK != 0) status = VPU_E_REQUEST;
         else if (reserve(&in, bytes) || reserve(&out, bytes) || reserve(&coef, aux_len)) status = VPU_E_ALLOC;
 
-        if (status == VPU_OK) {
+        if (status == VPU_OK && kernel == VPU_K_POLY30) {
             uint64_t p0 = now_ns();
             if (pull(in.p, bytes, in_off) || pull(coef.p, aux_len, aux_off)) status = VPU_E_PULL;
             pull_ns = now_ns() - p0;
         }
-        if (status == VPU_OK) {
+        if (status == VPU_OK && kernel == VPU_K_POLY30) {
             uint64_t c0 = now_ns();
             live = dispatch(threads, in.p, out.p, coef.p, n);
             compute_ns = now_ns() - c0;
