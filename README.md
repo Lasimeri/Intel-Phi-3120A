@@ -80,41 +80,41 @@ Dated measurements: [`docs/README.md`](docs/README.md#results) lists them.
 
 ## Quick start on Arch Linux
 
+One command does the whole thing, from a fresh install to a running card:
+
 ```sh
 git clone https://github.com/Lasimeri/Intel-Phi-3120A.git "Intel Phi 3120A"
 cd "Intel Phi 3120A"
-sudo scripts/setup-arch.sh          # packages, phi group, udev rule, memlock, vfio-pci claims the card at boot
-scripts/verify-card.sh              # the card, its link, BARs, IOMMU group
-sudo scripts/bind-vfio.sh           # bind now; after a reboot vfio-pci should claim it itself (setup-arch.md)
-make build                          # cargo build of the host workspace
-host/target/debug/phictl info       # first contact: POST code and scratchpads (needs the card unheld)
+export PHI_DISK=/var/lib/phi/disk.img   # where the card's persistent disk goes
+scripts/phi-install.sh
 ```
 
-Then the card side, in the order of `docs/reproducibility.md`: the toolchain
-(`toolchain/README.md`, about two hours of machine time), the kernel
-(`card/kernel/build.sh all`), the userland components, the initramfs
-(`card/initramfs/build.sh`), a disk image (`scripts/phi-disk.sh create`),
-and:
+It runs the sixteen stages of `docs/reproducibility.md` in order, checks
+whether each one is already done before doing it, and resumes where it
+stopped if anything fails. It asks for `sudo` once, up front, for the two
+stages that need it; nothing after that needs root. Expect a couple of
+hours the first time, almost all of it the two LLVM builds.
 
 ```sh
-scripts/phi-autoboot.sh install /path/to/disk.img 6G   # run the card from a user service
-scripts/phi-autoboot.sh at-boot                        # ...starting at host boot, not at login
-scripts/phi.sh install-cli                             # phi, phitop, phictl on PATH; fish completions
+scripts/phi-install.sh status     # what is done, what is not, what it makes
+scripts/phi-install.sh --dry-run  # what it would do
+scripts/phi-install.sh --full     # also build clang to run on the card
 ```
 
-After that one command drives everything, from any shell, without `sudo`:
+Then, from any shell, without `sudo`:
 
 ```sh
 phi status            # unit, card, memory, disk, and who can reach it
+phi up                # boot it (the autoboot stage does this at login or at host boot)
 phi run nproc         # 228; stdin, stdout, stderr and the exit status relayed
 phi sh                # an interactive login shell on the card
 phi top               # the live viewer (or just: phitop)
-phi up / phi down     # start and stop; down unmounts the card's disk first
+phi down              # stop; unmounts the card's disk first
 ```
 
-`scripts/phi.md` lists the rest. The scripts underneath (`phi-up.sh`, `phi-run.sh`,
-`phi-down.sh`) still work on their own for a card booted by hand.
-
+`scripts/phi-install.md` documents the stages, `scripts/phi.md` the rest of
+the commands. To do it by hand instead, or to understand what any stage is
+doing, `docs/reproducibility.md` is the walkthrough with durations.
 ## Conventions
 
 Every source file has a sibling Markdown file with the same stem that explains
