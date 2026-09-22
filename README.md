@@ -6,7 +6,7 @@ addressed by an index), written in Rust
 wherever Rust can run, with C only where the hardware or an upstream project
 leaves no choice.
 
-What it does today (2026-09-17, every item measured and recorded in
+What it does today (2026-09-22, every item measured and recorded in
 `docs/results/`):
 
 1. The card boots a **mainline Linux 7.2.3** kernel with a 28-patch series
@@ -75,8 +75,8 @@ Dated measurements: [`docs/README.md`](docs/README.md#results) lists them.
 | `host/` | Rust workspace. Binaries: `phictl` (boot, console, control socket daemon, disk and host-memory service, SSH forwarder, sensors), `phitop` (live viewer), `phi-isa-audit` (flags KNC-illegal instructions in any x86-64 ELF), `knc-mvex-gen` (emits the vector-code files). Libraries: `phi-vfio` (VFIO device access, DMA mapping, PCIe byte counters, and `cards`: the index-to-card mapping every tool shares), `phi-regs` (SBOX/DBOX register map, POST codes, bzImage header offsets), `phi-hw` (reset, boot, image loading, DMA engine), `phi-ring` (host side of the ring transport), `phi-rpc` (frames of the control channel, shared with the card agent), `knc-mvex` (MVEX encoder). AVX-512: `avx512-xlate` (EVEX to MVEX translator), `phi512` (the `LD_PRELOAD` library that performs AVX-512 in software on a host without it), `phi-vpu` (hands AVX-512 work to the card's vector units). |
 | `card/` | Everything that runs on the card: `kernel/` (28-patch series against v7.2.3, config fragment, build script), `agent/` (`phi-agent`, Rust, the card end of the control socket), `initramfs/` (`init` and the assembly script), `userland/components/` (busybox, dropbear, zlib, ncurses, CPython build scripts; clang packaging; gcc, tcc, QuickJS notes), `examples/` (benchmarks and probes compiled on the card), `vpu/` (the resident AVX-512 co-processor worker and its host/card protocol), `drivers/phinet/include/phi_ring.h` (the C mirror of the ring layout). |
 | `toolchain/` | How code for the card is compiled: the LLVM patch series and build script (three variants), `knc-cc`/`knc-c++` wrappers, musl, compiler-rt, libunwind, libc++, the Rust target JSON and `build-std`, the phase P2 exit check. |
-| `scripts/` | `phi.sh`, the one command a person uses (`phi up/run/sh/top/status/down`), plus what it drives: host setup (`setup-arch.sh`), card verification and VFIO binding, the card's daily drivers (`phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh`), reference fetching, documentation lint, and the AVX-512 pieces (`phi-vpu.sh` deploys and drives the card worker; `phi512.sh`, `phi512-check.sh`, `phi512-install.sh`, `phi512-ground.sh` run, verify, install and ground the software path). Each script has a sibling `.md`. |
-| `docs/` | `reproducibility.md` (the fresh-clone walkthrough), `hardware.md`, `plan.md`, `howto/` (build and run, direct access, monitoring, secure access), `spec/` (ring protocol, SBOX registers), `decisions/` (ADRs), `research/`, `results/` (dated measurements). |
+| `scripts/` | `phi.sh`, the one command a person uses (`phi [-c N] cards/up/run/sh/top/status/vpu/down`), plus what it drives: host setup (`setup-arch.sh`), the one-command installer (`phi-install.sh`), card verification and VFIO binding for every card, the cards' daily drivers (`phi-env.sh` names what card N owns, `phi-boot.sh` assembles its boot line, `phi-up.sh`, `phi-run.sh`, `phi-down.sh`, `phi-disk.sh`, `phi-autoboot.sh` with the `phi@N` template), reference fetching, documentation lint, and the AVX-512 pieces (`phi-vpu.sh` deploys and drives the card worker; `phi512.sh`, `phi512-check.sh`, `phi512-install.sh`, `phi512-ground.sh` run, verify, install and ground the software path). Each script has a sibling `.md`. |
+| `docs/` | `reproducibility.md` (the fresh-clone walkthrough), `hardware.md`, `plan.md`, `howto/` (build and run, direct access, monitoring, secure access, multiple cards), `spec/` (ring protocol, SBOX registers), `decisions/` (ADRs), `research/`, `results/` (dated measurements). |
 | `tools/` | C helpers compiled with `tcc` or `gcc`: the two layout cross-checks (ring transport, offload protocol), a boot-path bisection stub, and the AVX-512 conformance, demo and vector-generation programs. |
 | `vendor/` | Git-ignored. Reference material fetched by `scripts/fetch-vendor.sh` (MPSS 3.8.6 archives, Intel's k1om kernel tree, PDFs). Never committed, never linked into builds. |
 
@@ -99,7 +99,7 @@ export PHI_DISK=/var/lib/phi/disk.img   # where the card's persistent disk goes
 scripts/phi-install.sh
 ```
 
-It runs the sixteen stages of `docs/reproducibility.md` in order, checks
+It runs the seventeen stages of `docs/reproducibility.md` in order, checks
 whether each one is already done before doing it, and resumes where it
 stopped if anything fails. It asks for `sudo` once, up front, for the two
 stages that need it; nothing after that needs root. Expect a couple of
@@ -114,13 +114,19 @@ scripts/phi-install.sh --full     # also build clang to run on the card
 Then, from any shell, without `sudo`:
 
 ```sh
-phi status            # unit, card, memory, disk, and who can reach it
-phi up                # boot it (the autoboot stage does this at login or at host boot)
+phi cards             # every card: index, address, link, state
+phi status            # one line per card; phi -c N status for one in full
+phi up                # boot card 0 (the autoboot stage does this at host boot); phi up all
 phi run nproc         # 228; stdin, stdout, stderr and the exit status relayed
-phi sh                # an interactive login shell on the card
-phi top               # the live viewer (or just: phitop)
-phi down              # stop; unmounts the card's disk first
+phi -c 1 sh           # an interactive login shell on card 1
+phi top               # the live viewer, every card in its own block (or just: phitop)
+phi ssh-config --apply  # ssh phi, ssh phi1, ... through ~/.ssh/config
+phi down all          # stop; unmounts each card's disk first
 ```
+
+With more than one card, `-c N` (or `PHI_CARD=N`) names the card for
+every command; card 0 is the default and keeps every single-card path
+(`docs/howto/multiple-cards.md`).
 
 `scripts/phi-install.md` documents the stages, `scripts/phi.md` the rest of
 the commands. To do it by hand instead, or to understand what any stage is
@@ -135,7 +141,8 @@ on the card runs it across the 57 vector units, and every result lane is
 the bit AVX-512 hardware would have produced.
 
 ```sh
-scripts/phi-vpu.sh poly --n 16777216 --threads 57   # deploy, start, run, verify
+phi vpu poly --n 16777216 --threads 57         # deploy, start, run, verify, on card 0
+phi -c 1 vpu poly --n 16777216 --threads 57    # the same on card 1
 ```
 
 | piece | what it does | where it runs |

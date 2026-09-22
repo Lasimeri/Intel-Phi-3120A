@@ -28,17 +28,23 @@
 phi_env() {
     PHI_ARGS=()
     local card="${PHI_CARD:-}"
+    # Whether a card was named at all (option or variable), for commands
+    # that act on every card when none is.
+    PHI_CARD_GIVEN=${PHI_CARD:+yes}
+    PHI_CARD_GIVEN=${PHI_CARD_GIVEN:-no}
     # Only LEADING card options are ours. Parsing the whole line ate the
     # -c of `phi -c 1 run sh -c '...'` and handed the shell's command text
     # to the index check.
     while [ $# -gt 0 ]; do
         case "$1" in
-            -c|--card) card="$2"; shift 2 ;;
-            -c[0-9]*) card="${1#-c}"; shift ;;
-            --card=*) card="${1#--card=}"; shift ;;
+            -c|--card) card="$2"; PHI_CARD_GIVEN=yes; shift 2 ;;
+            -c[0-9]*) card="${1#-c}"; PHI_CARD_GIVEN=yes; shift ;;
+            --card=*) card="${1#--card=}"; PHI_CARD_GIVEN=yes; shift ;;
             *) break ;;
         esac
     done
+    # Every card this host knows, for callers that loop over them.
+    PHI_CARDS=$("${PHICTL:-$root/host/target/debug/phictl}" cards --plain 2>/dev/null | awk '$3 == "yes" {print $1}' | tr '\n' ' ')
     PHI_ARGS=("$@")
     [ -n "$card" ] || card=0
     case "$card" in

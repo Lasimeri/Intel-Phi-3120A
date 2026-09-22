@@ -41,10 +41,10 @@ the stack the day the second card arrived.
 | Command | What it does |
 | --- | --- |
 | `phi cards` | Every card: index, address, link, driver, group, whether a daemon answers, disk, host memory; and the unit states |
-| `phi up [ARGS]` | Starts the card. With the systemd unit installed and no arguments, starts `phi@N` and waits for the agent; with arguments, or without the unit, runs `scripts/phi-up.sh -c N` instead and passes them on |
-| `phi down` | Stops the unit, or runs `scripts/phi-down.sh -c N`. Either way the card powers off through init, so its disk unmounts |
+| `phi up [ARGS]` | Starts the card (`phi up all`: every card). With the systemd unit installed and no arguments, starts `phi@N` and waits for the agent; with arguments, or without the unit, runs `scripts/phi-up.sh -c N` instead and passes them on |
+| `phi down` | Stops the unit, or runs `scripts/phi-down.sh -c N` (`phi down all`: every card). Either way the card powers off through init, so its disk unmounts |
 | `phi restart` | Down, then up |
-| `phi status` | Card, unit state, socket, agent, hostname, kernel, CPU count, memory, swap, disk, and the list of paths that can reach the card |
+| `phi status` | With no card named and several present, the cards table and one line per card; otherwise card, unit state, socket, agent, hostname, kernel, CPU count, memory, swap, disk, and the list of paths that can reach the card |
 | `phi run CMD` | Runs a command through the control socket. Stdin, stdout, stderr and the exit status are relayed |
 | `phi sh [CMD]` | An interactive login shell on the card over its loopback SSH forward, or one command in a login shell |
 | `phi put`, `phi get` | Copy a file in or out through the control socket |
@@ -53,6 +53,8 @@ the stack the day the second card arrived.
 | `phi console` | Follows the card's console: the log file for an unprivileged boot, the journal for the unit |
 | `phi log` | The unit's journal, or the console log |
 | `phi disk ARGS` | `scripts/phi-disk.sh` (create, check, usage) |
+| `phi vpu ARGS` | `scripts/phi-vpu.sh -c N ARGS`: the AVX-512 co-processor worker on this card (`deploy`, `start`, `stop`, `status`, `log`, `poly`) |
+| `phi ssh-config [--apply]` | One `~/.ssh/config` stanza per known card (`ssh phi`, `ssh phi1`, ...), each on its own forward port with the one pinned host key; printed, or appended with `--apply` |
 | `phi install-cli` | The symlink and the completions |
 
 ## Finding the control socket

@@ -50,9 +50,11 @@ index and is reported absent, so pulling card 1 does not renumber card 2.
 2. Reboot. The modprobe option `ids=8086:225d` binds every card to
    `vfio-pci`, and the udev rule gives every VFIO group to group `phi`.
    `scripts/verify-card.sh` prints all of them.
-3. `phi cards init` if the file does not exist yet, else add a line.
+3. `phi cards init` if the file does not exist yet, else add a line
+   (`scripts/phi-install.sh` runs this as its `cards` stage).
 4. A disk image: `scripts/phi-disk.sh create /mnt/1TB-NVMe/phi/diskN.img 64G`,
-   named on the card's line.
+   named on the card's line (the installer's `disk` stage creates every
+   missing one).
 5. `scripts/phi-autoboot.sh install N` (or `install all`) enables
    `phi@N.service`; `phi -c N status` shows it up.
 6. The native toolchain lives on each card's own disk:
@@ -67,8 +69,10 @@ Every tool takes the index: `phi -c N ...`, `phictl --card N ...`,
 sh` reaches the card over its own forward; the cards all boot the same
 image and present the same SSH host key, so the one pinned entry in
 `~/.ssh/known_hosts_phi` covers every port through `HostKeyAlias=phi`.
-For a `~/.ssh/config` stanza per card, copy the `Host phi` one with
-`Port 2222+N` and `HostKeyAlias phi`.
+`phi ssh-config --apply` writes a `~/.ssh/config` stanza per card, so
+`ssh phi1` works like `ssh phi`. `phi vpu ...` is the co-processor worker
+on the selected card; `phi status` with no card named shows one line per
+card, `phi up all` and `phi down all` act on every card.
 
 `phitop` with no card named shows every card in its own block, sampled
 on its own socket from its own model; `n` and `p` focus one card, `a`

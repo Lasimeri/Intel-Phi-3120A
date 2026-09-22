@@ -38,7 +38,7 @@ bold=$'\033[1m'; dim=$'\033[2m'; green=$'\033[32m'; yellow=$'\033[33m'; red=$'\0
 
 # Stage order is dependency order. Each id has a check_ and a run_ function
 # and one line of description below.
-stages=(packages card vfio host-tools llvm sysroot llvm-dylib rust-std userland sshkey agent kernel initramfs disk cli autoboot)
+stages=(packages card vfio cards host-tools llvm sysroot llvm-dylib rust-std userland sshkey agent kernel initramfs disk cli autoboot)
 stages_full=(libcxx llvm-card clang-pkg)
 
 describe() {
@@ -46,6 +46,7 @@ describe() {
         packages)   echo "host packages, the phi group, the udev rule, memlock" ;;
         card)       echo "every card is enumerated and its link is healthy" ;;
         vfio)       echo "vfio-pci owns every card" ;;
+        cards)      echo "~/.config/phi/cards: which card is index 0, 1, ... and its disk" ;;
         host-tools) echo "phictl, phitop, phi-isa-audit, the MVEX encoder" ;;
         llvm)       echo "the patched clang and lld that can target this card" ;;
         sysroot)    echo "musl, compiler-rt and libunwind for the card" ;;
@@ -70,6 +71,7 @@ produces() {
         packages)   echo "group phi, /etc/udev/rules.d" ;;
         card)       echo "(a check, produces nothing)" ;;
         vfio)       echo "the card bound to vfio-pci" ;;
+        cards)      echo "${XDG_CONFIG_HOME:-$HOME/.config}/phi/cards" ;;
         host-tools) echo "host/target/debug/phictl" ;;
         llvm)       echo "toolchain/build/llvm/bin/clang" ;;
         sysroot)    echo "toolchain/build/sysroot/usr/lib/libc.a" ;;
@@ -96,6 +98,24 @@ needs_root() { case "$1" in packages|vfio) return 0 ;; *) return 1 ;; esac; }
 # worth asking about.
 is_long() { case "$1" in llvm|llvm-dylib|llvm-card) return 0 ;; *) return 1 ;; esac; }
 
+# Disk images, one per card, from the cards file (card 0 falls back to
+# PHI_DISK when the file is absent). The disk stage refuses to guess a
+# location: PHI_DISK or the file must say.
+cards_file() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/phi/cards"; }
+cards_disks() {
+    if [ -f "$(cards_file)" ]; then awk '!/^#/ && NF >= 2 && $2 != "-" {print $2}' "$(cards_file)"; else echo "${PHI_DISK:-}"; fi
+}
+cards_disks_exist() { local d n=0; for d in $(cards_disks); do [ -f "$d" ] || return 1; n=$((n + 1)); done; [ $n -gt 0 ]; }
+cards_disks_create() {
+    local d n=0
+    for d in $(cards_disks); do
+        n=$((n + 1))
+        [ -f "$d" ] && continue
+        scripts/phi-disk.sh create "$d" "${PHI_DISK_SIZE:-64G}"
+    done
+    [ $n -gt 0 ] || { echo "phi-install: no disk image named: set PHI_DISK, or run the cards stage" >&2; return 1; }
+}
+
 bdf() { lspci -Dn -d 8086:225d 2>/dev/null | awk '{print $1; exit}'; }
 bdfs() { lspci -Dn -d 8086:225d 2>/dev/null | awk '{print $1}'; }
 
@@ -104,6 +124,7 @@ check() {
         packages)   getent group phi >/dev/null 2>&1 && command -v clang >/dev/null && command -v tcc >/dev/null ;;
         card)       [ -n "$(bdf)" ] ;;
         vfio)       local b ok=1; for b in $(bdfs); do [ "$(basename "$(readlink -f "/sys/bus/pci/devices/$b/driver" 2>/dev/null)" 2>/dev/null)" = vfio-pci ] || ok=0; done; [ -n "$(bdfs)" ] && [ $ok = 1 ] ;;
+        cards)      [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/phi/cards" ] ;;
         host-tools) [ -x host/target/debug/phictl ] ;;
         llvm)       [ -x toolchain/build/llvm/bin/clang ] ;;
         sysroot)    [ -f toolchain/build/sysroot/usr/lib/libc.a ] ;;
@@ -115,7 +136,7 @@ check() {
         agent)      [ -x card/agent/target/x86_64-knc-linux-musl/release/phi-agent ] ;;
         kernel)     [ -s card/kernel/build/out/arch/x86/boot/bzImage ] ;;
         initramfs)  [ -s card/initramfs/build/initramfs.cpio.gz ] ;;
-        disk)       [ -n "${PHI_DISK:-}" ] && [ -f "${PHI_DISK}" ] ;;
+        disk)       cards_disks_exist ;;
         cli)        [ -x "$HOME/.local/bin/phi" ] ;;
         autoboot)   [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/phi@.service" ] ;;
         libcxx)     [ -f toolchain/build/sysroot/usr/lib/libc++.a ] ;;
@@ -130,6 +151,7 @@ run_stage() {
         packages)   sudo scripts/setup-arch.sh ;;
         card)       scripts/verify-card.sh ;;
         vfio)       sudo scripts/bind-vfio.sh ;;
+        cards)      scripts/phi.sh cards init "$(dirname "${PHI_DISK:-/var/lib/phi/disk.img}")" ;;
         host-tools) make build ;;
         llvm)       toolchain/llvm/build.sh all ;;
         sysroot)    toolchain/musl/build.sh && toolchain/compiler-rt/build.sh && toolchain/libunwind/build.sh ;;
@@ -140,8 +162,7 @@ run_stage() {
         agent)      card/agent/build.sh ;;
         kernel)     card/kernel/build.sh all ;;
         initramfs)  card/initramfs/build.sh ;;
-        disk)       [ -n "${PHI_DISK:-}" ] || { echo "phi-install: set PHI_DISK to where the card's disk image should live" >&2; return 1; }
-                    scripts/phi-disk.sh create "$PHI_DISK" "${PHI_DISK_SIZE:-64G}" ;;
+        disk)       cards_disks_create ;;
         cli)        scripts/phi.sh install-cli ;;
         autoboot)   scripts/phi-autoboot.sh install all ;;
         libcxx)     toolchain/libcxx/build.sh ;;

@@ -63,7 +63,8 @@ In dependency order, which is also the order they run.
 | `agent` | `phi-agent`, the card end of the control channel |
 | `kernel` | the patched Linux kernel for the card |
 | `initramfs` | the boot image |
-| `disk` | a persistent disk image the card mounts on `/data` |
+| `cards` | `~/.config/phi/cards`: which card is index 0, 1, ... and where its disk image lives (`phi cards init`) |
+| `disk` | a persistent disk image per card, from the cards file (card 0 falls back to `PHI_DISK`) |
 | `cli` | `phi`, `phictl` and `phitop` on `PATH` |
 | `autoboot` | a user service that runs the card at host boot |
 
@@ -82,7 +83,7 @@ directory, so booting and using the card never needs `sudo` at all.
 
 | variable | meaning |
 | --- | --- |
-| `PHI_DISK` | where the card's persistent disk image lives. The `disk` stage refuses to guess. |
+| `PHI_DISK` | where card 0's persistent disk image lives; the `cards` stage puts every card's image in that directory (`disk.img`, `disk1.img`, ...) and the `disk` stage creates the ones that are missing. Without it and without a cards file the `disk` stage refuses to guess. |
 | `PHI_DISK_SIZE` | size of that image, default `64G`. It is sparse, so this is a ceiling and not an allocation. |
 | `PHI_HOST_MEM` | host RAM given to the card as swap, default `6G` |
 

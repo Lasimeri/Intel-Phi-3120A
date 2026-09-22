@@ -67,11 +67,14 @@ phi: drive the Intel Xeon Phi cards from this host.
 
   phi cards               every card this host knows: index, address, link, state
   phi cards init [DIR]    write ~/.config/phi/cards from the enumerated cards
-  phi up [args]           boot the card and serve it (the systemd unit if installed,
-                          else scripts/phi-up.sh; args go to phi-up.sh)
-  phi down                power the card off and release it
+  phi up [all|args]       boot the card and serve it (the systemd unit if installed,
+                          else scripts/phi-up.sh; args go to phi-up.sh); `all` = every card
+  phi down [all]          power the card off and release it
   phi restart
-  phi status              unit, card, storage, and every way in
+  phi status              unit, card, storage, and every way in; with no -c and
+                          several cards, one line per card
+  phi vpu ARGS            the AVX-512 co-processor worker on this card (scripts/phi-vpu.sh)
+  phi ssh-config [--apply] a ~/.ssh/config stanza per card: ssh phi, ssh phi1, ...
   phi run CMD [ARGS]      run a command on the card (control socket; stdin relayed)
   phi sh [CMD]            interactive shell on the card, or one command, over SSH
   phi put SRC DST         copy a file to the card
@@ -88,6 +91,17 @@ USAGE
 
 cmd=${1:-help}
 [ $# -gt 0 ] && shift
+
+# `phi up all`, `phi down all`, `phi status` with no card named and more
+# than one present: do it per card, through this same script.
+each_card() {
+    local c
+    for c in $PHI_CARDS; do
+        echo "== card $c"
+        "$0" -c "$c" "$@" || true
+    done
+}
+n_cards=$(printf '%s' "$PHI_CARDS" | wc -w)
 
 case "$cmd" in
 cards)
@@ -121,6 +135,7 @@ cards)
     ;;
 
 up)
+    if [ "${1:-}" = all ]; then shift; each_card up "$@"; exit 0; fi
     if card_up; then
         echo "phi: card $PHI_CARD is already up ($sock)"
         exit 0
@@ -142,6 +157,7 @@ up)
     ;;
 
 down)
+    if [ "${1:-}" = all ]; then each_card down; exit 0; fi
     if have_unit && unit_active; then
         systemctl --user stop "$unit"
         echo "phi: $unit stopped"
@@ -157,6 +173,19 @@ restart)
     ;;
 
 status)
+    if [ "$PHI_CARD_GIVEN" = no ] && [ "$n_cards" -gt 1 ] && [ "${1:-}" != one ]; then
+        # No card named and several present: the overview, then one line
+        # per card. `phi -c N status` has the full picture for one.
+        "$P" cards
+        echo
+        for c in $PHI_CARDS; do
+            s=$("$0" -c "$c" status one 2>/dev/null | awk '/^(hostname|uptime|memory|\/data)/ {sub(/^[a-z\/]+ +/, ""); printf "%s | ", $0}')
+            printf 'card %s  %s\n' "$c" "${s%| }"
+        done
+        echo
+        echo "one card in full: phi -c N status"
+        exit 0
+    fi
     printf 'card      %s (%s%s)\n' "$PHI_CARD" "${PHI_BDF_SEL:-not enumerated}" "${PHI_PRESENT/yes/}"
     if have_unit; then
         printf 'unit      %s %s (%s)\n' "$unit" "$(systemctl --user is-active "$unit")" \
@@ -291,6 +320,46 @@ log)
 
 disk)
     exec "$root/scripts/phi-disk.sh" "$@"
+    ;;
+
+vpu)
+    # The AVX-512 co-processor worker on this card (scripts/phi-vpu.md).
+    exec "$root/scripts/phi-vpu.sh" -c "$PHI_CARD" "$@"
+    ;;
+
+ssh-config)
+    # One ~/.ssh/config stanza per known card: `ssh phiN` reaches card N
+    # through its own forward with the one pinned host key. `phi` stays
+    # an alias of card 0. Printed by default; --apply appends the stanzas
+    # that are missing.
+    key="$HOME/.ssh/phi_ed25519"
+    out=""
+    for c in $(awk '{print $1}' <<< "$("$P" cards --plain 2>/dev/null)"); do
+        name=phi$c; [ "$c" = 0 ] && name="phi phi0"
+        grep -qE "^Host .*\bphi$c\b|^Host .*\bphi\b" "$HOME/.ssh/config" 2>/dev/null && [ "$c" = 0 ] && continue
+        grep -qE "^Host .*\bphi$c\b" "$HOME/.ssh/config" 2>/dev/null && continue
+        out+="Host $name
+    HostName 127.0.0.1
+    Port $((2222 + c))
+    User root
+    IdentityFile $key
+    IdentitiesOnly yes
+    UserKnownHostsFile $HOME/.ssh/known_hosts_phi
+    HostKeyAlias phi
+    StrictHostKeyChecking accept-new
+
+"
+    done
+    if [ -z "$out" ]; then echo "phi ssh-config: every known card already has a stanza"; exit 0; fi
+    if [ "${1:-}" = --apply ]; then
+        mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+        printf '\n# Added by phi ssh-config (Intel Phi 3120A project)\n%s' "$out" >> "$HOME/.ssh/config"
+        chmod 600 "$HOME/.ssh/config"
+        echo "appended to $HOME/.ssh/config:"; printf '%s' "$out"
+    else
+        printf '%s' "$out"
+        echo "# phi ssh-config --apply appends these to ~/.ssh/config"
+    fi
     ;;
 
 install-cli)
