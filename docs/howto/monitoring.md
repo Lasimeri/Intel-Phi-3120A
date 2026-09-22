@@ -12,7 +12,7 @@ Verified against the live card on 2026-09-17; the numbers are in
 | bytes the daemon moved over PCIe since it started | `phi_vfio::traffic` counters at the two copy paths (aperture, DMA engine) | `phi traffic` |
 | hardware counters around a command | `phiperf` (`card/examples/phiperf.c`, compiled on the card), a `perf stat` for the KNC PMU driver (two counters per core) | `./phiperf ./program args`; `./phiperf -n -r 0x10cb,0x10cc ./program` for raw events only |
 | disk and host-memory service messages | the daemon's console | `[phictl] disk:` and `[phictl] host memory:` lines in `$XDG_RUNTIME_DIR/phictl/console.log` (`phi-up.sh`) or `journalctl --user -u phi.service` (autoboot) |
-| service state | systemd user instance | `phi status`, `phi log -f`, or `systemctl --user status phi.service` |
+| service state | systemd user instance | `phi status`, `phi log -f`, or `systemctl --user status phi@0.service` (card N: `phi@N`) |
 
 `phitop` keys: `q` quit, `c` and `m` sort processes by CPU or memory, `k`
 show or hide the kernel threads the card reports (those that used CPU

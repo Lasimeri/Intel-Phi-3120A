@@ -34,7 +34,7 @@ for files you push yourself, this step is yours.
 
 ## 3. Move it and run it
 
-With the card up (`scripts/phi-up.sh --ssh`, or `phi.service`):
+With the card up (`phi up`, which uses `phi@0.service` when installed):
 
 ```
 phi put hello /tmp/hello          # mode kept; /data/... persists across boots

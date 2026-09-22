@@ -41,11 +41,12 @@ index and is reported absent, so pulling card 1 does not renumber card 2.
 
 ## Bringing a new card up
 
-1. Seat it, and connect **both** auxiliary power connectors: a 300 W SKU
-   refuses to power up, and therefore to train its link, with either one
-   missing (datasheet 328209, "Supplemental Power Connectors"). A card
-   that did not power up leaves no trace in `lspci` and does not affect
-   POST.
+1. Seat it fully, and connect both auxiliary power connectors. A card
+   whose link does not train, because it is not seated or because a
+   300 W SKU saw only one supply (datasheet 328209, "Supplemental Power
+   Connectors"), leaves no trace in `lspci` and does not affect POST:
+   AMD firmware hides a root port with no link partner. The second card
+   here was a seating problem.
 2. Reboot. The modprobe option `ids=8086:225d` binds every card to
    `vfio-pci`, and the udev rule gives every VFIO group to group `phi`.
    `scripts/verify-card.sh` prints all of them.

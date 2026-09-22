@@ -77,7 +77,7 @@ been seen:
 | --- | --- | --- |
 | `is not bound to vfio-pci` | The card came up with no driver after a host reboot | `sudo scripts/bind-vfio.sh` now; `sudo scripts/setup-arch.sh` so it sticks (`scripts/setup-arch.md`) |
 | `No such file or directory` on the kernel or initramfs path | The build tree under `~/.cache` was cleared, or the symlinks point at a different user | Rebuild: `card/kernel/build.sh all`, `card/initramfs/build.sh` |
-| `card N is not on the PCI bus` | The card in `~/.config/phi/cards` at that index did not enumerate | `phictl cards`; reseat or repower it (the 300 W SKU refuses to power up without both auxiliary connectors) |
+| `card N is not on the PCI bus` | The card in `~/.config/phi/cards` at that index did not enumerate | `phictl cards`; reseat it (a card with no link is invisible to `lspci` and to POST), and check both auxiliary connectors |
 | `disk image ... not found` | No image for that card yet | `scripts/phi-disk.sh create PATH SIZE` and name it in `~/.config/phi/cards` |
 
 A unit holds its card for as long as the session lasts, so a failing

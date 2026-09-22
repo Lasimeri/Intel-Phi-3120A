@@ -14,11 +14,11 @@ had its device. AMD firmware hides a root port whose link did not train,
 so a card with no link is indistinguishable from an empty slot, and the
 host POSTs regardless.
 
-The cause was power. Intel's datasheet (328209, "Supplemental Power
-Connectors") says a 300 W SKU's sensors must detect both the 2x4 and the
-2x3 auxiliary supplies before the card powers up at all; with one
-missing there is no power-up, no link, no enumeration. With both
-connected the card appeared at once:
+The cause was mechanical: the card was not fully seated, so its link
+never trained. (Intel's datasheet, 328209 "Supplemental Power
+Connectors", gives a second way to the same symptom: a 300 W SKU does
+not power up unless both auxiliary supplies are detected. Software sees
+the two identically.) Reseated, the card appeared at once:
 
 ```
 24:00.0 Co-processor [0b40]: Intel Corporation Xeon Phi coprocessor 3120 series [8086:225d] (rev 20)

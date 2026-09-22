@@ -35,14 +35,16 @@ from the BAR and needed no change. Everything below was measured on card
 separately beyond booting, running the AVX-512 offload worker and
 answering `phitop`.
 
-**What it took to enumerate the second card.** Nothing in software: with
-one auxiliary connector missing the card does not power up, does not
-train its link, leaves no trace in `lspci` and does not affect POST
-(datasheet 328209, "Supplemental Power Connectors": a 300 W SKU must see
-both the 2x4 and the 2x3 driven). After both were connected it appeared
-on the chipset port, bound itself to `vfio-pci` through the `ids=`
-option, and booted at once. An x4 chipset slot is a quarter of the first
-card's link for bulk DMA and makes no difference to compute.
+**What it took to enumerate the second card.** Nothing in software: it
+was not seated. A card whose link does not train leaves no trace in
+`lspci` (AMD firmware hides a root port with no link partner) and does
+not affect POST, so the host cannot tell an unseated card from an empty
+slot. Reseated, it appeared on the chipset port, bound itself to
+`vfio-pci` through the `ids=` option, and booted at once. The same
+symptom has a second cause worth knowing: a 300 W SKU refuses to power
+up unless both auxiliary connectors are driven (datasheet 328209,
+"Supplemental Power Connectors"). An x4 chipset slot is a quarter of the
+first card's link for bulk DMA and makes no difference to compute.
 
 | Property | Value | Source |
 | --- | --- | --- |

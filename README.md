@@ -31,6 +31,15 @@ What it does today (2026-09-17, every item measured and recorded in
 7. The 512-bit vector unit is reachable through a project encoder
    (`knc-mvex`); the Mandelbrot iteration on the VPU runs at 1.47x the host's
    16 AVX2 threads.
+8. **The card executes AVX-512 for a host that has none**: a program's
+   AVX-512 machine code is rewritten into the card's instruction set, a
+   resident worker runs it across the 57 vector units, and every result
+   lane is bit-identical to AVX-512 hardware (316 GFLOP/s on card 0, 374 on
+   card 1, 2026-09-22). A host-side software fallback runs unmodified
+   AVX-512 binaries when the card is not worth the trip.
+9. **Up to 16 cards in one host**, each addressed by an index that fixes
+   its socket, port, subnet, hostname, disk and systemd instance; two are
+   running today (`docs/howto/multiple-cards.md`).
 
 Not done: gcc, tcc and QuickJS on the card (phases P8 and P9 are design notes
 under `card/userland/components/`), `make` on the card, interrupts (every

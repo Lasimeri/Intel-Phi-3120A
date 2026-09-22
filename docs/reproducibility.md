@@ -5,7 +5,7 @@ the pieces depend on each other. Every command is one that exists in the
 repository today (2026-09-19) with the flags shown; steps marked
 **(recorded)** were run on this machine and their output is in
 `docs/results/`, steps marked **(verified against the live card)** were
-checked on 2026-09-17 against a card booted by `phi.service`, and steps
+checked on 2026-09-17 against a card booted by the autoboot unit (now `phi@0.service`), and steps
 marked **(not re-run)** are transcribed from the scripts and their sibling
 docs without a fresh run during this revision.
 
@@ -107,7 +107,7 @@ code and scratchpad registers. POST `"12"` means the bootstrap is waiting for
 an OS image; opening the device resets the card, so the first read after an
 open shows the bootstrap re-running GDDR training for about 9 s
 (`docs/results/2026-09-13-reset-2.md`). VFIO admits one opener: while
-`phictl boot` (or `phi.service`) holds the card, `phictl info` fails with a
+`phictl boot` (or `phi@N.service`) holds the card, `phictl info` fails with a
 busy device.
 
 `make check` runs the documentation lint, `cargo fmt --check`, `clippy`,
@@ -251,7 +251,7 @@ forwarder is the default because it needs no root.
 ## 13. Autoboot (recorded, 2026-09-16; boot mode added 2026-09-19)
 
 ```sh
-scripts/phi-autoboot.sh install /path/to/disk.img 6G   # writes and starts ~/.config/systemd/user/phi.service
+scripts/phi-autoboot.sh install all   # writes ~/.config/systemd/user/phi@.service, enables phi@N per card (disk and host memory from ~/.config/phi/cards)
 scripts/phi-autoboot.sh at-boot                        # start at host boot, not at the first login
 phi status                                             # which mode is in effect
 phi log -f                                             # the console
@@ -269,7 +269,7 @@ Lingering is per user, so every enabled user unit starts at boot as well;
 (`docs/results/2026-09-19-boot-without-login.md`).
 
 `phi-up.sh` refuses to start while the service holds the card;
-`phi down` (or `systemctl --user stop phi.service`) hands it back.
+`phi down` (or `systemctl --user stop phi@0.service`) hands it back.
 
 ## 14. Monitoring (verified against the live card)
 

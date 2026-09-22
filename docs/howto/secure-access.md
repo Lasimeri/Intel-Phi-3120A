@@ -31,7 +31,7 @@ with `StrictHostKeyChecking yes`, so a process squatting on 127.0.0.1:2222
 cannot pose as the card. Re-pin after a dropbear key regeneration:
 `ssh-keyscan -p 2222 -t ed25519 127.0.0.1 >> ~/.ssh/known_hosts_phi`.
 
-Autoboot. `scripts/phi-autoboot.sh install DISK [HOSTMEM]` runs the boot as
+Autoboot. `scripts/phi-autoboot.sh install [N|all]` runs each card's boot as
 a systemd user service; it inherits every limit above because it is the
 same process. Stopping the service halts the card cleanly first (a plain
 `poweroff` through the socket, so the card's init unmounts its disk), then
