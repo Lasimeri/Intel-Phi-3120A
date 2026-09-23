@@ -38,6 +38,26 @@ right for one card and a guess for more. A listed card that is not on the
 bus keeps its index and is reported absent, so pulling card 1 does not
 turn card 2 into card 1.
 
+## Sizing HOSTMEM
+
+The column is how much host memory the card is given (`/dev/shm/phi-hostmem`
+for card 0, `phi-hostmem-N` for the others), 6G by default. It is the
+card's swap device, the staging area for the block path, and the window
+the AVX-512 co-processor's worker talks through. It is **pinned, shared
+memory on the host**, so it is not available to anything else, and on a
+host where the working set is large the size is a real choice rather
+than a default to leave alone: two 6 GiB windows on a 31 GiB host left
+less page cache than a 17.6 GB language model needed, and the host read
+weights from the NVMe while it worked (prompt processing 6.22 against
+9.33 tokens per second, the same binary and model, measured both ways;
+`Intel-Phi-AVX512`, `docs/results/2026-09-23-ceilings-and-residency.md`).
+
+What each user needs: the co-processor's matrix-multiply service uses
+768 MiB of it, the seamless path a good deal less, and the card's swap
+only what the card actually swaps, which is nothing when `phi vpu` has
+turned swap off. 2G a card is enough for all of that; 6G is right when
+the card is meant to swap into host memory.
+
 `PHI_CARD=N` selects a card for every tool (`phictl`, `phitop`, `phi-vpu`,
 and through `scripts/phi-env.sh` every script); `phictl --card N` and
 `phi -c N` are the same thing on the command line. `phictl cards` prints

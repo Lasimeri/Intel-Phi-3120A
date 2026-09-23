@@ -155,6 +155,36 @@ fails the link with "can't decode instruction". The poller now stalls
   poller lands on a worker CPU; the morning's 374 against 316 GFLOP/s
   was where the poller happened to run.
 
+## Addendum, 2026-09-23: where the floor started to matter
+
+"The floor only matters below about 64 KiB" was written here as
+something not worth chasing. A day later it became the binding
+constraint on a real workload, so the numbers are worth recording from
+the card's side. Measured on card 0 with the co-processor's own probe
+(`Intel-Phi-AVX512`, `phi-vpu matmul-check --probe`), 16 KiB each way,
+100 rounds, the worker's buffers on huge pages:
+
+| 16 KiB across the link | card reads the window | card writes it |
+| --- | --- | --- |
+| `/dev/phiblk1`, `O_DIRECT` | 109 us | 95 us |
+| the `/dev/phihost` mapping, `memcpy` | 1488 us (11 MB/s) | 225 us (73 MB/s) |
+
+Two things follow. The aperture is not an alternative at any size that
+matters: this is the first precise number for it from the card side
+(`docs/research/memory-map.md` says "the aperture's tens of MB/s", and
+for writes that is right, while reads are an order of magnitude worse).
+And a round trip through the block path costs a co-processor request
+about 0.45 ms all told with the reply, which is more than a small matrix
+multiply is worth: the ggml backend there now times both sides and
+leaves such multiplies on the host, which for a mixture-of-experts model
+at one token is most of them
+(`Intel-Phi-AVX512`, `docs/results/2026-09-23-mixture-of-experts.md`).
+
+That makes the two items left above worth more than they looked: a
+request ring in host memory that the card writes with posted writes
+(MPSS laid its rings out that way), and riding small payloads in the
+control window instead of a separate request.
+
 ## Machine state
 
 Both cards on kernel build #45 (patches 0001 to 0029), swap off on

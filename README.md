@@ -152,6 +152,14 @@ transport it runs on: the host-memory window, the block path and its
 pipelining (`docs/results/2026-09-22-block-pipeline.md`), the card
 kernel's vector-unit patches (0024, 0030) and the card poller (0029).
 
+That transport is now the co-processor's binding constraint for small
+work, which is worth knowing here: a round trip costs a request about
+0.45 ms, so the ggml backend over there leaves any matrix multiply
+smaller than a few megabytes on the host. The addendum to the
+block-pipeline record has the numbers from the card's side, and
+`host/crates/phi-vfio/src/cards.md` has what the window is for and how
+to size it, which matters on a host whose memory a model wants too.
+
 ## Conventions
 
 Every source file has a sibling Markdown file with the same stem that explains

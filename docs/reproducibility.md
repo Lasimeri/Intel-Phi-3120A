@@ -207,9 +207,12 @@ phi down                                            # poweroff through init, the
 boot` in the background with the kernel and initramfs above, the control
 socket in `$XDG_RUNTIME_DIR/phictl/`, the SSH forwarder on
 `127.0.0.1:2222` (`--ssh`), the disk, and 6 GiB of host RAM as swap
-(`PHI_HOST_MEM` or `--host-mem` to change it, `--no-host-mem` to leave the
-card on its GDDR5 alone), then waits for the agent (about 15 s: 9.5 s of
-GDDR training after the VFIO open, 4 s of kernel, then init).
+(`PHI_HOST_MEM` or `--host-mem` to change it, the HOSTMEM column of
+`~/.config/phi/cards` to set it per card, `--no-host-mem` to leave the
+card on its GDDR5 alone; it is pinned host memory, so size it for what
+will use it: `host/crates/phi-vfio/src/cards.md`), then waits for the
+agent (about 15 s: 9.5 s of GDDR training after the VFIO open, 4 s of
+kernel, then init).
 `--toolchain` pushes `phi-clang.tar.gz` through the socket (25 s); with a
 disk image this is needed once per image, not per boot. Anything else is
 passed to `phictl boot` (`--no-dma` serves the disk through the aperture).
