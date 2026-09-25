@@ -30,6 +30,11 @@
 
 use std::fmt;
 
+mod conv;
+mod transc;
+pub use conv::*;
+pub use transc::*;
+
 /// A 512-bit vector register, `zmm0` to `zmm31`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Zmm(pub u8);
@@ -95,6 +100,8 @@ impl Mem {
 pub enum Src {
     Reg(Zmm),
     Mem(Mem),
+    /// Memory read through an up-conversion or broadcast (`conv.rs`).
+    MemConv(Mem, Conv),
 }
 
 /// Predicates of `vcmppd` (ISA reference, table 6.3).
@@ -168,6 +175,7 @@ impl fmt::Display for Src {
         match self {
             Src::Reg(z) => write!(f, "{z}"),
             Src::Mem(m) => write!(f, "{m}"),
+            Src::MemConv(m, c) => write!(f, "{m}{c}"),
         }
     }
 }
@@ -177,6 +185,7 @@ impl fmt::Display for Src {
 enum Map {
     M0F = 1,
     M0F38 = 2,
+    M0F3A = 3,
 }
 
 /// Legacy prefix compaction, the `pp` field of P1.
@@ -228,7 +237,15 @@ fn mvex(map: Map, pp: Pp, w: bool, reg: u8, vvvv: u8, rm: Rm, aaa: u8, opcode: u
 fn src_rm(src: Src) -> Rm {
     match src {
         Src::Reg(z) => Rm::Zmm(z),
-        Src::Mem(m) => Rm::Mem(m),
+        Src::Mem(m) | Src::MemConv(m, _) => Rm::Mem(m),
+    }
+}
+
+/// The SSS field a source asks for: its conversion, or none.
+fn src_sss(src: Src) -> u8 {
+    match src {
+        Src::MemConv(_, c) => c as u8,
+        _ => 0,
     }
 }
 
@@ -285,6 +302,18 @@ pub fn vmovaps_load(dst: Zmm, mem: Mem) -> Insn {
     }
 }
 
+/// `vmovaps zmm1, mt {float16}`: 16 halfs up-converted to float32 as they
+/// load (MVEX.512.0F.W0 28 with SSS 011, the Uf32 float16 conversion,
+/// ISA reference table 2.9); the 32 bytes must be 32-byte aligned.
+pub fn vmovaps_load_f16(dst: Zmm, mem: Mem) -> Insn {
+    let mut bytes = mvex(Map::M0F, Pp::None, false, dst.0, 0, Rm::Mem(mem), 0, 0x28, None);
+    bytes[3] |= 3 << 4;
+    Insn {
+        bytes,
+        text: format!("vmovaps {dst}, {mem} {{float16}}"),
+    }
+}
+
 /// `vmovapd zmm1 {k}, zmm2/mt`: float64 vector move (MVEX.512.66.0F.W1 28).
 pub fn vmovapd_load(dst: Zmm, src: Src, k: K) -> Insn {
     Insn {
@@ -304,7 +333,7 @@ pub fn vmovapd_store(mem: Mem, src: Zmm, k: K) -> Insn {
 #[allow(clippy::too_many_arguments)]
 fn arith(name: &str, map: Map, w: bool, opcode: u8, dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
     Insn {
-        bytes: mvex(map, Pp::P66, w, dst.0, src1.0, src_rm(src2), k.0, opcode, None),
+        bytes: with_sss(mvex(map, Pp::P66, w, dst.0, src1.0, src_rm(src2), k.0, opcode, None), src_sss(src2)),
         text: format!("{name} {dst}{}, {src1}, {src2}", mask_text(k)),
     }
 }
@@ -355,7 +384,10 @@ pub fn vcmppd(dst: K, src1: Zmm, src2: Src, pred: Cmp, k: K) -> Insn {
 #[allow(clippy::too_many_arguments)]
 fn arith_ps(name: &str, map: Map, opcode: u8, dst: Zmm, src1: Zmm, src2: Src, k: K) -> Insn {
     Insn {
-        bytes: mvex(map, Pp::None, false, dst.0, src1.0, src_rm(src2), k.0, opcode, None),
+        bytes: with_sss(
+            mvex(map, Pp::None, false, dst.0, src1.0, src_rm(src2), k.0, opcode, None),
+            src_sss(src2),
+        ),
         text: format!("{name} {dst}{}, {src1}, {src2}", mask_text(k)),
     }
 }

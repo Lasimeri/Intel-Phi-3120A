@@ -36,6 +36,8 @@ Instructions covered:
 | float64 | `vaddpd`, `vsubpd`, `vmulpd`, `vfmadd213pd`, `vfmadd231pd`, `vcmppd` (its write mask acts as an AND on the result: a clear mask bit clears the result bit, table 6.3 and the note under it) |
 | int32 | `vpaddd`, `vpsubd`, `vpandd`, `vpandnd` (note the order: `(!zmm2) & src`), `vpord`, `vpxord`, `vpslld`, `vpsrld`, `vpsrad`, `vpsllvd`, `vpsrlvd` |
 | mask | `kmov` in all three directions, `kortest` |
+| conversions and more (`conv.rs`, `conv.md`) | memory operands through the up-conversions and broadcasts (`Src::MemConv`), the int32 and float32 unpack pairs with conversions, `vcvtfxpntdq2ps`, `vcvtfxpntps2dq` and its exponent-adjusted form, `vrndfxpntps`, `vfnmadd231ps`, `vfmsub213ps`, `vfmsub231ps`, `vpermd`, `vprefetch0/1`, the store through a down-conversion |
+| transcendentals (`transc.rs`, `transc.md`) | `vexp223ps` and `vrcp23ps`, the SwiGLU's exp2 and reciprocal |
 
 Every integer vector instruction on this machine operates on 32-bit or
 64-bit lanes; there are no byte or word forms in the ISA at all, so the
@@ -99,7 +101,20 @@ the loads, `D0` and `D4`, and the same `0F38` map, but the stores carry a
 `66` prefix and the loads must not have one.
 
 All of these are verified by execution: the AVX-512 co-processor's
-translated kernel (`card/examples/avx512_poly.S` in Intel-Phi-AVX512, where
-a copy of this library lives too) uses them and produces results
-bit-identical to the host's FMA3 hardware over 65536 lanes. No assembler
-for this vector ISA exists to check them against.
+translated kernel (`card/examples/avx512_poly.S` in Intel-Phi-AVX512)
+uses them and produces results bit-identical to the host's FMA3 hardware
+over 65536 lanes. No assembler for this vector ISA exists to check them
+against.
+
+## The copy in Intel-Phi-AVX512
+
+Intel-Phi-AVX512 carries this library too (its translator and ggml
+backend build on it; the generator, `main.rs`, stays here). The two are
+one library: `lib.rs`, `conv.rs` and `transc.rs` are byte for byte the
+same in both, and that repository's `make check` compares its copy with
+this one whenever it finds this checkout. A change to the encoder is
+made in both in the same session. The conversions and transcendentals
+were written there (2026-09-22 and 23, for the ggml backend's kernels
+and the fused SwiGLU) and brought here on 2026-09-25; nothing here used
+them yet, and the generator's output is unchanged by them (its pinned
+tests pass).

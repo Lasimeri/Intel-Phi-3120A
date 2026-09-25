@@ -33,9 +33,14 @@ What it does today (2026-09-22, every item measured and recorded in
    16 AVX2 threads.
 8. **The card executes AVX-512 for a host that has none**: an unmodified
    program's AVX-512 is carried from its own `SIGILL` to the card's vector
-   units and executed there, bit-identical to AVX-512 hardware, with its
-   loops split across the 57 cores (65536 elements in 7.7 ms against 22.5
-   ms emulated, 2026-09-22). That is its own repository now,
+   units and executed there, bit-identical to AVX-512 hardware on what
+   its tests cover, with its loops split across the 57 cores (65536
+   elements in 10.1 to 12.7 ms against 22.5 ms emulated, 2026-09-25, since
+   its accesses are confined to the pages the planner declared). The
+   same card also carries llama.cpp's matrix multiplies beside the host
+   (a 35B mixture at Q8_0 generated 4.98 and 4.87 tokens a second against
+   3.39 and 3.32 on the host alone, the two interleaved in one run,
+   2026-09-24). That is its own repository now,
    [Intel-Phi-AVX512](https://github.com/Lasimeri/Intel-Phi-AVX512), built
    on this stack; `phi vpu` hands over to it.
 9. **Up to 16 cards in one host**, each addressed by an index that fixes
@@ -143,11 +148,15 @@ back; every result lane is the bit AVX-512 hardware would have produced.
 
 That is its own repository since 2026-09-22 (this repository's commit
 0f49eac): [Intel-Phi-AVX512](https://github.com/Lasimeri/Intel-Phi-AVX512),
-the preloaded library, the translator, the card-side worker, the tests
-and the records. It builds on this stack, which it finds through the
-`phi` command or a directory named `Intel Phi 3120A` next to it, and
-needs a card up under this daemon with a kernel carrying patch 0030.
-From here, `phi vpu ...` hands over to it. What stays here is the
+the preloaded library, the translator, the card-side worker, the ggml
+backend, the tests and the records. It builds on this stack, which it
+finds through `PHI_STACK_ROOT`, the `phi` command on PATH, or a checkout
+next to it or in `$HOME` (as `Intel-Phi-3120A` or `Intel Phi 3120A`),
+and needs a card up under this daemon with a kernel carrying patch 0030.
+From here, `phi vpu ...` hands over to it, found the same way the other
+direction (`PHI_AVX512_ROOT`, next to this checkout, `$HOME`). It carries
+a copy of this repository's `knc-mvex` library, kept identical
+([`host/crates/knc-mvex/src/lib.md`](host/crates/knc-mvex/src/lib.md)). What stays here is the
 transport it runs on: the host-memory window, the block path and its
 pipelining (`docs/results/2026-09-22-block-pipeline.md`), the card
 kernel's vector-unit patches (0024, 0030) and the card poller (0029).

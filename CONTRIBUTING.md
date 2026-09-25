@@ -55,6 +55,45 @@ install can reproduce every result here without asking anyone.
 - Results measured on hardware are recorded in `docs/` with the date, the host
   kernel version, and the exact command.
 
+## The family
+
+| repository | what | finds its dependency by |
+| --- | --- | --- |
+| [Intel-Phi-3120A](https://github.com/Lasimeri/Intel-Phi-3120A) (this one) | the cards' software stack: daemon, kernel, boot, storage, the `phi` CLI, the cross toolchain | (none) |
+| [Intel-Phi-AVX512](https://github.com/Lasimeri/Intel-Phi-AVX512) | the cards as an AVX-512 co-processor: phi512, the card worker, the `libggml_phi.so` backend | `PHI_STACK_ROOT`, `phi` on PATH, a checkout next to it, `$HOME` |
+| [Intel-Phi-Jev](https://github.com/Lasimeri/Intel-Phi-Jev) | `xks`, a local Jev (System One) whose subject runs on the host and the cards | `PHI_AVX512_ROOT`, a checkout next to it, `$HOME` |
+| [Mechanical-Jev](https://github.com/Lasimeri/Mechanical-Jev) | `mjev`, the asking side of Jev, and Jev reverse engineered from its docs | `MJEV_XKS`, `xks` on PATH, a checkout next to it, `$HOME` |
+
+- A dependency is found in that order, as a checkout under its GitHub
+  clone's name (`Intel-Phi-AVX512`) or the spaced one (`Intel Phi
+  AVX-512`); `phi vpu` finds Intel-Phi-AVX512 that way (`PHI_AVX512_ROOT`,
+  next to this checkout, `$HOME`).
+- Nothing of a sibling is copied into another, with one exception: the
+  `knc-mvex` library (`lib.rs`, `conv.rs`, `transc.rs`), which
+  Intel-Phi-AVX512 carries byte for byte and its `make check` compares
+  with this one. A change to the encoder is made in both in the same
+  session; the generator (`src/main.rs`) is only here.
+- The interfaces the others consume from this repository keep working
+  across changes:
+  - the `phi` command and its verbs (`-c N`, `status`, `run`, `vpu`,
+    `swapoff`, `ssh-config`);
+  - `scripts/phi-env.sh` (card index to socket, port and window);
+  - `toolchain/env.sh` and `toolchain/clang/knc-cc`;
+  - `host/target/release/phictl` (or `debug/`);
+  - the host-memory windows `/dev/shm/phi-hostmem` and `phi-hostmem-N`;
+  - the control sockets `$XDG_RUNTIME_DIR/phictl/control.sock` and
+    `phictl/N/control.sock`;
+  - the SSH forward `127.0.0.1:2222+N` with `~/.ssh/phi_ed25519`,
+    `~/.ssh/known_hosts_phi` and the host key alias `phi`;
+  - the card kernel's patch 0030 (the vector unit across a signal
+    handler).
+
+  Add, do not rename; when one must change, change its consumers in the
+  same session.
+- Everything downloaded or built for the card itself (musl, busybox,
+  dropbear, CPython, LLVM, the vendor archives) is this repository's,
+  pinned and checked here (`toolchain/` and `scripts/fetch-vendor.sh`).
+
 ## Git
 
 - Small commits with a scope prefix: `docs:`, `host:`, `card:`, `toolchain:`,

@@ -323,10 +323,22 @@ disk)
     ;;
 
 vpu)
-    # The AVX-512 co-processor lives in its own repository (Intel-Phi-AVX512),
-    # next to this one or where PHI_AVX512_ROOT says; this verb hands over.
-    avx="${PHI_AVX512_ROOT:-$root/../Intel Phi AVX-512}"
-    [ -x "$avx/scripts/phi-vpu.sh" ] || { echo "phi: the AVX-512 co-processor is a separate repository: clone https://github.com/Lasimeri/Intel-Phi-AVX512 next to this one (or set PHI_AVX512_ROOT)" >&2; exit 1; }
+    # The AVX-512 co-processor lives in its own repository (Intel-Phi-AVX512);
+    # this verb hands over. Found as the family finds a sibling:
+    # PHI_AVX512_ROOT, else a checkout next to this one, else in $HOME, under
+    # its clone's name or the spaced one.
+    avx="${PHI_AVX512_ROOT:-}"
+    if [ -z "$avx" ]; then
+        for base in "$root/.." "${HOME:-/nonexistent}"; do
+            for name in "Intel-Phi-AVX512" "Intel Phi AVX-512"; do
+                if [ -x "$base/$name/scripts/phi-vpu.sh" ]; then
+                    avx="$base/$name"
+                    break 2
+                fi
+            done
+        done
+    fi
+    [ -n "$avx" ] && [ -x "$avx/scripts/phi-vpu.sh" ] || { echo "phi: the AVX-512 co-processor is a separate repository: clone https://github.com/Lasimeri/Intel-Phi-AVX512 next to this one (or set PHI_AVX512_ROOT)" >&2; exit 1; }
     PHI_STACK_ROOT="$root" exec "$avx/scripts/phi-vpu.sh" -c "$PHI_CARD" "$@"
     ;;
 
