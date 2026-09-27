@@ -1,6 +1,6 @@
 # toolchain/llvm
 
-One LLVM (for clang and rustc) with nine small changes, applied by
+One LLVM (for clang and rustc) with ten small changes, applied by
 `build.sh` from `patches/` onto the pinned tag `llvmorg-22.1.8` (the version
 Arch ships, so the host clang builds it and so rustc can load the dylib
 variant). What the sources showed on inspection, versus the design notes
@@ -17,6 +17,7 @@ written before the tree was cloned:
 | 0007 | `compiler-rt/lib/builtins/CMakeLists.txt` | New option `COMPILER_RT_X86_NO_SSE`: drops `x86_64/float*` (hand-written SSE conversions) so the generic C versions are used, and drops `cpu_model/x86.c` (`xgetbv` behind a runtime check) | Measured in the first builtins archive audit. Cost: no `__builtin_cpu_supports` on the card. |
 | 0008 | `llvm/lib/Target/X86/X86InstrSSE.td`, `X86InstrPredicates.td` | `PAUSE` selects the `llvm.x86.sse2.pause` intrinsic only with SSE2; a codegen-only `PAUSE_NOSSE2` encodes the one-byte `nop` for it otherwise (new `NoSSE2` predicate) | Measured: Rust's `std` linked ten `pause` instructions (futex `Mutex`/`RwLock` spin loops, the stack-overflow handler) through `core::hint::spin_loop`, which LLVM emitted regardless of features because the encoding is a `rep nop` that ordinary pre-SSE2 CPUs ignore. KNC raises #UD on it (ISA App. B). The `pause` mnemonic still assembles. |
 | 0009 | `clang/include/clang/Options/Options.td` | New driver flags `-mcmov`/`-mno-cmov` and `-mnopl`/`-mno-nopl` in the x86 feature group | The generic driver code turns any flag in that group into `-target-feature` for both cc1 and cc1as. `-Xclang -target-feature` reached only cc1, so `.S` files (kernel `memcpy_64.S`, `entry_64.S`) were still padded with `0F 1F` NOPs. `knc-cc` now uses the two flags. |
+| 0010 | `clang/lib/CodeGen/Targets/X86.cpp` | `classifyReturnType`: without SSE, an SSE-class return that needs more than two x87 registers (counting a `<2 x float>` eightbyte as two) is returned through memory | Found by phifmpeg (2026-09-27): FFmpeg n9.0.2 `libswscale/cms.c` and `libavfilter/vf_lut3d.c` return `struct { float r, g, b; }` by value, which lowers to `{<2 x float>, float}`; patch 0002 gives the backend FP0 and FP1 only, so the third value fell to XMM and the diagnostic fired. Probed on the old compiler: `float`, `double`, `{float,float}`, `{double,double}`, `_Complex float`, `_Complex double` all compiled and keep their convention (musl `cexpf` and friends unchanged); only three or more x87 values change, and those never compiled before. Checked with a two-file `{float r,g,b}` test on the host and card 0. |
 
 Nothing in clang's frontend diagnoses float returns; the message seen in
 the research came from the backend with the function's location attached.

@@ -9,3 +9,4 @@
 0007-compiler-rt-option-to-build-x86-builtins-without-sse.patch
 0008-x86-pause-intrinsic-is-nop-without-sse2.patch
 0009-clang-x86-driver-flags-for-cmov-and-nopl-features.patch
+0010-clang-x86-64-sse-class-returns-past-two-x87-registers-in-memory.patch

@@ -1,0 +1,33 @@
+diff --git a/clang/lib/CodeGen/Targets/X86.cpp b/clang/lib/CodeGen/Targets/X86.cpp
+--- a/clang/lib/CodeGen/Targets/X86.cpp
++++ b/clang/lib/CodeGen/Targets/X86.cpp
+@@ -2605,6 +2605,29 @@
+   assert((Hi != Memory || Lo == Memory) && "Invalid memory classification.");
+   assert((Hi != SSEUp || Lo == SSE) && "Invalid SSEUp classification.");
+ 
++  // Intel Phi 3120A project (knc64-x87 ABI): without SSE the backend returns
++  // SSE-class scalars in x87 registers, and RetCC_X86_64_C offers two (FP0,
++  // FP1); a <2 x float> eightbyte is split into two of them. A return that
++  // needs a third (struct { float r, g, b; }, float[4]) has nowhere to go
++  // and failed with "SSE register return with SSE disabled", so it is
++  // returned through memory instead. Every shape that fits in two keeps its
++  // register convention, so nothing that compiled before changes ABI.
++  if (!getTarget().hasFeature("sse")) {
++    auto X87Regs = [](llvm::Type *Ty) -> unsigned {
++      if (auto *VT = dyn_cast_or_null<llvm::FixedVectorType>(Ty))
++        return VT->getNumElements();
++      return Ty ? 1 : 0;
++    };
++    llvm::Type *IRTy = CGT.ConvertType(RetTy);
++    unsigned Needed = 0;
++    if (Lo == SSE)
++      Needed += X87Regs(GetSSETypeAtOffset(IRTy, 0, RetTy, 0));
++    if (Hi == SSE)
++      Needed += X87Regs(GetSSETypeAtOffset(IRTy, 8, RetTy, 8));
++    if (Needed > 2)
++      return getIndirectReturnResult(RetTy);
++  }
++
+   llvm::Type *ResType = nullptr;
+   switch (Lo) {
+   case NoClass:
