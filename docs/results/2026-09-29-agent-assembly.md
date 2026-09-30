@@ -131,12 +131,18 @@ done
 swap /bin/phi-agent
 ```
 
-## Not yet exercised
+## Deployed (2026-09-29 20:10)
 
-- Starting from `/init` at boot, and the shutdown sequence stopping it
-  (`killall phi-agent`, which matches it: its name is still `phi-agent`).
-  That needs an initramfs rebuilt with it (`card/agent/build.sh`, then
-  `card/initramfs/build.sh`) and a card restart; card 1 was left on the
-  Rust agent of its current image.
-- Card 0 (the x8 slot). The binary is the same; its transfers would be
-  faster on both agents.
+`card/initramfs/build.sh` packed it (the image went from 1 407 765 to
+1 163 402 bytes), then `phi -c 1 restart` and `phi -c 0 restart`. Both
+cards booted with it from `/init` (`phi-agent 0.2.0 listening on
+/dev/phirpc` in each card's log; `phi status` reports `card agent 0.2.0`
+on both). On card 1 from that boot: exec with both streams and the
+status, stdin, a missing program, 4 MiB put and get byte-identical, a
+background child not holding the session (0.32 s), a phitop frame; on
+card 0 exec, stdin and a frame. The shutdown path with it: `phi -c 1
+down` logged `/data clean and unmounted` and POST `KH`, and `dumpe2fs -h
+disk1.img` while the card was down read `Filesystem state: clean` with no
+`needs_recovery`; `phi -c 1 up` brought it back. The VPU workers the
+cards ran before the restart were not restarted (the co-processor
+scripts start their own).
