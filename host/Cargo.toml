@@ -3,14 +3,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/phi-regs",
-    "crates/phi-vfio",
-    "crates/phi-hw",
-    "crates/phi-ring",
     "crates/phi-rpc",
     "crates/phi-isa-audit",
     "crates/knc-mvex",
-    "crates/phitop",
 ]
 
 [workspace.package]

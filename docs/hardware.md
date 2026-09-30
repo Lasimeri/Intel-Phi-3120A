@@ -86,7 +86,7 @@ first card's link for bulk DMA and makes no difference to compute.
 | Command register | `0x0000` before any driver | Memory decode and bus master are enabled by `vfio-pci` at open (`results/2026-09-13-first-contact.md` shows `0x0006`). |
 | AER counters | all zero | After the host resets of 2026-09-13 the card showed sticky `DevSta: CorrErr+ UnsupReq+` (`results/2026-09-13-p3-kernel-build.md`). |
 | IOMMU group | 30, contains only the card | VFIO passthrough needs no ACS override. |
-| Reserved IOVA in group 30 | `0xfee00000-0xfeefffff` (MSI), `0xfd00000000-0xffffffffff` | The host's DMA mappings avoid both (`host/crates/phi-hw/src/dma.md`). |
+| Reserved IOVA in group 30 | `0xfee00000-0xfeefffff` (MSI), `0xfd00000000-0xffffffffff` | The host's DMA mappings avoid both (`host/asm/phictl/dma.md`). |
 | Interrupt pin | B, unrouted | Expected without a driver; nothing uses interrupts yet. |
 
 Commands used: `lspci -nn`, `lspci -vvv -s 2e:00.0`,

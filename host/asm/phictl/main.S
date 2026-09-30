@@ -558,41 +558,6 @@ w_num_left:
 	jmp w_pad
 1:	ret
 
-	.globl socket_answers
-# socket_answers(rdi = path) -> eax 1 when a connect succeeds.
-socket_answers:
-	pushq %rbx
-	pushq %r12
-	subq $112, %rsp
-	movq %rdi, %r12
-	movl $AF_UNIX, %edi
-	movl $SOCK_STREAM | SOCK_CLOEXEC, %esi
-	xorl %edx, %edx
-	SYS SYS_socket
-	testq %rax, %rax
-	js 8f
-	movl %eax, %ebx
-	movw $AF_UNIX, (%rsp)
-	leaq 2(%rsp), %rdi
-	movq %r12, %rsi
-	call copy_cstr
-	movl %ebx, %edi
-	movq %rsp, %rsi
-	movl $110, %edx
-	SYS SYS_connect
-	movq %rax, %r12
-	movl %ebx, %edi
-	SYS SYS_close
-	xorl %eax, %eax
-	testq %r12, %r12
-	setz %al
-	jmp 9f
-8:	xorl %eax, %eax
-9:	addq $112, %rsp
-	popq %r12
-	popq %rbx
-	ret
-
 # ------------------------------------------------------------ info
 
 cmd_info:

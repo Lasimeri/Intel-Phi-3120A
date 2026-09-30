@@ -6,7 +6,7 @@
 #   set -- "${PHI_ARGS[@]}"               # the remaining arguments
 #
 # Afterwards these are set (card 0 keeps the single-card names, exactly as
-# host/crates/phi-vfio/src/cards.rs derives them):
+# host/asm/phictl/sysfs.S derives them):
 #
 #   PHI_CARD      the index, 0 to 15
 #   PHI_BDF_SEL   its PCI address ("" when not on the bus)

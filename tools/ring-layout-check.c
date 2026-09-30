@@ -1,8 +1,8 @@
 /*
- * ring-layout-check.c: verify that the C ring layout matches the Rust one.
+ * ring-layout-check.c: verify that the C ring layout matches the host's.
  * Run: tcc -run tools/ring-layout-check.c   (or `make layout-check`)
  * Exit status 0 when every offset matches the constants documented in
- * host/crates/phi-ring/src/layout.rs; 1 otherwise.
+ * host/asm/phictl/defs.inc (RH_*, CD_*, RG_*); 1 otherwise.
  */
 #include <stddef.h>
 #include <stdio.h>
@@ -14,7 +14,7 @@ static int fails;
 static void check(const char *name, size_t have, size_t want)
 {
 	if (have != want) {
-		printf("MISMATCH %-28s C=%zu rust=%zu\n", name, have, want);
+		printf("MISMATCH %-28s C=%zu host=%zu\n", name, have, want);
 		fails = 1;
 	} else {
 		printf("ok       %-28s %zu\n", name, have);
@@ -23,7 +23,7 @@ static void check(const char *name, size_t have, size_t want)
 
 int main(void)
 {
-	/* Values on the right are the Rust constants (layout.rs). */
+	/* Values on the right are the host constants (defs.inc), as documented in docs/spec/ring-protocol.md. */
 	check("sizeof(phi_region_hdr)", sizeof(struct phi_region_hdr), 64);
 	check("region_hdr.magic", offsetof(struct phi_region_hdr, magic), 0);
 	check("region_hdr.version", offsetof(struct phi_region_hdr, version), 4);

@@ -33,7 +33,7 @@ card  bdf           present link         driver    group  up    hostmem  disk
 The index is the whole identity: it selects the PCI device, the control
 socket, the SSH port (2222 + N), the ring subnet, the hostname (`phiN`),
 the disk image and host memory, and the systemd instance `phi@N`
-(`host/crates/phi-vfio/src/cards.md` has the table). `phi cards init`
+(`host/asm/phictl/sysfs.md` has the table). `phi cards init`
 writes `~/.config/phi/cards` from the bus so the order is pinned; without
 that file the cards are ordered by PCI address, which changed underneath
 the stack the day the second card arrived.

@@ -24,7 +24,7 @@ ring access helper.
 So a green `make layout-check` says the wire layout has not drifted; it
 does not say the header is complete. The kernel's `asm/knc_ring.h` (patch
 0021, extended by 0022, 0025 and 0026) is the complete C side, and
-`host/crates/phi-ring/src/layout.rs` is the Rust side. Nothing compiles
+`host/asm/phictl/defs.inc (the RH_, CD_ and RG_ constants)` is the Rust side. Nothing compiles
 against `phi_ring.h` except this check.
 
 ## Why C and not a script

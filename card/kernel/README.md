@@ -77,7 +77,7 @@ Console lines arrive in the ring (`phictl console`) from the moment
 whenever the console is gone, the only signal is the POST code in the
 DBOX scratch register: `phictl postcode` reads it and `phi-regs` decodes
 it. Codes below `K0` come from the card's own bootstrap and are listed in
-`host/crates/phi-regs/src/postcode.md`.
+`host/asm/phictl/postcode.md`.
 
 | Code | Meaning |
 | --- | --- |

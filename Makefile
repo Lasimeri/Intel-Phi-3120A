@@ -18,10 +18,13 @@ verify: ## Confirm the card is enumerated and healthy (no root needed)
 bind: ## Bind the card to vfio-pci (needs sudo)
 	sudo scripts/bind-vfio.sh
 
-build: ## Build the host workspace and the assembly phictl (installed at host/target/debug/phictl)
+build: ## Build the host workspace and the assembly phictl and phitop (installed under host/target/debug/)
 	cd $(HOST) && cargo build
 	host/asm/phictl/build.sh
-	mkdir -p $(HOST)/target/debug && cp host/asm/out/phictl $(HOST)/target/debug/phictl.new && mv -f $(HOST)/target/debug/phictl.new $(HOST)/target/debug/phictl
+	host/asm/phitop/build.sh
+	mkdir -p $(HOST)/target/debug
+	cp host/asm/out/phictl $(HOST)/target/debug/phictl.new && mv -f $(HOST)/target/debug/phictl.new $(HOST)/target/debug/phictl
+	cp host/asm/out/phitop $(HOST)/target/debug/phitop.new && mv -f $(HOST)/target/debug/phitop.new $(HOST)/target/debug/phitop
 
 test: ## Run host tests that do not need the card
 	cd $(HOST) && cargo test

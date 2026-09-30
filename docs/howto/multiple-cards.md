@@ -17,7 +17,7 @@ window, a port, a subnet or a hostname:
 
 Card 0 keeps every name the single-card stack used, so nothing written
 against it changes. The derivation lives in one place on each side,
-`host/crates/phi-vfio/src/cards.rs` and `scripts/phi-env.sh`, and
+`host/asm/phictl/sysfs.S` and `scripts/phi-env.sh`, and
 `phictl cards` is the only source of the index-to-address mapping.
 
 ## Which card is which

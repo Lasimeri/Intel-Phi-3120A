@@ -3,7 +3,7 @@
 All offsets are relative to MMIO BAR4. SBOX registers are at
 `0x10000 + offset`; the constant `SBOX_BASE = 0x10000` is `MIC_X100_SBOX_BASE_ADDRESS`
 in mainline v5.9 `mic_x100.h`. The DBOX occupies BAR4 offsets 0 to 0xFFFF.
-The authoritative Rust encoding is `host/crates/phi-regs/src/sbox.rs`.
+The authoritative encoding is `host/asm/phictl/defs.inc` (the SBOX constants) with the decoders in `host/asm/phictl/card.S`, `main.S` and `serve.S`; until 2026-09-29 it was the Rust `phi-regs` crate (`host/crates/phi-regs/src/sbox.rs` at commit 230a124).
 
 | Name | SBOX offset | Width | Meaning | Source |
 | --- | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ physical `0x08007D0000 + offset`, `KNC_SBOX_PHYS`), kernel #38, idle:
 | `DCR` | 0xA280 | 32 | two bits per channel: bit 2n owner (1 host), bit 2n+1 enable | `micsboxdefine.h`; MPSS `dma/mic_dma_md.c` |
 | `DCAR_n`, `DHPR_n`, `DTPR_n`, `DRAR_LO_n`, `DRAR_HI_n`, `DSTAT_n`, `DCHERR_n`, `DCHERRMSK_n` | 0xA000 + 0x40n + {0x00, 0x04, 0x08, 0x14, 0x18, 0x20, 0x2C, 0x30} | 32 | channel attributes (interrupt masks bits 24, 25), head and tail descriptor indices, ring address (low; high with size in bits 20:4, SMPT page 25:21, SYS bit 26), status, error, error mask | same; descriptor layouts in `include/mic/mic_dma_md.h` |
 
-The Rust constants and decoders (`host/crates/phi-regs/src/sbox.rs`) and
+The constants and decoders (`host/asm/phictl/defs.inc`, `card.S`, `serve.S`) and
 the card kernel (`arch/x86/include/asm/knc.h`, `knc_hwmon.c`, patches
 0010 and 0027) carry the same offsets; the crate's tests pin the decoders
 to the values above.

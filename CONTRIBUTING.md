@@ -7,7 +7,8 @@ install can reproduce every result here without asking anyone.
 
 - **Assembly** (x86-64, GNU `as`, AT&T syntax) for the programs on the
   cards' path: the host's `phictl` (`host/asm/phictl`, which opens, boots
-  and serves a card) and the card's agent (`card/agent`). Both were Rust
+  and serves a card), its viewer `phitop` (`host/asm/phitop`) and the
+  card's agent (`card/agent`). Both were Rust
   until 2026-09-29; the port removed the card Rust toolchain from the boot
   path and let the MMIO copy loops be written as the device wants them
   (`docs/results/2026-09-29-phictl-assembly.md`). Such code makes its
@@ -17,8 +18,8 @@ install can reproduce every result here without asking anyone.
 - **Rust** for what stays Rust: `phi-rpc` (the wire's reference
   implementation and the card agent's test harness), `phi-isa-audit` (a
   front end over an x86 decoder crate), `knc-mvex` (the MVEX generator
-  carried by Intel-Phi-AVX512), `phitop` until its port, and card
-  userland where the toolchain permits.
+  carried by Intel-Phi-AVX512), and card userland where the toolchain
+  permits.
 - **C** only where Rust is not an option: the card kernel patches (they amend
   C and must read as kernel code), patches to third-party C projects (tcc,
   QuickJS, CPython, musl), the shared ring header, and small helpers under

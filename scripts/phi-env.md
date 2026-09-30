@@ -20,7 +20,7 @@ Disk image and host-memory size come from the same line of
 `PHI_HOST_MEM`); host memory defaults to 6G.
 
 The derivation is deliberately duplicated from
-`host/crates/phi-vfio/src/cards.rs` rather than shelling out for each
+`host/asm/phictl/sysfs.S` rather than shelling out for each
 value, and the two are kept in step by `phictl cards` being the only
 source of the index-to-address mapping: a script can never think card 1
 is a different device than the daemon does. Indices run 0 to 15.

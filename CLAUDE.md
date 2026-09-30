@@ -4,10 +4,10 @@ Read `CONTRIBUTING.md` first; it is the authority. Summary of the non-obvious
 rules:
 
 - Assembly for the programs on the cards' path (`host/asm/phictl`, the
-  daemon and client; `card/agent`, the card's agent): no libc, binutils
+  daemon and client; `host/asm/phitop`; `card/agent`, the card's agent): no libc, binutils
   only, verified against a reference before replacing anything. Rust for
   `phi-rpc` (the wire's reference and the agent's test harness),
-  `phi-isa-audit`, `knc-mvex`, `phitop`. C only for the card kernel,
+  `phi-isa-audit`, `knc-mvex`. C only for the card kernel,
   third-party C patches, and `tcc`-compiled helpers. No Python for
   tooling, ever.
 - Every code file gets a sibling `.md` with the same stem. Write it in the same

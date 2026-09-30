@@ -1,7 +1,7 @@
 # ring-layout-check.c
 
 Compiles `phi_ring.h` with `tcc` and prints every structure size and field
-offset next to the value hard-coded in `host/crates/phi-ring/src/layout.rs`.
+offset next to the value hard-coded in `host/asm/phictl/defs.inc (the RH_, CD_ and RG_ constants)`.
 The Rust side has the same numbers under test; this tool closes the loop
 from the C side, since a C compiler's idea of padding is the one the kernel
 module will use.

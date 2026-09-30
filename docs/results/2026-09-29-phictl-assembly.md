@@ -103,6 +103,29 @@ polling and the engine by the link, not by the host program.
   test under the Rust daemon showed `Text file busy`: the device is the
   card's active swap. With `swapoff` first both daemons pass.
 
+## phitop, the same evening
+
+`phitop` (the Rust crate `host/crates/phitop`, 1140 lines over `phi-rpc`
+and `phi-vfio`) followed: `host/asm/phitop`, four sources and `defs.inc`,
+3566 lines of which 3143 are instructions and directives, sharing
+`text.S`, `sysfs.S` and `wire.S` with phictl. Integers throughout where
+the Rust code used floats (loads in 1/10000, shares in tenths of a
+percent, rates in bytes per second). Verified with `--batch 1` against
+the Rust phitop on the same two cards: the one-card frame and the
+two-card frame line for line, formats and columns the same, values
+differing only by the moment of sampling (the agent's own CPU share
+varies with the request). Two defects on the way: the heap build kept
+its loop counter in `rax`, which the comparator returns through (the
+equal-share rows came out unsorted); the two-card block's memory line
+lacked one space before "pcie". The interactive mode (raw keys, the
+alternate screen, the signal handlers with a restorer) was not
+exercised from this session, which has no terminal.
+
+With it the last users of `phi-vfio`, `phi-hw`, `phi-ring` and
+`phi-regs` went, and those crates with them: the Rust workspace is
+`phi-rpc`, `phi-isa-audit` and `knc-mvex`. `make build` installs both
+binaries under `host/target/debug/` by copy and rename.
+
 ## Deployed
 
 `make build` installs the binary at `host/target/debug/phictl`, the path

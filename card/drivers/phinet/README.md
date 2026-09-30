@@ -21,7 +21,7 @@ early console's ring code:
 
 The directory and this name are kept because `include/phi_ring.h` is
 referenced by path from `tools/ring-layout-check.c` and from
-`host/crates/phi-ring/src/layout.md`. `docs/plan.md` records the same
+`host/asm/phictl/ring.md`. `docs/plan.md` records the same
 deviation in the P4 row.
 
 ## include/phi_ring.h
@@ -32,7 +32,7 @@ The C mirror of the wire layout in `docs/spec/ring-protocol.md`:
 and the magic, version and channel-kind constants.
 `_Static_assert`s pin the three sizes. `make layout-check` compiles
 `tools/ring-layout-check.c` against it and compares every `offsetof` with
-the constants in `host/crates/phi-ring/src/layout.rs`.
+the constants in `host/asm/phictl/defs.inc (the RH_, CD_ and RG_ constants)`.
 
 The header is a knowingly partial mirror: it stops at the structure
 layout that both sides must agree on. It does not carry the channel kinds

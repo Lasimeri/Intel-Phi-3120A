@@ -17,7 +17,7 @@ shows, read from the card's own /proc and sysfs and written into the
 | processes | `/proc/[pid]/stat`: state, PF_KTHREAD, utime plus stime, threads, command name, rss; `/proc/[pid]/status` VmRSS for user processes |
 
 Counters are sent as they are; the host differences two samples for
-rates and shares (`host/crates/phitop/src/model.md`).
+rates and shares (`host/asm/phitop/model.md`).
 
 ## The parsing rules
 

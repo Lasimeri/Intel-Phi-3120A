@@ -136,18 +136,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
-name = "libc"
-version = "0.2.189"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "log"
-version = "0.4.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -169,18 +157,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "phi-hw"
-version = "0.1.0"
-dependencies = [
- "libc",
- "log",
- "phi-regs",
- "phi-ring",
- "phi-vfio",
- "thiserror",
-]
-
-[[package]]
 name = "phi-isa-audit"
 version = "0.1.0"
 dependencies = [
@@ -191,42 +167,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "phi-regs"
-version = "0.1.0"
-
-[[package]]
-name = "phi-ring"
-version = "0.1.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
 name = "phi-rpc"
 version = "0.1.0"
 dependencies = [
  "phi-isa-audit",
-]
-
-[[package]]
-name = "phi-vfio"
-version = "0.1.0"
-dependencies = [
- "libc",
- "log",
- "phi-regs",
- "thiserror",
-]
-
-[[package]]
-name = "phitop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
- "phi-rpc",
- "phi-vfio",
 ]
 
 [[package]]
@@ -262,26 +206,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "thiserror"
-version = "2.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
-dependencies = [
- "thiserror-impl",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "2.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
