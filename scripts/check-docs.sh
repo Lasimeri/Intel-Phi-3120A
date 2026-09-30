@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 fail=0
 
 # The directories (or files) that hold code, in this repository.
-code_dirs=(host/crates card toolchain tools scripts)
+code_dirs=(host/crates host/asm card toolchain tools scripts)
 
 # Rule 1: sibling docs. A code directory that does not exist is an error,
 # so a stale entry cannot pass silently.

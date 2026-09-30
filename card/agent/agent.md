@@ -27,7 +27,7 @@ dropped as phi-rpc's `Decoder` drops it (`wire.md`).
 
 The agent runs as root on a RAM-only system that the host resets at will;
 the security boundary is the daemon's socket on the host
-(`host/crates/phictl/src/serve.md`, ADR 0008), not this program. `/init`
+(`host/asm/phictl/serve.md`, ADR 0008), not this program. `/init`
 starts it once, without respawn, with its messages on the console, so
 nothing the host sends may end it: only the device failing does (exit
 status 1, "phi-agent: /dev/phirpc: <why>").

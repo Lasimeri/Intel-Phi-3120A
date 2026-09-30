@@ -2,7 +2,7 @@
 
 Status: specified and implemented. Host: `host/crates/phi-ring` (layout),
 `phictl console` (console channel), `phictl boot --net` (network channel,
-`host/crates/phictl/src/net.rs`). Card: kernel patches 0011/0016 (console)
+`host/asm/phictl/net.S`). Card: kernel patches 0011/0016 (console)
 and 0021 (`arch/x86/kernel/knc_net.c`, network), sharing
 `arch/x86/include/asm/knc_ring.h`.
 
@@ -129,7 +129,7 @@ since the block channel needed a data area for its bounce slots
 ## Block channel (kind 4)
 
 The card's `/dev/phiblk0` (kernel patch 0025, `arch/x86/kernel/knc_blk.c`)
-and the host's `phictl boot --disk PATH` (`host/crates/phictl/src/disk.rs`)
+and the host's `phictl boot --disk PATH` (`host/asm/phictl/disk.S`)
 carry fixed-size records instead of a byte stream, and the channel has a
 data area after its rings (descriptor fields `DATA_OFFSET` at 24 and
 `DATA_SIZE` at 28, 0 for channels without one) holding bounce slots of

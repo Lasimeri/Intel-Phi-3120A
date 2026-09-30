@@ -71,7 +71,7 @@ asks for), `Sensors` and `Traffic` never wait: the first is answered by the
 agent from inside a running command, the other two by the daemon itself.
 If the holder disconnects mid-command the daemon closes the command's
 stdin and drains the session before the next client starts
-(`host/crates/phictl/src/serve.md`).
+(`host/asm/phictl/serve.md`).
 
 ## Root boot with a real network interface
 
@@ -92,7 +92,7 @@ no TAP device; that is the default path.
 
 ## What is where
 
-- Host: `host/crates/phictl/src/serve.rs` (daemon), `client.rs`
+- Host: `host/asm/phictl/serve.S` (daemon), `client.S`
   (commands), `host/crates/phi-rpc` (frames).
 - Card: `/dev/phirpc` (kernel patch 0022), `/bin/phi-agent`
   (`card/agent`, x86-64 assembly, built by `card/agent/build.sh`).

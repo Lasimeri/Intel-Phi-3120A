@@ -51,7 +51,7 @@ Since the agent is single-threaded, frames are whole by construction.
 
 A write to the device blocks when the card-to-host ring is full, and
 while it blocks the agent reads nothing. That is safe because the host
-relay (`host/crates/phictl/src/serve.rs`, `run`) drains the card's ring on
+relay (`host/asm/phictl/serve.S`, `card_to_clients`) drains the card's ring on
 every pass independently of what it has queued for the card: host-to-card
 bytes wait in its `to_card` buffer, not in a ring the agent must empty
 first.

@@ -35,3 +35,6 @@ card/initramfs/extra/*
 
 # knc-rs build output (mirrors card/agent/target)
 card/lib/knc-rs/target/
+
+# Assembly build outputs
+/host/asm/out/

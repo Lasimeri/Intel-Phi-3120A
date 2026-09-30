@@ -8,7 +8,6 @@ members = [
     "crates/phi-hw",
     "crates/phi-ring",
     "crates/phi-rpc",
-    "crates/phictl",
     "crates/phi-isa-audit",
     "crates/knc-mvex",
     "crates/phitop",

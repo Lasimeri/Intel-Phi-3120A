@@ -33,7 +33,7 @@ background with a control socket, so that `phictl exec`, `put`, `get` and
 
 The network bridge (`--net`) is not started: creating a TAP device needs
 root. The forward through the daemon's userspace stack
-(`host/crates/phictl/src/forward.md`) is the way in without one:
+(`host/asm/phictl/forward.md`) is the way in without one:
 `ssh -p 2222+N root@127.0.0.1`, or `phi -c N sh`.
 
 Companion scripts: `phi-down.sh -c N` halts and releases the card,

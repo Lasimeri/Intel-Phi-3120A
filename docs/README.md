@@ -69,6 +69,7 @@ output and a reading. In date order:
 | [2026-09-22-block-pipeline.md](results/2026-09-22-block-pipeline.md) | The transport, taken apart: one record per scattered 4 KiB page, 20 us of host work each; pipelined DMA, huge pages on the card, a poller that stays awake (patch 0029) and the KNC DELAY instruction; 65536 elements in 0.49 ms, 64 MiB each way at the link |
 | [2026-09-19-card-os.md](results/2026-09-19-card-os.md) | The card as an ordinary Linux system: FHS layout, persistent `/etc` and `/var`, 6 GiB of host RAM as swap verified under pressure, a shutdown that leaves the filesystem clean, and a cold host reboot that reaches a running card unattended |
 | [2026-09-29-agent-assembly.md](results/2026-09-29-agent-assembly.md) | The card agent ported from Rust to assembly: checked on the host against phi-rpc and on card 1 against the Rust agent, interleaved (a Stat sample 4.7 times less user time, transfers 5 to 21 percent faster, 20 KiB instead of 536 KiB) |
+| [2026-09-29-phictl-assembly.md](results/2026-09-29-phictl-assembly.md) | The host daemon and client ported to assembly: every subcommand checked against the Rust one on card 1 (registers byte-identical, boot, the relay with the Rust client and phitop, the block services, ssh through its own TCP stack); the aperture write path 6.5x to 9x faster, the ssh upload 6x, the rings unchanged |
 
 Images: `results/images/`.
 
