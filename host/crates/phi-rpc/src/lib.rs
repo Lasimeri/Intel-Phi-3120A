@@ -1027,7 +1027,7 @@ mod tests {
         // entries and the rest of the sample still decodes. (The process
         // list is bounded by the frame before the count: at 28 bytes plus
         // the name per entry, MAX_LIST of them would not fit MAX_FRAME; the
-        // agent caps what it sends, see card/agent/src/stat.rs.)
+        // agent caps what it sends, see card/agent/stat.md.)
         let mut s = sample_stat();
         s.cpus = (0..MAX_LIST as u32 + 5)
             .map(|i| CpuStat {

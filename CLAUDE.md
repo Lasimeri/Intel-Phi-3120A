@@ -4,7 +4,9 @@ Read `CONTRIBUTING.md` first; it is the authority. Summary of the non-obvious
 rules:
 
 - Rust first. C only for the card kernel, kernel modules, third-party C
-  patches, and `tcc`-compiled layout helpers. No Python for tooling, ever.
+  patches, and `tcc`-compiled layout helpers. Assembly for the card agent
+  (`card/agent`, no libc, audited, tested on the host by `phi-rpc`'s
+  `tests/agent.rs`). No Python for tooling, ever.
 - Every code file gets a sibling `.md` with the same stem. Write it in the same
   change as the code.
 - No em dash characters in any file.

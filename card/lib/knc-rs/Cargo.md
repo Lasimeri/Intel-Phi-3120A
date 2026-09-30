@@ -11,4 +11,4 @@ points the linker at.
 
 `.cargo/config.toml` carries the card target spec, `-Zbuild-std` (no
 prebuilt `std` exists for a custom target) and `knc-cc` as the linker, the
-same three settings `card/agent` uses.
+same three settings the Rust agent used (it became assembly on 2026-09-29).

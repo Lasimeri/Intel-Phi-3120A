@@ -10,7 +10,8 @@ phi put ~/.cache/intel-phi-3120a-build/userland/knc-rs/knc-demo /tmp/knc-demo
 phi run sh -c 'chmod +x /tmp/knc-demo && /tmp/knc-demo 228 64 256'
 ```
 
-Mirrors `card/agent/build.sh`, for the same reasons (ADR 0007):
+Mirrors `toolchain/rust/build-std.sh` (and the Rust agent's build before the
+agent became assembly, 2026-09-29), for the same reasons (ADR 0007):
 
 - the patched `libLLVM.so.22.1` through `LD_LIBRARY_PATH`, because the
   distro rustc must load the LLVM that knows this card's ABI;

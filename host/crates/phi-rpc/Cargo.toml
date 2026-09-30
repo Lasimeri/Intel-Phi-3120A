@@ -7,3 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# tests/agent.rs audits the card agent's binary for Knights Corner.
+phi-isa-audit = { path = "../phi-isa-audit" }

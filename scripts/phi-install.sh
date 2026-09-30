@@ -50,7 +50,7 @@ describe() {
         host-tools) echo "phictl, phitop, phi-isa-audit, the MVEX encoder" ;;
         llvm)       echo "the patched clang and lld that can target this card" ;;
         sysroot)    echo "musl, compiler-rt and libunwind for the card" ;;
-        llvm-dylib) echo "libLLVM.so for rustc (needed to build card Rust)" ;;
+        llvm-dylib) echo "libLLVM.so for rustc (card Rust programs; the boot image has none)" ;;
         rust-std)   echo "core, alloc and std cross-built for the card" ;;
         userland)   echo "static busybox and dropbear" ;;
         sshkey)     echo "the ssh key the card will trust" ;;
@@ -79,7 +79,7 @@ produces() {
         rust-std)   echo "card Rust std in the rustc sysroot" ;;
         userland)   echo "card/userland/build/busybox/busybox" ;;
         sshkey)     echo "$HOME/.ssh/phi_ed25519" ;;
-        agent)      echo "card/agent/target/x86_64-knc-linux-musl/release/phi-agent" ;;
+        agent)      echo "card/userland/build/agent/phi-agent" ;;
         kernel)     echo "card/kernel/build/out/arch/x86/boot/bzImage" ;;
         initramfs)  echo "card/initramfs/build/initramfs.cpio.gz" ;;
         disk)       echo "${PHI_DISK:-\$PHI_DISK (unset)}" ;;
@@ -129,11 +129,10 @@ check() {
         llvm)       [ -x toolchain/build/llvm/bin/clang ] ;;
         sysroot)    [ -f toolchain/build/sysroot/usr/lib/libc.a ] ;;
         llvm-dylib) compgen -G "toolchain/build/llvm-dylib/lib/libLLVM*.so*" >/dev/null 2>&1 ;;
-        rust-std)   compgen -G "$(rustc --print sysroot 2>/dev/null)/lib/rustlib/x86_64-knc-linux-musl/lib/libcore-*.rlib" >/dev/null 2>&1 \
-                    || [ -x card/agent/target/x86_64-knc-linux-musl/release/phi-agent ] ;;
+        rust-std)   compgen -G "$(rustc --print sysroot 2>/dev/null)/lib/rustlib/x86_64-knc-linux-musl/lib/libcore-*.rlib" >/dev/null 2>&1 ;;
         userland)   [ -x card/userland/build/busybox/busybox ] && compgen -G "card/userland/build/dropbear/*dropbear*" >/dev/null 2>&1 ;;
         sshkey)     [ -f "$HOME/.ssh/phi_ed25519" ] ;;
-        agent)      [ -x card/agent/target/x86_64-knc-linux-musl/release/phi-agent ] ;;
+        agent)      [ -x card/userland/build/agent/phi-agent ] ;;
         kernel)     [ -s card/kernel/build/out/arch/x86/boot/bzImage ] ;;
         initramfs)  [ -s card/initramfs/build/initramfs.cpio.gz ] ;;
         disk)       cards_disks_exist ;;

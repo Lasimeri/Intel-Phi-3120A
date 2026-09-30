@@ -26,4 +26,5 @@ the fallback object lists, and links plain static, non-PIE
 (`position-independent-executables = false`,
 `static-position-independent-executables = false`,
 `relocation-model = "static"`). Static libraries (the P2 check) were never
-affected; `card/agent` is the first executable.
+affected; `card/agent` was the first executable (Rust until 2026-09-29,
+assembly since).

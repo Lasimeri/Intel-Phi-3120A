@@ -56,7 +56,7 @@ In dependency order, which is also the order they run.
 | `host-tools` | `phictl`, `phitop`, `phi-isa-audit`, the MVEX encoder |
 | `llvm` | the patched clang and lld that can target this card |
 | `sysroot` | musl, compiler-rt and libunwind for the card |
-| `llvm-dylib` | `libLLVM.so` for rustc, needed to build card Rust |
+| `llvm-dylib` | `libLLVM.so` for rustc, needed to build card Rust programs (the boot image has none since the agent became assembly, 2026-09-29) |
 | `rust-std` | `core`, `alloc` and `std` cross-built for the card |
 | `userland` | static busybox and dropbear |
 | `sshkey` | the ssh key the card will trust |

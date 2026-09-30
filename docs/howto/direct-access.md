@@ -95,7 +95,7 @@ no TAP device; that is the default path.
 - Host: `host/crates/phictl/src/serve.rs` (daemon), `client.rs`
   (commands), `host/crates/phi-rpc` (frames).
 - Card: `/dev/phirpc` (kernel patch 0022), `/bin/phi-agent`
-  (`card/agent`, Rust, built by `card/agent/build.sh`).
+  (`card/agent`, x86-64 assembly, built by `card/agent/build.sh`).
 - Transport: ring channel kind 3, 256 KiB per direction, polled at 1 kHz
   on both sides; `put` moves 6 to 9 MB/s and `get` about 7 MB/s
   (`docs/results/2026-09-14-p5-net-rpc.md`, `2026-09-15-mandelbrot.md`),

@@ -50,3 +50,16 @@ The trust model:
   data.
 - SSH remains available for interactive use and `scp`; the tool does not
   replace it, it removes the need for it in automation.
+
+## The agent in assembly (2026-09-29)
+
+The decision above said "a Rust agent". The agent is now x86-64 assembly
+(`card/agent/agent.md`): same wire, same messages and texts, same limits,
+one poll loop instead of a reader and two pump threads. The reason is the
+boot path: the agent is the only Rust in the boot image, and building it
+needed the whole card Rust toolchain (ADR 0007: the patched LLVM dylib,
+`RUSTC_BOOTSTRAP`, `build-std`). It now needs `as` and `ld`. The trust
+model is unchanged; what the agent may do is still bounded by the
+daemon's socket, not by the agent. Checked on the host against `phi-rpc`
+and on card 1 against the Rust agent:
+`docs/results/2026-09-29-agent-assembly.md`.

@@ -39,7 +39,7 @@ Three requests never wait:
 - `Sensors` and `Traffic` are answered by the daemon itself (SBOX
   registers, `phi_vfio::traffic` counters).
 - `Stat` is forwarded to the card at once, even mid-session, because the
-  agent answers it from every state (`card/agent/src/main.md`); the
+  agent answers it from every state (`card/agent/agent.md`); the
   daemon queues the requester's id and routes each `StatReply` to the
   oldest waiting requester. This is what keeps `phitop` live while a
   benchmark runs through `phictl exec`.

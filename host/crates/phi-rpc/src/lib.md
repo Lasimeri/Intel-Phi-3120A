@@ -1,8 +1,10 @@
 # phi-rpc: message framing for the rpc channel
 
-Shared by `phictl serve` (host) and the card agent (`card/agent`), which is
-built for the card by the card Rust toolchain from the same source, so the
-two ends cannot drift apart. The channel itself is ring kind 3
+Used by `phictl serve` and the other host tools. The card end, the agent
+(`card/agent`), was built from this same source until 2026-09-29; it is
+now x86-64 assembly, and `tests/agent.rs` (`tests/agent.md`) keeps the two
+ends from drifting apart by building the agent, running it on the host,
+and decoding every reply here. The channel itself is ring kind 3
 (`docs/spec/ring-protocol.md`); on the card it appears as `/dev/phirpc`
 (kernel patch 0022), on the host the daemon reads and writes the rings
 directly through `phi-ring`.

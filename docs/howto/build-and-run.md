@@ -19,8 +19,8 @@ bash -c '. toolchain/env.sh && knc-cc -O2 -static -o hello hello.c'
 
 Static linking is required: the card has no shared libraries. C++ is
 `knc-c++` with libc++ from `toolchain/libcxx/build.sh`. Rust programs use
-the target JSON plus `build-std` (`toolchain/rust/build-std.md`,
-`card/agent/build.sh` is the worked example of an executable).
+the target JSON plus `build-std` (`toolchain/rust/build-std.md`;
+`card/lib/knc-rs/build.sh` is the worked example of an executable).
 
 ## 2. Check the binary
 

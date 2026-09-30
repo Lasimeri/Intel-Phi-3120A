@@ -27,6 +27,7 @@ sixty lines of shell against a Rust binary that would need
 script won on size and on edit latency (no rebuild to change the boot
 sequence). `docs/plan.md` records the deviation in the P4 row.
 
-Rust on the card did not go away with it: `phi-agent` (`card/agent/`) is
-Rust, cross-built the same way the Rust init would have been, and `init`
-starts it.
+Rust on the card did not go away with it: `phi-agent` (`card/agent/`) was
+Rust, cross-built the same way the Rust init would have been, until
+2026-09-29, when it was ported to assembly (`card/agent/agent.md`) and
+the boot image stopped depending on the card Rust toolchain at all.

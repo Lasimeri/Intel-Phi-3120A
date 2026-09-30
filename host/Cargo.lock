@@ -347,6 +347,9 @@ dependencies = [
 [[package]]
 name = "phi-rpc"
 version = "0.1.0"
+dependencies = [
+ "phi-isa-audit",
+]
 
 [[package]]
 name = "phi-vfio"

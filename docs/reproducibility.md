@@ -138,8 +138,10 @@ products live under `~/.cache/intel-phi-3120a-build/` behind the symlinks
 
 Step 6 needs the distro `rust` and `rust-src` packages (`setup-arch.sh`
 installs them). Step 7 is rerun after every rustc upgrade. Steps 9 to 11
-are only needed for compiling on the card (phase P7); everything up to
-step 8 is needed for the kernel and the initramfs.
+are only needed for compiling on the card (phase P7). Steps 6 to 8 are
+needed only for Rust programs on the card: the boot image has none since
+the agent became assembly (2026-09-29), so the kernel and the initramfs
+need no more than steps 1 to 5.
 
 ## 7. Card userland components (recorded for busybox, dropbear, agent)
 
@@ -147,7 +149,7 @@ step 8 is needed for the kernel and the initramfs.
 card/userland/components/busybox.sh      # static busybox, audited, run on the host as a smoke test
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/phi_ed25519   # the card key; no passphrase, see docs/howto/secure-access.md
 card/userland/components/dropbear.sh     # static dropbear, audited; generates the card's host keys once
-card/agent/build.sh                      # phi-agent, Rust, needs steps 6 and 7 of the toolchain
+card/agent/build.sh                      # phi-agent, assembly: GNU as and ld, audited with phi-isa-audit (make build)
 ```
 
 Optional components, not part of the default image: `zlib.sh` and

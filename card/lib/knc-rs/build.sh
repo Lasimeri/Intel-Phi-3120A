@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh: build the knc crate and knc-demo for the card, audit, and leave
-# the binary where phi put can reach it. Mirrors card/agent/build.sh: the
+# the binary where phi put can reach it. Mirrors toolchain/rust/build-std.sh: the
 # patched LLVM dylib, RUSTC_BOOTSTRAP=1 for the -Z flags a custom target
 # needs, a clean build because cargo does not fingerprint the dylib.
 #

@@ -19,7 +19,7 @@ get a header and the mean load per core.
 
 Each interval it makes two short requests on each daemon's control
 socket: `Stat`, which the daemon relays to the card and the
-agent answers from /proc and sysfs (`card/agent/src/stat.md`), and
+agent answers from /proc and sysfs (`card/agent/stat.md`), and
 `Traffic`, which the daemon answers from its own PCIe byte counters
 (`phi-vfio/src/traffic.md`). The frame (`view.md`) shows:
 
