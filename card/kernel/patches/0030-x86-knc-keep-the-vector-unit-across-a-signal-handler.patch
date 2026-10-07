@@ -1,5 +1,5 @@
 From c8bc53162a792275f485594a5859f3e567b2f98e Mon Sep 17 00:00:00 2001
-From: Ian Haapanen <ian.haapanen@gmail.com>
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Tue, 22 Sep 2026 11:45:15 -0500
 Subject: [PATCH] x86/knc: keep the vector unit across a signal handler
 

@@ -1,5 +1,5 @@
 From 3368ca98a6e0e6b3ff623805ca00cc03b26443a6 Mon Sep 17 00:00:00 2001
-From: Ian Haapanen <ian.haapanen@gmail.com>
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Tue, 22 Sep 2026 10:51:18 -0500
 Subject: [PATCH] x86/knc: blk: a pinned completion poller that stalls between
  polls while requests are outstanding

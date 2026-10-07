@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Ian Haapanen <ian.haapanen@gmail.com>
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Tue, 15 Sep 2026 15:02:27 -0500
 Subject: [PATCH] x86/knc: save and restore the vector unit state on context
  switch

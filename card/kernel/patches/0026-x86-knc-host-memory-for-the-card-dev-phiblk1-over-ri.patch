@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Ian Haapanen <ian.haapanen@gmail.com>
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 13:36:49 -0500
 Subject: [PATCH 26/26] x86/knc: host memory for the card: /dev/phiblk1 over
  ring channel 5, /dev/phihost

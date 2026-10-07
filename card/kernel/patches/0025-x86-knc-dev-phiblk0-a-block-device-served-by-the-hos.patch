@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Ian Haapanen <ian.haapanen@gmail.com>
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 12:56:36 -0500
 Subject: [PATCH 25/26] x86/knc: /dev/phiblk0, a block device served by the
  host over ring channel 4

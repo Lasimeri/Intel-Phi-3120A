@@ -1,5 +1,5 @@
 From 07cfa3b894ecd34572ee4306bc8c6aa32afa0fa8 Mon Sep 17 00:00:00 2001
-From: Ian Haapanen <ian.haapanen@gmail.com>
+From: Lasimeri <217267696+Lasimeri@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 19:30:48 -0500
 Subject: [PATCH] x86/knc: the card's sensors as a hwmon device
 
