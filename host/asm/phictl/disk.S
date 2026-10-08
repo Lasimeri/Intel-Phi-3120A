@@ -416,7 +416,6 @@ STR s_st_rate, "a copy of the rate test did not complete"
 blk_step:
 	pushq %rbx
 	pushq %r12
-	pushq %r13
 	pushq %r14
 	pushq %r15
 	subq $8, %rsp
@@ -555,7 +554,6 @@ blk_step:
 	addq $8, %rsp
 	popq %r15
 	popq %r14
-	popq %r13
 	popq %r12
 	popq %rbx
 	ret
@@ -681,7 +679,6 @@ submit_ram:
 complete:
 	pushq %rbx
 	pushq %r12
-	pushq %r13
 	subq $16, %rsp
 	movq %rdi, %rbx
 	movl %esi, (%rsp)
@@ -726,7 +723,6 @@ complete:
 	movl $CPL_SIZE, %ecx
 	call ring_push
 	addq $16, %rsp
-	popq %r13
 	popq %r12
 	popq %rbx
 	ret

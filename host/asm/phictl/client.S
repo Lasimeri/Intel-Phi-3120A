@@ -85,7 +85,6 @@ STR s_phictl_socket, "PHICTL_SOCKET"
 
 # connect_socket: the connection, or exit with the reason.
 connect_socket:
-	pushq %rbx
 	subq $112, %rsp
 	call cl_default_socket
 	movl $AF_UNIX, %edi
@@ -110,7 +109,6 @@ connect_socket:
 	movl $DECCAP, %edx
 	call dec_init
 	addq $112, %rsp
-	popq %rbx
 	ret
 8:	negq %rax
 	movq %rax, %rdi
@@ -237,7 +235,6 @@ STR s_opt_socket, "--socket"
 	.globl cmd_exec
 cmd_exec:
 	pushq %rbx
-	pushq %r12
 	call socket_option
 1:	call opt_peek
 	testq %rax, %rax

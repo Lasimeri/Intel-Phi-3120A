@@ -35,8 +35,6 @@ tap_inbound_len:	.skip 8
 # br_open -> eax 1 once the card is up: the TAP created, configured,
 # the network channel found.
 br_open:
-	pushq %rbx
-	pushq %r12
 	call wait_init_seen
 	testl %eax, %eax
 	jz 90f
@@ -99,12 +97,8 @@ br_open:
 	call w_cstr
 	call l_end
 	movl $1, %eax
-	popq %r12
-	popq %rbx
 	ret
 90:	xorl %eax, %eax
-	popq %r12
-	popq %rbx
 	ret
 91:	negq %rax
 	movq %rax, %rdi
@@ -128,7 +122,6 @@ STR s_br3, ") bridged to the ring network channel"
 # /usr/bin/ip, wait; a failure exits.
 run_ip:
 	pushq %rbx
-	pushq %r12
 	subq $96, %rsp
 	movq %rdi, %rbx
 	# the argv on the stack, with the placeholders filled
@@ -166,7 +159,6 @@ run_ip:
 	andl $0xff7f, %eax
 	jnz 92f
 	addq $96, %rsp
-	popq %r12
 	popq %rbx
 	ret
 91:	negq %rax

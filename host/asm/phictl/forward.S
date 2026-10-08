@@ -90,7 +90,6 @@ STR s_e_subnet, "--net-addr: not an IPv4 address"
 # fw_open -> eax 1 once the card is up and the network channel found:
 # the listener on 127.0.0.1:HOSTPORT.
 fw_open:
-	pushq %rbx
 	call wait_init_seen
 	testl %eax, %eax
 	jz 90f
@@ -158,10 +157,8 @@ fw_open:
 	call w_cstr
 	call l_end
 	movl $1, %eax
-	popq %rbx
 	ret
 90:	xorl %eax, %eax
-	popq %rbx
 	ret
 91:	negq %rax
 	movq %rax, %rdi

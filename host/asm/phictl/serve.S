@@ -84,7 +84,6 @@ STR s_sudo_uid, "SUDO_UID"
 serve_open:
 	pushq %rbx
 	pushq %r12
-	pushq %r13
 	# the owner
 	cmpq $0, o_has_owner(%rip)
 	je 1f
@@ -180,7 +179,6 @@ serve_open:
 	leaq card_dec_buf(%rip), %rsi
 	movl $DECCAP, %edx
 	call dec_init
-	popq %r13
 	popq %r12
 	popq %rbx
 	ret
@@ -279,10 +277,6 @@ client_wants_read:
 # serve_step -> eax 1 when anything moved. Before the card has reached
 # init nothing is relayed (connections are accepted and wait).
 serve_step:
-	pushq %rbx
-	pushq %r12
-	pushq %r13
-	pushq %r14
 	pushq %r15
 	xorl %r15d, %r15d	# moved
 	call accept_clients
@@ -303,10 +297,6 @@ serve_step:
 	orl %eax, %r15d
 9:	movl %r15d, %eax
 	popq %r15
-	popq %r14
-	popq %r13
-	popq %r12
-	popq %rbx
 	ret
 
 # rpc_attach -> eax 1 once the card has reached init and the rpc

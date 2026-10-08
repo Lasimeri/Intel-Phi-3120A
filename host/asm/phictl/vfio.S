@@ -30,7 +30,6 @@ ioctl_buf:	.skip 64
 # and map BARs 4 (registers) and 0 (aperture). Every failure exits with
 # the call that failed.
 vfio_open:
-	pushq %rbx
 	pushq %r12
 	movq %rsi, %r12
 	call iommu_group_of
@@ -126,7 +125,6 @@ vfio_open:
 	movq %rax, aper_base(%rip)
 	movq %rdx, aper_len(%rip)
 	popq %r12
-	popq %rbx
 	ret
 90:	leaq s_e_group(%rip), %rsi
 	jmp fail
