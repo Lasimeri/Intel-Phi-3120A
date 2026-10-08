@@ -490,6 +490,12 @@ fail:
 	SYS SYS_exit_group
 STR s_prefix, "phictl: "
 
+	.globl fail_neg
+# fail_neg(rsi = what, rax = -errno as a system call returned it):
+# fail_os, the sign taken off. The exit every failed system call takes.
+fail_neg:
+	negq %rax
+	movq %rax, %rdi
 	.globl fail_os
 # fail_os(rsi = what, edi = errno): "phictl: <what>: <message> (os error N)".
 fail_os:

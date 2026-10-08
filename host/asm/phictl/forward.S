@@ -160,14 +160,10 @@ fw_open:
 	ret
 90:	xorl %eax, %eax
 	ret
-91:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_fwsock(%rip), %rsi
-	jmp fail_os
-92:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_fwbind(%rip), %rsi
-	jmp fail_os
+91:	leaq s_e_fwsock(%rip), %rsi
+	jmp fail_neg
+92:	leaq s_e_fwbind(%rip), %rsi
+	jmp fail_neg
 	.section .rodata
 	.p2align 2
 one4:	.long 1

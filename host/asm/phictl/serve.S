@@ -182,22 +182,14 @@ serve_open:
 	popq %r12
 	popq %rbx
 	ret
-90:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_socket(%rip), %rsi
-	jmp fail_os
-91:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_bind(%rip), %rsi
-	jmp fail_os
-92:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_chown(%rip), %rsi
-	jmp fail_os
-93:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_listen(%rip), %rsi
-	jmp fail_os
+90:	leaq s_e_socket(%rip), %rsi
+	jmp fail_neg
+91:	leaq s_e_bind(%rip), %rsi
+	jmp fail_neg
+92:	leaq s_e_chown(%rip), %rsi
+	jmp fail_neg
+93:	leaq s_e_listen(%rip), %rsi
+	jmp fail_neg
 STR s_auto, "auto"
 STR s_e_socket, "socket"
 STR s_e_bind, "binding the control socket"

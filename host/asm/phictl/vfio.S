@@ -136,32 +136,20 @@ vfio_open:
 	jmp fail
 93:	leaq s_e_type1(%rip), %rsi
 	jmp fail
-94:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_open_group(%rip), %rsi
-	jmp fail_os
-95:	negq %rax
-	movq %rax, %rdi
-	leaq s_ioc_status(%rip), %rsi
-	jmp fail_os
+94:	leaq s_e_open_group(%rip), %rsi
+	jmp fail_neg
+95:	leaq s_ioc_status(%rip), %rsi
+	jmp fail_neg
 96:	leaq s_e_viable(%rip), %rsi
 	jmp fail
-97:	negq %rax
-	movq %rax, %rdi
-	leaq s_ioc_setc(%rip), %rsi
-	jmp fail_os
-98:	negq %rax
-	movq %rax, %rdi
-	leaq s_ioc_setiommu(%rip), %rsi
-	jmp fail_os
-99:	negq %rax
-	movq %rax, %rdi
-	leaq s_ioc_getdev(%rip), %rsi
-	jmp fail_os
-100:	negq %rax
-	movq %rax, %rdi
-	leaq s_ioc_devinfo(%rip), %rsi
-	jmp fail_os
+97:	leaq s_ioc_setc(%rip), %rsi
+	jmp fail_neg
+98:	leaq s_ioc_setiommu(%rip), %rsi
+	jmp fail_neg
+99:	leaq s_ioc_getdev(%rip), %rsi
+	jmp fail_neg
+100:	leaq s_ioc_devinfo(%rip), %rsi
+	jmp fail_neg
 fail_os_open:
 	pushq %rdi
 	pushq %rsi
@@ -215,10 +203,8 @@ region_info:
 	testq %rax, %rax
 	js 1f
 	ret
-1:	negq %rax
-	movq %rax, %rdi
-	leaq s_ioc_region(%rip), %rsi
-	jmp fail_os
+1:	leaq s_ioc_region(%rip), %rsi
+	jmp fail_neg
 
 # map_region(edi = index) -> rax = base, rdx = length: the whole region
 # mmapped read/write shared. Exits when it has no MMAP flag or is empty.
@@ -241,10 +227,8 @@ map_region:
 	ret
 8:	leaq s_e_nommap(%rip), %rsi
 	jmp fail
-9:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_mmap(%rip), %rsi
-	jmp fail_os
+9:	leaq s_e_mmap(%rip), %rsi
+	jmp fail_neg
 
 	.globl cfg_read16
 # cfg_read16(edi = offset) -> eax: a 16-bit configuration register.

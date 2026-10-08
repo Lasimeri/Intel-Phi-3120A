@@ -208,10 +208,8 @@ blk_open:
 	jmp 99f
 90:	xorl %eax, %eax
 	jmp 99f
-91:	negq %rax
-	movq %rax, %rdi
-	movq o_disk(%rip), %rsi
-	jmp fail_os
+91:	movq o_disk(%rip), %rsi
+	jmp fail_neg
 99:	popq %r12
 	popq %rbx
 	ret

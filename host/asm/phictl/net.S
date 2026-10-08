@@ -100,16 +100,12 @@ br_open:
 	ret
 90:	xorl %eax, %eax
 	ret
-91:	negq %rax
-	movq %rax, %rdi
-	leaq s_tun(%rip), %rsi
-	jmp fail_os
+91:	leaq s_tun(%rip), %rsi
+	jmp fail_neg
 92:	leaq s_e_name(%rip), %rsi
 	jmp fail
-93:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_tunsetiff(%rip), %rsi
-	jmp fail_os
+93:	leaq s_e_tunsetiff(%rip), %rsi
+	jmp fail_neg
 STR s_tun, "/dev/net/tun"
 STR s_e_name, "--net: the TAP name is too long"
 STR s_e_tunsetiff, "TUNSETIFF on /dev/net/tun (needs root)"
@@ -161,10 +157,8 @@ run_ip:
 	addq $96, %rsp
 	popq %rbx
 	ret
-91:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_fork(%rip), %rsi
-	jmp fail_os
+91:	leaq s_e_fork(%rip), %rsi
+	jmp fail_neg
 92:	leaq s_e_ip(%rip), %rsi
 	jmp fail
 	.section .rodata

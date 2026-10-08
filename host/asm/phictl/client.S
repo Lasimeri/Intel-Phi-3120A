@@ -110,10 +110,8 @@ connect_socket:
 	call dec_init
 	addq $112, %rsp
 	ret
-8:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_socket(%rip), %rsi
-	jmp fail_os
+8:	leaq s_e_socket(%rip), %rsi
+	jmp fail_neg
 9:	pushq %rax
 	call l_begin
 	leaq s_prefix(%rip), %rsi
@@ -172,10 +170,8 @@ recv_frame:
 	jmp 1b
 3:	cmpq $-EINTR, %rax
 	je 2b
-	negq %rax
-	movq %rax, %rdi
 	leaq s_e_read(%rip), %rsi
-	jmp fail_os
+	jmp fail_neg
 7:	leaq s_e_closed(%rip), %rsi
 	jmp fail
 8:	leaq s_e_badframe(%rip), %rsi
@@ -374,10 +370,8 @@ cmd_exec:
 	call error_reply_255
 15:	cmpq $-EINTR, %rax
 	je 10b
-	negq %rax
-	movq %rax, %rdi
 	leaq s_e_read(%rip), %rsi
-	jmp fail_os
+	jmp fail_neg
 20:	leaq s_e_closed(%rip), %rsi
 	jmp fail
 21:	leaq s_e_badframe(%rip), %rsi
@@ -480,10 +474,8 @@ cmd_put:
 	jmp 6b
 7:	cmpq $-EINTR, %rax
 	je 6b
-	negq %rax
-	movq %rax, %rdi
 	movq cl_argv0(%rip), %rsi
-	jmp fail_os
+	jmp fail_neg
 8:	movl $TAG_PUT_CLOSE, %edi
 	call f_begin
 	call send_tx
@@ -524,10 +516,8 @@ cmd_put:
 	SYS SYS_exit_group
 90:	leaq s_e_mode(%rip), %rsi
 	jmp fail
-91:	negq %rax
-	movq %rax, %rdi
-	movq cl_argv0(%rip), %rsi
-	jmp fail_os
+91:	movq cl_argv0(%rip), %rsi
+	jmp fail_neg
 STR s_opt_mode, "--mode"
 STR s_e_mode, "--mode takes an octal mode"
 STR s_put_done, "phictl put: "
@@ -613,10 +603,8 @@ open_dst:
 	testq %rax, %rax
 	js 1f
 	ret
-1:	negq %rax
-	movq %rax, %rdi
-	movq cl_file(%rip), %rsi
-	jmp fail_os
+1:	movq cl_file(%rip), %rsi
+	jmp fail_neg
 STR s_get_done, "phictl get: "
 STR s_e_write_dst, "writing the local file"
 

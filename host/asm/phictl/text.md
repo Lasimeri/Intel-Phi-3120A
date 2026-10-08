@@ -18,7 +18,9 @@ message and " (os error N)"), and wire strings (`w_str_begin`,
 and `o_end`, flushed at half full, by `o_flush`, and before exit;
 standard error lines go out at once (`l_begin`, `l_end`, with
 `l_tag` for the "[phictl] " the daemon prefixes and `l_elapsed` for its
-"+   1.234s "). `fail` and `fail_os` print "phictl: ..." and exit 1.
+"+   1.234s "). `fail` and `fail_os` print "phictl: ..." and exit 1;
+`fail_neg` is `fail_os` for a system call's `-errno` still in `rax`,
+the exit every failed system call in the program takes.
 `p_begin` and `p_end` build a NUL-terminated path in `path_buf`. All of
 these save and restore the cursor, so a line can be logged in the
 middle of a frame.

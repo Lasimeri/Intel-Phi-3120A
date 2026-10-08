@@ -201,14 +201,10 @@ cmd_boot:
 	jmp fail
 91:	leaq s_e_netfwd(%rip), %rsi
 	jmp fail
-92:	negq %rax
-	movq %rax, %rdi
-	movq o_kernel(%rip), %rsi
-	jmp fail_os
-93:	negq %rax
-	movq %rax, %rdi
-	movq o_initrd(%rip), %rsi
-	jmp fail_os
+92:	movq o_kernel(%rip), %rsi
+	jmp fail_neg
+93:	movq o_initrd(%rip), %rsi
+	jmp fail_neg
 STR s_default_cmdline, "earlyprintk=phiring,keep loglevel=8"
 STR s_auto, "auto"
 STR s_10_9, "10.9."
@@ -301,14 +297,10 @@ hostmem_pin:
 	movq %rax, hostmem_card(%rip)
 	popq %rbx
 	ret
-8:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_hostmem(%rip), %rsi
-	jmp fail_os
-9:	negq %rax
-	movq %rax, %rdi
-	leaq s_e_hostmem_pin(%rip), %rsi
-	jmp fail_os
+8:	leaq s_e_hostmem(%rip), %rsi
+	jmp fail_neg
+9:	leaq s_e_hostmem_pin(%rip), %rsi
+	jmp fail_neg
 STR s_e_hostmem, "the host memory file"
 STR s_e_hostmem_pin, "pinning the host memory for the card (VFIO_IOMMU_MAP_DMA)"
 
