@@ -129,7 +129,6 @@ daemon:
 	movq $GDDR_BYTES, %rcx
 	cmpq %rcx, %rax
 	ja 90f
-	movq %rax, %rdx
 	movq region_base(%rip), %rdi
 	movq region_size(%rip), %rdx
 	call aper_check
@@ -286,12 +285,7 @@ console_step:
 	call console_attach
 	testl %eax, %eax
 	jz 2f
-	call l_begin
-	call l_tag
-	call now_ms
-	subq start_ms(%rip), %rax
-	movq %rax, %rdi
-	call l_elapsed
+	call l_begin_elapsed
 	leaq s_header_valid(%rip), %rsi
 	call w_cstr
 	call l_end
@@ -335,12 +329,7 @@ console_step:
 	je 7f
 	movq %rax, last_flags(%rip)
 	pushq %rax
-	call l_begin
-	call l_tag
-	call now_ms
-	subq start_ms(%rip), %rax
-	movq %rax, %rdi
-	call l_elapsed
+	call l_begin_elapsed
 	leaq s_card_flags(%rip), %rsi
 	call w_cstr
 	popq %rdi
@@ -391,39 +380,35 @@ console_step:
 STR s_header_valid, "ring region header valid"
 STR s_card_flags, "card flags "
 
-# log_post_elapsed(edi = raw): "[phictl] +   1.234s postcode "xx" ...".
-log_post_elapsed:
-	pushq %rdi
+# l_begin_elapsed: a log line opened with the tag and the time since the
+# daemon started: "[phictl] +   1.234s ".
+l_begin_elapsed:
 	call l_begin
 	call l_tag
 	call now_ms
 	subq start_ms(%rip), %rax
 	movq %rax, %rdi
-	call l_elapsed
+	jmp l_elapsed
+
+# log_post_elapsed(edi = raw): "[phictl] +   1.234s postcode "xx" ...".
+log_post_elapsed:
 	leaq s_postcode_q(%rip), %rsi
-	call w_cstr
-	movq (%rsp), %rdi
-	call post_text
-	call w_bytes
-	leaq s_quote_sp(%rip), %rsi
-	call w_cstr
-	popq %rdi
-	call post_describe
-	call w_cstr
-	jmp l_end
+	jmp log_code_line
 STR s_postcode_q, "postcode \""
-STR s_quote_sp, "\" "
 
 # log_mark(edi = raw): the watched word as a POST-style code.
 log_mark:
-	pushq %rdi
-	call l_begin
-	call l_tag
-	call now_ms
-	subq start_ms(%rip), %rax
-	movq %rax, %rdi
-	call l_elapsed
 	leaq s_mark_q(%rip), %rsi
+	jmp log_code_line
+STR s_mark_q, "mark \""
+
+# log_code_line(edi = raw, rsi = what it is): the elapsed line, the
+# word, the code as text in quotes, its description.
+log_code_line:
+	pushq %rdi
+	pushq %rsi
+	call l_begin_elapsed
+	popq %rsi
 	call w_cstr
 	movq (%rsp), %rdi
 	call post_text
@@ -434,7 +419,7 @@ log_mark:
 	call post_describe
 	call w_cstr
 	jmp l_end
-STR s_mark_q, "mark \""
+STR s_quote_sp, "\" "
 
 	.globl wait_init_seen
 # wait_init_seen -> eax 1 once the card has reached init: POST K7, or the
