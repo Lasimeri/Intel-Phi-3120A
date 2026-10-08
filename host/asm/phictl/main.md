@@ -22,7 +22,8 @@ against the Rust one and what changed.
 | `console.S` | the daemon loop and the console |
 | `services.S` | the services' turns |
 | `wire.S` | rpc frames: decoders, validation, building |
-| `serve.S` | the control socket and the relay; sensors |
+| `serve.S` | the control socket and the relay |
+| `sensors.S` | the SensorsReply text from the SBOX registers |
 | `client.S` | exec, put, get, status, sensors, traffic |
 | `dma.S` | the DMA engine |
 | `disk.S` | the block services |

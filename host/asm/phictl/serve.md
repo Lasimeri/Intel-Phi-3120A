@@ -55,13 +55,10 @@ and in `to_card`), so the wait and the read cannot disagree. The rpc
 channel must be attached for any client to be listed. `client_at` is
 the one place that turns a slot index into its 128-byte entry.
 
-**Sensors** are formatted as `sensors_text` did, from the SBOX: the nine
-die temperatures (three 10-bit fields per register, 0 shown as n/a) and
-the highest maximum, the board temperatures (valid bits), the VDDG
-regulator field, the TMU, the VR12 core voltage (250 mV + 5 mV per code
-above 1), the core clock from `COREFREQ` and `CURRENT_CLK_RATIO` through
-Intel's PLL table (`core_khz`: feedback 8..16 for divider 1, 8..15 for 2
-and 4, the ICC divider from SPAD4, 20 when unfused).
+**Sensors** and **Traffic** are the two requests answered here without
+the card: `traffic_frame` is the daemon's counters (`card.S`) as a
+TrafficReply; the SensorsReply text is built by `sensors_frame` in
+[`sensors.S`](sensors.md) from the SBOX registers.
 
 Verified: the Rust client and phitop against this relay on card 1, a
 sample delivered while a command held the card, a second client queued
