@@ -306,3 +306,13 @@
 \name:	.asciz "\text"
 	.text
 	.endm
+
+# PFD cursor, fd, events: a pollfd (fd, events, revents 0) written at the
+# cursor register, which moves past it: what every *_fds routine adds
+# for the daemon's idle wait (console.S idle_wait). fd and events are
+# any 32-bit operands a mov takes (a register, an immediate).
+	.macro PFD cursor, fd, events
+	movl \fd, (\cursor)
+	movl \events, 4(\cursor)
+	addq $8, \cursor
+	.endm

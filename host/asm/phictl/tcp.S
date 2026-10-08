@@ -696,9 +696,7 @@ tcp_fds:
 4:	testl %ecx, %ecx
 	jz 8f
 	movl C_FD(%rbx), %eax
-	movl %eax, (%r13)
-	movl %ecx, 4(%r13)		# events, and revents 0
-	addq $8, %r13
+	PFD %r13, %eax, %ecx
 8:	incl %r12d
 	jmp 1b
 9:	movq %r13, %rax

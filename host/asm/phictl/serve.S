@@ -724,9 +724,7 @@ serve_fds:
 	pushq %r13
 	movq %rdi, %r13
 	movl listen_fd(%rip), %eax
-	movl %eax, (%r13)
-	movl $POLLIN, 4(%r13)		# events, and revents 0
-	addq $8, %r13
+	PFD %r13, %eax, $POLLIN
 	cmpq $0, rpc_ready(%rip)
 	je 9f
 	xorl %r12d, %r12d
@@ -755,9 +753,7 @@ serve_fds:
 	cmpq $TOCARDCAP - 2 * MAX_FRAME, %rax
 	jae 8f
 	movl CL_FD(%rbx), %eax
-	movl %eax, (%r13)
-	movl $POLLIN, 4(%r13)
-	addq $8, %r13
+	PFD %r13, %eax, $POLLIN
 8:	incl %r12d
 	jmp 1b
 9:	movq %r13, %rax

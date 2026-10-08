@@ -247,9 +247,7 @@ console_fds:
 	movq in_len(%rip), %rcx
 	cmpq in_head(%rip), %rcx
 	jne 9f
-	movl $0, (%rax)
-	movl $POLLIN, 4(%rax)		# events, and revents 0
-	addq $8, %rax
+	PFD %rax, $0, $POLLIN
 9:	ret
 
 # console_attach -> eax 1 when the region opened and the console channel

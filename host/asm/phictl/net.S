@@ -198,9 +198,7 @@ net_fds:
 	cmpq $0, br_ready(%rip)
 	je 9f
 	movl tap_fd(%rip), %ecx
-	movl %ecx, (%rax)
-	movl $POLLIN, 4(%rax)		# events, and revents 0
-	addq $8, %rax
+	PFD %rax, %ecx, $POLLIN
 9:	ret
 
 	.globl net_step

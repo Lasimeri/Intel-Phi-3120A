@@ -215,9 +215,7 @@ forward_fds:
 	movq %rdi, %rax
 	ret
 1:	movl fw_listen(%rip), %eax
-	movl %eax, (%rdi)
-	movl $POLLIN, 4(%rdi)		# events, and revents 0
-	addq $8, %rdi
+	PFD %rdi, %eax, $POLLIN
 	jmp tcp_fds
 
 	.globl forward_step

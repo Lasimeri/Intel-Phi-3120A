@@ -34,3 +34,8 @@
   `rcx` and `r11` are clobbered by the instruction.
 - **`STR name, text`**: a NUL-terminated string in `.rodata`, referenced
   as `name(%rip)`, usable in the middle of a function.
+- **`PFD cursor, fd, events`**: a `pollfd` (fd, events, revents 0)
+  written at the cursor register, which moves past it; the one form in
+  which every `*_fds` routine (`serve.S`, `forward.S`, `tcp.S`, `net.S`,
+  `console.S`) adds a descriptor to the daemon's idle wait
+  (`console.md`).
