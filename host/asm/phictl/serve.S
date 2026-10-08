@@ -165,11 +165,9 @@ serve_open:
 	xorl %ebx, %ebx
 7:	cmpl $MAX_CLIENTS, %ebx
 	jae 8f
-	movl %ebx, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rdi
-	addq %rax, %rdi
-	addq $CL_DEC, %rdi
+	movl %ebx, %edi
+	call client_at
+	leaq CL_DEC(%rax), %rdi
 	movl %ebx, %eax
 	imull $DECCAP, %eax, %eax
 	leaq dec_bufs(%rip), %rsi
@@ -233,6 +231,46 @@ mkdir_p:
 	movl $0755, %esi
 	SYS SYS_mkdir
 	popq %rbx
+	ret
+
+# ------------------------------------------------------------ the client table
+
+# client_at(edi = index) -> rax = the client's slot (CL_SIZE bytes each,
+# in clients); rdi clobbered, nothing else.
+client_at:
+	shll $7, %edi			# CL_SIZE
+	leaq clients(%rip), %rax
+	addq %rdi, %rax
+	ret
+
+# client_wants_read(rdi = client) -> eax 1 when the next pass reads its
+# socket: a live client that holds the card or has nothing pending, with
+# room for a read chunk in its decoder and for what it may bring in
+# to_card (within two frames of full the client waits: the
+# backpressure). clients_to_card reads by this and serve_fds waits by
+# it, so the two cannot drift apart.
+client_wants_read:
+	cmpq $0, CL_FD(%rdi)
+	je 8f
+	cmpq $0, CL_DEAD(%rdi)
+	jne 8f
+	movq CL_PTAIL(%rdi), %rax
+	cmpq CL_PHEAD(%rdi), %rax
+	je 1f
+	movq CL_ID(%rdi), %rax
+	cmpq holder(%rip), %rax
+	jne 8f
+1:	addq $CL_DEC, %rdi
+	call dec_space
+	cmpq $READ_CHUNK, %rax
+	jb 8f
+	movq to_card_tail(%rip), %rax
+	subq to_card_head(%rip), %rax
+	cmpq $TOCARDCAP - 2 * MAX_FRAME, %rax
+	jae 8f
+	movl $1, %eax
+	ret
+8:	xorl %eax, %eax
 	ret
 
 # ------------------------------------------------------------ the pass
@@ -336,12 +374,11 @@ accept_clients:
 	jne 6f
 2:	cmpq $MAX_CLIENTS, nclients(%rip)
 	jae 5f
-	# the first free slot (fd -1)
+	# the first free slot (fd 0)
 	xorl %ecx, %ecx
-3:	movl %ecx, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rdi
-	addq %rax, %rdi
+3:	movl %ecx, %edi
+	call client_at
+	movq %rax, %rdi
 	cmpq $0, CL_FD(%rdi)
 	je 4f
 	incl %ecx
@@ -404,29 +441,13 @@ clients_to_card:
 	xorl %r12d, %r12d
 1:	cmpl $MAX_CLIENTS, %r12d
 	jae 9f
-	movl %r12d, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rbx
-	addq %rax, %rbx
-	cmpq $0, CL_FD(%rbx)
-	je 8f
-	cmpq $0, CL_DEAD(%rbx)
-	jne 8f
-	movq CL_PTAIL(%rbx), %rax
-	cmpq CL_PHEAD(%rbx), %rax
-	je 2f
-	movq CL_ID(%rbx), %rax
-	cmpq holder(%rip), %rax
-	jne 8f
-2:	# room in the decoder, and in to_card for what may come
-	leaq CL_DEC(%rbx), %rdi
-	call dec_space
-	cmpq $READ_CHUNK, %rax
-	jb 8f
-	movq to_card_tail(%rip), %rax
-	subq to_card_head(%rip), %rax
-	cmpq $TOCARDCAP - 2 * MAX_FRAME, %rax
-	jae 8f
+	movl %r12d, %edi
+	call client_at
+	movq %rax, %rbx
+	movq %rax, %rdi
+	call client_wants_read
+	testl %eax, %eax
+	jz 8f
 	leaq CL_DEC(%rbx), %rdi
 	call dec_room
 	movq %rax, %rsi
@@ -614,10 +635,9 @@ reap_clients:
 	xorl %r12d, %r12d
 1:	cmpl $MAX_CLIENTS, %r12d
 	jae 9f
-	movl %r12d, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rbx
-	addq %rax, %rbx
+	movl %r12d, %edi
+	call client_at
+	movq %rax, %rbx
 	cmpq $0, CL_FD(%rbx)
 	je 8f
 	cmpq $0, CL_DEAD(%rbx)
@@ -666,10 +686,9 @@ pick_holder:
 	xorl %r12d, %r12d
 1:	cmpl $MAX_CLIENTS, %r12d
 	jae 8f
-	movl %r12d, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rbx
-	addq %rax, %rbx
+	movl %r12d, %edi
+	call client_at
+	movq %rax, %rbx
 	cmpq $0, CL_FD(%rbx)
 	je 2f
 	movq CL_PTAIL(%rbx), %rax
@@ -677,8 +696,8 @@ pick_holder:
 	jne 3f
 2:	incl %r12d
 	jmp 1b
-8:	# nobody waiting: eax still holds the last slot's offset (15 << 7,
-	# which reported movement on every pass until 2026-10-08)
+8:	# nobody waiting: rax is the last slot here, not 0 (until 2026-10-08
+	# it was the slot's offset, 15 << 7, reported as movement every pass)
 	xorl %eax, %eax
 	jmp 9f
 3:	movq CL_ID(%rbx), %rax
@@ -730,28 +749,13 @@ serve_fds:
 	xorl %r12d, %r12d
 1:	cmpl $MAX_CLIENTS, %r12d
 	jae 9f
-	movl %r12d, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rbx
-	addq %rax, %rbx
-	cmpq $0, CL_FD(%rbx)
-	je 8f
-	cmpq $0, CL_DEAD(%rbx)
-	jne 8f
-	movq CL_PTAIL(%rbx), %rax
-	cmpq CL_PHEAD(%rbx), %rax
-	je 2f
-	movq CL_ID(%rbx), %rax
-	cmpq holder(%rip), %rax
-	jne 8f
-2:	leaq CL_DEC(%rbx), %rdi
-	call dec_space
-	cmpq $READ_CHUNK, %rax
-	jb 8f
-	movq to_card_tail(%rip), %rax
-	subq to_card_head(%rip), %rax
-	cmpq $TOCARDCAP - 2 * MAX_FRAME, %rax
-	jae 8f
+	movl %r12d, %edi
+	call client_at
+	movq %rax, %rbx
+	movq %rax, %rdi
+	call client_wants_read
+	testl %eax, %eax
+	jz 8f
 	movl CL_FD(%rbx), %eax
 	PFD %r13, %eax, $POLLIN
 8:	incl %r12d
@@ -875,16 +879,15 @@ deliver:
 
 # client_by_id(rdi = id) -> rax = the client, or 0.
 client_by_id:
+	movq %rdi, %rsi
 	xorl %ecx, %ecx
 1:	cmpl $MAX_CLIENTS, %ecx
 	jae 9f
-	movl %ecx, %eax
-	shll $7, %eax
-	leaq clients(%rip), %rdx
-	addq %rdx, %rax
+	movl %ecx, %edi
+	call client_at
 	cmpq $0, CL_FD(%rax)
 	je 2f
-	cmpq %rdi, CL_ID(%rax)
+	cmpq %rsi, CL_ID(%rax)
 	je 3f
 2:	incl %ecx
 	jmp 1b
