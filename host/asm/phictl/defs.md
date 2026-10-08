@@ -3,6 +3,8 @@
 - **The GNU-stack note**, so `ld` marks the stack non-executable.
 - **System call numbers**, x86-64, from
   `arch/x86/entry/syscalls/syscall_64.tbl`.
+  `ppoll` (271) is the daemon's idle wait; `prctl` (157) with
+  `PR_SET_TIMERSLACK` (29, `linux/prctl.h`) sets its timer slack.
 - **Flags** from the uapi headers named beside each group: `open`, `fcntl`,
   `mmap`, `madvise`, `poll`, sockets, signals, clocks, the errno values
   the code tests.

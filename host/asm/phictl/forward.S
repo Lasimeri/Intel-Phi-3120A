@@ -206,6 +206,20 @@ w_ip:
 	popq %rbx
 	ret
 
+	.globl forward_fds
+# forward_fds(rdi = pollfd cursor) -> rax: the listener for POLLIN once
+# it exists, then the connections' host sockets (tcp_fds).
+forward_fds:
+	cmpq $0, fw_ready(%rip)
+	jne 1f
+	movq %rdi, %rax
+	ret
+1:	movl fw_listen(%rip), %eax
+	movl %eax, (%rdi)
+	movl $POLLIN, 4(%rdi)		# events, and revents 0
+	addq $8, %rdi
+	jmp tcp_fds
+
 	.globl forward_step
 # forward_step -> eax 1 when anything moved: new connections accepted
 # and opened toward the card, then the stack's step.

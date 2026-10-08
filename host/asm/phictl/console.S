@@ -1,13 +1,21 @@
 # console.S: the daemon's loop and the console (the console_loop of
 # phictl's main.rs). One thread serves everything: each pass gives every
 # service a turn (the console, the control socket, the block services,
-# the forwarder, the bridge); a pass that moved nothing sleeps briefly.
-# The Rust daemon ran each service on its own thread; see console.md for
-# what that changes.
+# the forwarder, the bridge); once nothing has moved for a while the
+# loop waits on the host descriptors with a timeout that grows with the
+# idle time. The Rust daemon ran each service on its own thread; see
+# console.md for what that changes.
 	.include "defs.inc"
 
-	.set SPIN_AFTER_ACTIVITY_US, 20000
-	.set IDLE_SLEEP_US, 200
+# After a pass that moved something the loop spins for SPIN_US; after
+# that it waits (time since the last movement) >> BACKOFF_SHIFT between
+# passes, at most IDLE_MAX_US, in ppoll on the descriptors the services
+# would act on, so a host-side event ends the wait at once.
+	.set SPIN_US, 200
+	.set BACKOFF_SHIFT, 3
+	.set IDLE_MAX_US, 2000
+	.set TIMER_SLACK_NS, 10000
+	.set NPOLL, 64
 	.set RETRY_MS, 500
 
 	.bss
@@ -35,6 +43,12 @@ in_len:	.skip 8
 in_head:	.skip 8
 	.p2align 3
 pfd:	.skip 8
+# The idle wait: whether a descriptor ended the last one, whether the
+# next one leaves the descriptors out, its timeout, its pollfd array.
+wait_woke_fd:	.skip 8
+skip_fds:	.skip 8
+wait_ts:	.skip 16
+pfds:	.skip NPOLL * 8
 
 	.text
 
@@ -149,6 +163,11 @@ daemon:
 	leaq s_tailing2(%rip), %rsi
 	call w_cstr
 	call l_end
+	# the idle waits are short: the kernel's default 50 us of timer
+	# slack would more than double the shortest
+	movl $PR_SET_TIMERSLACK, %edi
+	movl $TIMER_SLACK_NS, %esi
+	SYS SYS_prctl
 	call now_us
 	movq %rax, last_active_us(%rip)
 2:	xorl %ebx, %ebx		# work done this pass
@@ -158,16 +177,27 @@ daemon:
 	orl %eax, %ebx
 	testl %ebx, %ebx
 	jz 3f
+	movq $0, wait_woke_fd(%rip)
 	call now_us
 	movq %rax, last_active_us(%rip)
 	jmp 2b
 3:	call o_flush
+	# a descriptor ended the last wait and this pass moved nothing (its
+	# readiness was not what a service acts on): the next wait is timed
+	# only, the one after it watches the descriptors again
+	movq wait_woke_fd(%rip), %rax
+	movq %rax, skip_fds(%rip)
+	movq $0, wait_woke_fd(%rip)
 	call now_us
 	subq last_active_us(%rip), %rax
-	cmpq $SPIN_AFTER_ACTIVITY_US, %rax
+	cmpq $SPIN_US, %rax
 	jb 2b
-	movl $IDLE_SLEEP_US, %edi
-	call sleep_us
+	shrq $BACKOFF_SHIFT, %rax
+	cmpq $IDLE_MAX_US, %rax
+	jbe 4f
+	movl $IDLE_MAX_US, %eax
+4:	movq %rax, %rdi
+	call idle_wait
 	jmp 2b
 90:	leaq s_e_beyond(%rip), %rsi
 	jmp fail
@@ -176,6 +206,51 @@ STR s_noheader1, "ring region at "
 STR s_noheader2, " has no valid header; tailing POST codes, retrying the ring every 500 ms"
 STR s_tailing1, "console: tailing c2h ring at "
 STR s_tailing2, "; Ctrl-C to stop"
+
+# idle_wait(rdi = microseconds): ppoll on the descriptors the console and
+# the services would act on (none when skip_fds is set) until one is
+# ready or the time passes; wait_woke_fd records which.
+idle_wait:
+	movq %rdi, %rax
+	xorl %edx, %edx
+	movl $1000000, %ecx
+	divq %rcx
+	movq %rax, wait_ts(%rip)
+	imulq $1000, %rdx, %rdx
+	movq %rdx, wait_ts+8(%rip)
+	leaq pfds(%rip), %rdi
+	cmpq $0, skip_fds(%rip)
+	jne 1f
+	call console_fds
+	movq %rax, %rdi
+	call services_fds
+	movq %rax, %rdi
+1:	movq %rdi, %rsi
+	leaq pfds(%rip), %rdi
+	subq %rdi, %rsi
+	shrq $3, %rsi			# count
+	leaq wait_ts(%rip), %rdx
+	xorl %r10d, %r10d		# no signal mask
+	movl $8, %r8d
+	SYS SYS_ppoll
+	testq %rax, %rax
+	jle 9f
+	movq $1, wait_woke_fd(%rip)
+9:	ret
+
+# console_fds(rdi = pollfd cursor) -> rax: standard input for POLLIN while
+# it is open and what was read from it has gone to the card.
+console_fds:
+	movq %rdi, %rax
+	cmpq $0, stdin_open(%rip)
+	je 9f
+	movq in_len(%rip), %rcx
+	cmpq in_head(%rip), %rcx
+	jne 9f
+	movl $0, (%rax)
+	movl $POLLIN, 4(%rax)		# events, and revents 0
+	addq $8, %rax
+9:	ret
 
 # console_attach -> eax 1 when the region opened and the console channel
 # was found; sets region_ok and the console's rings.

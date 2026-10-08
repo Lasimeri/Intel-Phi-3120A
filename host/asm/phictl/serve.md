@@ -43,6 +43,16 @@ card are popped in 64 KiB pieces into the card decoder.
 Nothing the card sends is interpreted beyond frame boundaries; nothing
 is executed on the host.
 
+**Movement.** `serve_step` reports movement when a client was accepted,
+a client's bytes were read, a waiting client became the holder, bytes
+went into the rpc ring or came out of it. `pick_holder` returned the
+last client slot's offset instead of 0 when nobody waited until
+2026-10-08, which kept the daemon spinning (`console.md`).
+`serve_fds` lists the listener and the clients `clients_to_card` would
+read next (alive, holding the card or with nothing pending, room in its
+decoder and in `to_card`, the rpc channel attached), for the daemon's
+idle wait.
+
 **Sensors** are formatted as `sensors_text` did, from the SBOX: the nine
 die temperatures (three 10-bit fields per register, 0 shown as n/a) and
 the highest maximum, the board temperatures (valid bits), the VDDG

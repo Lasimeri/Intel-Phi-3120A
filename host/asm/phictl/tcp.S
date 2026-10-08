@@ -652,6 +652,61 @@ tcp_step:
 	popq %rbx
 	ret
 
+	.globl tcp_fds
+# tcp_fds(rdi = pollfd cursor) -> rax = the cursor past what was added:
+# each connection's host socket for what conn_step would do with it
+# next: POLLIN while the host has not ended, the connection is
+# established (or close-wait) and its send buffer has room; POLLOUT
+# while received bytes wait for the host socket (the last write met a
+# full socket). A connection wanting neither waits on the card.
+tcp_fds:
+	pushq %rbx
+	pushq %r12
+	pushq %r13
+	movq %rdi, %r13
+	xorl %r12d, %r12d
+1:	cmpl $NCONN, %r12d
+	jae 9f
+	movl %r12d, %edi
+	call conn_at
+	movq %rax, %rbx
+	cmpq $ST_FREE, C_STATE(%rbx)
+	je 8f
+	cmpq $ST_CLOSED, C_STATE(%rbx)
+	je 8f
+	movq C_FD(%rbx), %rax
+	testq %rax, %rax
+	js 8f
+	xorl %ecx, %ecx
+	cmpq $0, C_HOST_EOF(%rbx)
+	jne 3f
+	cmpq $ST_ESTABLISHED, C_STATE(%rbx)
+	je 2f
+	cmpq $ST_CLOSE_WAIT, C_STATE(%rbx)
+	jne 3f
+2:	movq C_SB_TAIL(%rbx), %rax
+	subq C_SB_HEAD(%rbx), %rax
+	cmpq $SNDCAP, %rax
+	jae 3f
+	orl $POLLIN, %ecx
+3:	movq C_RB_TAIL(%rbx), %rax
+	cmpq C_RB_HEAD(%rbx), %rax
+	je 4f
+	orl $POLLOUT, %ecx
+4:	testl %ecx, %ecx
+	jz 8f
+	movl C_FD(%rbx), %eax
+	movl %eax, (%r13)
+	movl %ecx, 4(%r13)		# events, and revents 0
+	addq $8, %r13
+8:	incl %r12d
+	jmp 1b
+9:	movq %r13, %rax
+	popq %r13
+	popq %r12
+	popq %rbx
+	ret
+
 # any_conn -> eax 1 when a connection exists.
 any_conn:
 	xorl %ecx, %ecx

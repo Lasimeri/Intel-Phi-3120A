@@ -8,7 +8,9 @@ Each accepted connection (nonblocking) becomes a connection of the stack
 in `tcp.S` to `CARDPORT` on the card; bytes are shuttled both ways by
 the stack's step. At most 32 connections at once; a 33rd is closed with
 a log line. The listener is created once the card has reached init and
-the network channel is found.
+the network channel is found. `forward_fds` gives the daemon's idle
+wait the listener and the connections' host sockets (`tcp.md`), so a
+new connection or bytes from ssh end the wait at once.
 
 `ssh -p 2222+N root@127.0.0.1` with the card key then reaches the card's
 dropbear from an unprivileged boot, which is how `phi sh`, `phi put` over

@@ -38,6 +38,15 @@ the byte order. The IP header's total length and checksum are written
 after the TCP header is built (the SYN carries an option, so the header
 length is not known before).
 
+**The idle wait** (`tcp_fds`, called by `forward_fds`): each live
+connection's host socket is watched for reading while the host has not
+ended, the connection is established (or close-wait) and its send
+buffer has room, and for writing while received bytes wait for it (the
+last write met a full socket); a connection wanting neither is waiting
+on the card, whose frames the daemon's passes read. The retransmission
+timer (200 ms and up) and the ARP retry (500 ms) are checked by the
+passes, which come at least every 2 ms (`console.md`).
+
 `PHICTL_NET_TRACE=1` logs the first 400 frames (direction, length,
 ethertype, and for TCP the ports, flags, sequence and acknowledgement
 numbers) to standard error; the cap exists because an earlier uncapped

@@ -42,3 +42,23 @@ services_step:
 5:	movl %ebx, %eax
 	popq %rbx
 	ret
+
+	.globl services_fds
+# services_fds(rdi = pollfd cursor) -> rax = the cursor past what was
+# added: the descriptors whose readiness the services' next turn would
+# act on (the block services have none: their events are the card's).
+services_fds:
+	cmpq $0, o_serve(%rip)
+	je 1f
+	call serve_fds
+	movq %rax, %rdi
+1:	cmpq $0, o_forward(%rip)
+	je 2f
+	call forward_fds
+	movq %rax, %rdi
+2:	cmpq $0, o_net(%rip)
+	je 3f
+	call net_fds
+	movq %rax, %rdi
+3:	movq %rdi, %rax
+	ret

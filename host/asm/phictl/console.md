@@ -4,10 +4,36 @@
 block service, the host memory service and the forwarder each on its own
 thread, each sleeping on its own schedule (1 ms for the console and the
 relay, 200 us for the block services after a 20 ms spin). Here `daemon`
-gives every service a turn per pass (`services.S`); a pass in which any
-service moved bytes runs again at once, and after 20 ms without movement
-the loop sleeps 200 us between passes. One core at most, and no lock
-anywhere: every buffer has one owner.
+gives every service a turn per pass (`services.S`). One core at most,
+and no lock anywhere: every buffer has one owner.
+
+**When it waits.** A pass in which any service moved bytes runs again at
+once, and so does every pass for the next 200 us (`SPIN_US`). After that
+the loop waits between passes for one eighth of the time since the last
+movement (`BACKOFF_SHIFT`), at most 2 ms (`IDLE_MAX_US`): a card event
+that comes `t` after the last one is seen at most `t / 8` late, and an
+idle stretch costs a logarithmic number of passes before the 2 ms
+rhythm. The wait is a `ppoll` on the descriptors the next pass would act
+on, so whatever arrives from the host side ends it at once: the control
+socket's listener and every client the relay would read
+(`serve_fds`), the forwarder's listener and each connection's host
+socket, for reading while its send buffer has room and for writing while
+received bytes wait for it (`forward_fds`, `tcp_fds`), the TAP device
+(`net_fds`), standard input while it is open (`console_fds`). The card
+side has no descriptor: its rings are read by the passes. If a
+descriptor ends a wait and the pass after it moves nothing (readiness no
+service consumes), the next wait is timed only and the one after it
+watches the descriptors again, so a mismatch costs half the sleep, never
+a spin. The thread's timer slack is 10 us (the default 50 us would more
+than double the shortest waits).
+
+Until 2026-10-08 the loop was meant to spin for 20 ms after movement and
+then sleep 200 us between passes, but it never slept: `pick_holder`
+(`serve.S`) returned the last client slot's offset (`0x780`) instead of
+0 whenever no session was open and nobody waited, so every pass counted
+as movement. Each daemon used a whole core and read the card about
+600 000 times a second through the aperture
+(`docs/results/2026-10-08-phictl-idle.md`).
 
 What this changes: a blocking call in one service stalls the others for
 its duration. The block service's `pread`/`pwrite` of the image and its

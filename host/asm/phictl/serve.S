@@ -665,7 +665,7 @@ pick_holder:
 	jne 9f
 	xorl %r12d, %r12d
 1:	cmpl $MAX_CLIENTS, %r12d
-	jae 9f
+	jae 8f
 	movl %r12d, %eax
 	shll $7, %eax
 	leaq clients(%rip), %rbx
@@ -677,6 +677,10 @@ pick_holder:
 	jne 3f
 2:	incl %r12d
 	jmp 1b
+8:	# nobody waiting: eax still holds the last slot's offset (15 << 7,
+	# which reported movement on every pass until 2026-10-08)
+	xorl %eax, %eax
+	jmp 9f
 3:	movq CL_ID(%rbx), %rax
 	movq %rax, holder(%rip)
 	# each pending frame through forward_frame: the decoder is pointed at
@@ -706,6 +710,59 @@ pick_holder:
 	movq $0, CL_PTAIL(%rbx)
 	movl $1, %eax
 9:	popq %r12
+	popq %rbx
+	ret
+
+	.globl serve_fds
+# serve_fds(rdi = pollfd cursor) -> rax = the cursor past what was added:
+# the listener, and every client the next pass would read (the
+# conditions of clients_to_card, once the rpc channel is attached), each
+# for POLLIN. The daemon's idle wait sleeps on them (console.md).
+serve_fds:
+	pushq %rbx
+	pushq %r12
+	pushq %r13
+	movq %rdi, %r13
+	movl listen_fd(%rip), %eax
+	movl %eax, (%r13)
+	movl $POLLIN, 4(%r13)		# events, and revents 0
+	addq $8, %r13
+	cmpq $0, rpc_ready(%rip)
+	je 9f
+	xorl %r12d, %r12d
+1:	cmpl $MAX_CLIENTS, %r12d
+	jae 9f
+	movl %r12d, %eax
+	shll $7, %eax
+	leaq clients(%rip), %rbx
+	addq %rax, %rbx
+	cmpq $0, CL_FD(%rbx)
+	je 8f
+	cmpq $0, CL_DEAD(%rbx)
+	jne 8f
+	movq CL_PTAIL(%rbx), %rax
+	cmpq CL_PHEAD(%rbx), %rax
+	je 2f
+	movq CL_ID(%rbx), %rax
+	cmpq holder(%rip), %rax
+	jne 8f
+2:	leaq CL_DEC(%rbx), %rdi
+	call dec_space
+	cmpq $READ_CHUNK, %rax
+	jb 8f
+	movq to_card_tail(%rip), %rax
+	subq to_card_head(%rip), %rax
+	cmpq $TOCARDCAP - 2 * MAX_FRAME, %rax
+	jae 8f
+	movl CL_FD(%rbx), %eax
+	movl %eax, (%r13)
+	movl $POLLIN, 4(%r13)
+	addq $8, %r13
+8:	incl %r12d
+	jmp 1b
+9:	movq %r13, %rax
+	popq %r13
+	popq %r12
 	popq %rbx
 	ret
 

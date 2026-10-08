@@ -44,6 +44,8 @@
 	.set SYS_clock_gettime, 228
 	.set SYS_exit_group, 231
 	.set SYS_accept4, 288
+	.set SYS_prctl, 157
+	.set SYS_ppoll, 271
 
 # open(2), fcntl(2), mmap(2), madvise(2) (uapi asm-generic/fcntl.h,
 # asm-generic/mman-common.h, asm/mman.h).
@@ -81,6 +83,9 @@
 	.set SHUT_RD, 0
 	.set SHUT_WR, 1
 	.set SHUT_RDWR, 2
+
+# prctl(2) (uapi linux/prctl.h).
+	.set PR_SET_TIMERSLACK, 29
 
 # Signals, clocks, errors (uapi asm-generic/signal.h, linux/time.h,
 # asm-generic/errno-base.h, errno.h).

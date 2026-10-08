@@ -190,6 +190,19 @@ s_up:	.asciz "up"
 STR s_e_fork, "net: fork"
 STR s_e_ip, "net: ip failed (address or link)"
 
+	.globl net_fds
+# net_fds(rdi = pollfd cursor) -> rax: the TAP device for POLLIN once
+# the bridge is up (net_step reads one frame from it per pass).
+net_fds:
+	movq %rdi, %rax
+	cmpq $0, br_ready(%rip)
+	je 9f
+	movl tap_fd(%rip), %ecx
+	movl %ecx, (%rax)
+	movl $POLLIN, 4(%rax)		# events, and revents 0
+	addq $8, %rax
+9:	ret
+
 	.globl net_step
 # net_step -> eax 1 when a frame moved: one frame from the TAP into the
 # ring per pass (whole or dropped, like a NIC queue), everything the

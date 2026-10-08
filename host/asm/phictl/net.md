@@ -15,3 +15,7 @@ consumes the same ring.
 
 Not exercised on this host since the port: the units run unprivileged
 and use `--forward`.
+
+`net_fds` gives the daemon's idle wait the TAP device (readable means a
+frame from the host's stack), so the host side's frames end the wait at
+once (`console.md`).
