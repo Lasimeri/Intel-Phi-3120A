@@ -31,8 +31,9 @@ cp "$root/card/lib/knc-js/qjs_knc.c" "$root/card/lib/knc-js/qjs_knc.h" .
 # shell has no hook for "add a module", so the call is inserted where it
 # already builds the module list, next to the std and os modules.
 if ! grep -q js_init_module_knc qjs.c; then
-    perl -0pi -e 's/(\s*js_init_module_os\(ctx, "os"\);)/$1\n        js_init_module_knc(ctx, "knc");/' qjs.c
-    perl -0pi -e 's/(#include "quickjs-libc\.h")/$1\n#include "qjs_knc.h"/' qjs.c
+    phi_subst qjs.c 'js_init_module_os(ctx, "os");' \
+        'js_init_module_os(ctx, "os");\n        js_init_module_knc(ctx, "knc");'
+    phi_subst qjs.c '#include "quickjs-libc.h"' '#include "quickjs-libc.h"\n#include "qjs_knc.h"'
 fi
 grep -n 'js_init_module_knc' qjs.c | sed 's/^/   /'
 
@@ -46,7 +47,10 @@ grep -n 'js_init_module_knc' qjs.c | sed 's/^/   /'
 # (xz.md), zstd used function target attributes with CPUID dispatch
 # (zstd.md), and this is inline assembly again. All three assume x86-64
 # implies a feature set.
-perl -0pi -e 's/#elif defined\(__x86_64\) \|\| defined\(__i386__\)\n(static inline void cpu_pause\(void\)\n\{\n    asm volatile\("pause")/#elif (defined(__x86_64) || defined(__i386__)) \&\& defined(__SSE2__)\n$1/' quickjs.c
+if ! grep -q 'defined(__SSE2__)' quickjs.c; then
+    phi_subst quickjs.c '#elif defined(__x86_64) || defined(__i386__)\nstatic inline void cpu_pause(void)\n{\n    asm volatile("pause"' \
+        '#elif (defined(__x86_64) || defined(__i386__)) && defined(__SSE2__)\nstatic inline void cpu_pause(void)\n{\n    asm volatile("pause"'
+fi
 grep -n 'defined(__SSE2__)' quickjs.c | sed 's/^/   /'
 
 # The module object is built by hand and handed to the link through

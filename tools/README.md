@@ -7,6 +7,7 @@ against them.
 
 | Tool | Purpose |
 | --- | --- |
+| `subst.c` | Literal search and replace in a file, in place, every occurrence, an error when the text is not there: how the card component scripts edit fetched upstream sources (`phi_subst` in `toolchain/env.sh`). Built with the host's compiler, not `tcc`, on first use. See `subst.md`. |
 | `ring-layout-check.c` | Prints `sizeof`/`offsetof` for the ring transport structures in `card/drivers/phinet/include/phi_ring.h` and compares them with the values the Rust crate uses. Run by `make layout-check`, which `make check` includes. |
 | `vpu-layout-check.c` | The same for the AVX-512 offload protocol: `card/vpu/vpu_proto.h` against the offsets `host/crates/phi-vpu/src/proto.rs` asserts. Also run by `make layout-check`. |
 | `avx512-seamless-test.c` | The transparent path from the user side: an ordinary AVX-512 intrinsics program that checks its own answers against scalar references compiled with AVX-512 forbidden. SIGILL bare, PASS under `scripts/phi512.sh`; where it ran is read from the cards (`docs/results/2026-09-22-seamless-test.md`). |

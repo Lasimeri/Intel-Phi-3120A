@@ -16,3 +16,10 @@ directory into the cache location, and exports `phi_root`, `phi_build`,
 
 On a host whose checkout path has no spaces none of this is needed, and
 the script degrades to plain exports plus the symlinks (which are harmless).
+
+It also defines the two helpers every component script uses on upstream
+sources: `phi_fetch NAME URL` (pinned downloads, [`fetch.md`](fetch.md))
+and `phi_subst FILE OLD NEW`, a literal search and replace in place that
+fails when `OLD` is not there ([`../tools/subst.md`](../tools/subst.md)).
+`phi_subst` builds `tools/subst.c` on first use with the host's compiler
+(`PHI_HOST_CC`, default `gcc`), never the card's `$CC`.

@@ -54,3 +54,14 @@ export CC=knc-cc
 export CXX=knc-c++
 # Pinned downloads: phi_fetch NAME URL (toolchain/fetch.sh, toolchain/SHA256SUMS).
 . "$_env_here/fetch.sh"
+# Edits to fetched sources: phi_subst FILE OLD NEW, literal text with \n \t
+# escapes, every occurrence, an error when OLD is not there (tools/subst.c,
+# built on first use with the host's compiler, not the card's $CC).
+phi_subst() {
+    local bin="$phi_root/card/userland/build/subst" src="$phi_root/tools/subst.c"
+    if [ ! -x "$bin" ] || [ "$bin" -ot "$src" ]; then
+        mkdir -p "${bin%/*}"
+        "${PHI_HOST_CC:-gcc}" -O2 -Wall -Wextra -o "$bin" "$src" || return 2
+    fi
+    "$bin" "$@"
+}

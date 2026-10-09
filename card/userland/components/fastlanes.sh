@@ -41,8 +41,8 @@ echo "== patch 1/8: <climits> in the CUDA common header"
 # this clang and libc++ it is undeclared, and the error cascades into a
 # variable-length array diagnostic that -Werror makes fatal.
 if ! grep -q '^#include <climits>' src/include/fls/cuda/common.hpp; then
-    perl -pi -e 's{^#include "fls/cuda/config\.hpp"$}{#include "fls/cuda/config.hpp"\n#include <climits>}' \
-        src/include/fls/cuda/common.hpp
+    phi_subst src/include/fls/cuda/common.hpp \
+        '\n#include "fls/cuda/config.hpp"\n' '\n#include "fls/cuda/config.hpp"\n#include <climits>\n'
 fi
 grep -n '#include <climits>' src/include/fls/cuda/common.hpp | sed 's/^/   /'
 
@@ -52,8 +52,8 @@ echo "== patch 2/8: value-initialise last_seen_val"
 # clang says so through -Wnonnull, which -Werror makes fatal. Value
 # initialisation is correct for every instantiation.
 if grep -q 'last_seen_val(0)' src/table/stats.cpp; then
-    perl -pi -e 's{last_seen_val\(0\)\s*// NOLINT}{last_seen_val {} /* value-initialised: also instantiated for std::string, where string(0) is string(nullptr) */}' \
-        src/table/stats.cpp
+    phi_subst src/table/stats.cpp 'last_seen_val(0)                        // NOLINT' \
+        'last_seen_val {} /* value-initialised: also instantiated for std::string, where string(0) is string(nullptr) */'
 fi
 grep -n 'last_seen_val {}' src/table/stats.cpp | sed 's/^/   /'
 
@@ -61,8 +61,8 @@ echo "== patch 3/8: rename the generated uint32_t unffor dispatcher"
 # One line. The generated switch over 33 widths stays exactly as it is and
 # stays callable, which is what the equivalence check compares against.
 if grep -q '^void unffor(const uint32_t\* FLS_RESTRICT a_in_p,$' src/alp/src/fastlanes_gen_unffor.cpp; then
-    perl -pi -e 's{^void unffor\(const uint32_t\* FLS_RESTRICT a_in_p,$}{void unffor_scalar(const uint32_t* FLS_RESTRICT a_in_p,}' \
-        src/alp/src/fastlanes_gen_unffor.cpp
+    phi_subst src/alp/src/fastlanes_gen_unffor.cpp \
+        '\nvoid unffor(const uint32_t* FLS_RESTRICT a_in_p,\n' '\nvoid unffor_scalar(const uint32_t* FLS_RESTRICT a_in_p,\n'
 fi
 grep -c '^void unffor_scalar(const uint32_t\* FLS_RESTRICT a_in_p,$' src/alp/src/fastlanes_gen_unffor.cpp | sed 's/^/   renamed: /'
 
@@ -331,8 +331,10 @@ if ! grep -q knc_bzero "$FS_H"; then
       { print }
     ' "$FS_H" > "$FS_H.new" && mv "$FS_H.new" "$FS_H"
     # the three clears that matter, in order of size
-    perl -pi -e 's{^\t\t\tmemset\(count2High\[pos1\], 0, FSST12_CODE_MAX / 2\);$}{\t\t\tknc_bzero(count2High[pos1], FSST12_CODE_MAX / 2);}' "$FS_H"
-    perl -pi -e 's{^\t\t\tmemset\(count2Low\[pos1\], 0, FSST12_CODE_MAX\);$}{\t\t\tknc_bzero(count2Low[pos1], FSST12_CODE_MAX);}' "$FS_H"
+    phi_subst "$FS_H" '\n\t\t\tmemset(count2High[pos1], 0, FSST12_CODE_MAX / 2);\n' \
+        '\n\t\t\tknc_bzero(count2High[pos1], FSST12_CODE_MAX / 2);\n'
+    phi_subst "$FS_H" '\n\t\t\tmemset(count2Low[pos1], 0, FSST12_CODE_MAX);\n' \
+        '\n\t\t\tknc_bzero(count2Low[pos1], FSST12_CODE_MAX);\n'
     awk '
       { print }
       $0 == "#define FSST12_CODE_MAX         4096" {
@@ -346,7 +348,8 @@ grep -c knc_bzero "$FS_H" | sed 's/^/   header: /'
 
 FS_C=src/cor/prm/fsst12/libfsst12.cpp
 if ! grep -q knc_bzero "$FS_C"; then
-    perl -pi -e 's{^\t\t\tmemset\(&counters, 0, sizeof\(Counters12\)\);$}{\t\t\tknc_bzero(&counters, sizeof(Counters12));}' "$FS_C"
+    phi_subst "$FS_C" '\n\t\t\tmemset(&counters, 0, sizeof(Counters12));\n' \
+        '\n\t\t\tknc_bzero(&counters, sizeof(Counters12));\n'
 fi
 grep -c knc_bzero "$FS_C" | sed 's/^/   source: /'
 
