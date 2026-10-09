@@ -21,7 +21,15 @@ absent from the previous sample rates 0); each listed process's CPU
 share in tenths of a percent of one hardware thread, from its ticks
 since it was last reported over that span (USER_HZ 100): a kernel
 thread the agent left out while idle gets its burst averaged over the
-gap, a new process shows zero until its second report.
+gap, a new process shows zero until its second report. The
+co-processor worker's rates (`derive_vpu`, since 2026-10-09) come from
+the two snapshots' copies of its stats line (the AVX-512 repository's
+`card/vpu/vpu_proto.h`, `struct vpu_stats` at offset 320 of the card's
+host-memory window, which `main.S` maps read-only): requests a second
+and busy percent in tenths, each stage's time per request over the
+interval, and the line's own counts; nothing is derived when either
+sample lacks the line or a counter went backwards (a worker restarted
+between the samples).
 
 **History**: per slot, an open-addressing table of 65536 entries keyed
 by pid (ticks, time reported); entries unseen for two minutes are

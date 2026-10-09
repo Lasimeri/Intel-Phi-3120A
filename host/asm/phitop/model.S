@@ -586,12 +586,84 @@ derive:
 151:	movl %eax, DV_PROC_CPU(%r14,%r15,4)
 	incq %r15
 	jmp 13b
-16:	addq $24, %rsp
+16:	call derive_vpu
+	addq $24, %rsp
 	popq %r15
 	popq %r14
 	popq %r13
 	popq %r12
 	popq %rbx
+	ret
+
+# derive_vpu (r12 = previous snapshot, r13 = current, r14 = derived):
+# the co-processor worker's rates over the interval from the two copies
+# of its stats line: requests a second and busy percent in tenths, each
+# stage's time per request (0 without a request), and the line's own
+# counts. DV_VPU_HAVE stays 0 when either sample lacks the line or a
+# counter went backwards (a worker restarted between the samples).
+derive_vpu:
+	pushq %rbx
+	movq $0, DV_VPU_HAVE(%r14)
+	cmpq $0, SN_VPU_HAVE(%r13)
+	je 9f
+	cmpq $0, SN_VPU_HAVE(%r12)
+	je 9f
+	movq SN_VPU+VS_REQUESTS(%r13), %rbx
+	subq SN_VPU+VS_REQUESTS(%r12), %rbx	# requests in the interval
+	jc 9f
+	movq SN_VPU+VS_REQUESTS(%r13), %rax
+	movq %rax, DV_VPU_REQUESTS(%r14)
+	movq SN_VPU+VS_ERRORS(%r13), %rax
+	movq %rax, DV_VPU_ERRORS(%r14)
+	movl SN_VPU+VS_LAST_KERNEL(%r13), %eax
+	movq %rax, DV_VPU_KERNEL(%r14)
+	movl SN_VPU+VS_LAST_THREADS(%r13), %eax
+	movq %rax, DV_VPU_THREADS(%r14)
+	# requests a second in tenths: n * 1e7 / interval_us
+	movq %rbx, %rax
+	imulq $10000000, %rax, %rax
+	xorl %edx, %edx
+	divq DV_INTERVAL_US(%r14)
+	movq %rax, DV_VPU_REQ_TENTHS(%r14)
+	# busy percent in tenths: busy_ns * 1000 / (interval_us * 1000)
+	movq SN_VPU+VS_BUSY_NS(%r13), %rax
+	subq SN_VPU+VS_BUSY_NS(%r12), %rax
+	jc 9f
+	xorl %edx, %edx
+	divq DV_INTERVAL_US(%r14)
+	movq %rax, DV_VPU_BUSY_TENTHS(%r14)
+	# per request: the stage sums' deltas over the requests
+	movq $0, DV_VPU_TOTAL_NS(%r14)
+	movq $0, DV_VPU_COMPUTE_NS(%r14)
+	movq $0, DV_VPU_PULL_NS(%r14)
+	movq $0, DV_VPU_PUSH_NS(%r14)
+	testq %rbx, %rbx
+	jz 8f
+	movq SN_VPU+VS_BUSY_NS(%r13), %rax
+	subq SN_VPU+VS_BUSY_NS(%r12), %rax
+	xorl %edx, %edx
+	divq %rbx
+	movq %rax, DV_VPU_TOTAL_NS(%r14)
+	movq SN_VPU+VS_COMPUTE_NS(%r13), %rax
+	subq SN_VPU+VS_COMPUTE_NS(%r12), %rax
+	jc 9f
+	xorl %edx, %edx
+	divq %rbx
+	movq %rax, DV_VPU_COMPUTE_NS(%r14)
+	movq SN_VPU+VS_PULL_NS(%r13), %rax
+	subq SN_VPU+VS_PULL_NS(%r12), %rax
+	jc 9f
+	xorl %edx, %edx
+	divq %rbx
+	movq %rax, DV_VPU_PULL_NS(%r14)
+	movq SN_VPU+VS_PUSH_NS(%r13), %rax
+	subq SN_VPU+VS_PUSH_NS(%r12), %rax
+	jc 9f
+	xorl %edx, %edx
+	divq %rbx
+	movq %rax, DV_VPU_PUSH_NS(%r14)
+8:	movq $1, DV_VPU_HAVE(%r14)
+9:	popq %rbx
 	ret
 
 # per_second(rax = a byte delta; r14 = derived) -> rax = bytes per

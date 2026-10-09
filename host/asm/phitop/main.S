@@ -32,6 +32,8 @@ req_buf:	.skip DECCAP
 slots:	.skip MAX_SLOTS * SL_SIZE
 sockaddr:	.skip 112
 pfd1:	.skip 8
+vpu_maps:	.skip MAX_SLOTS * 8	# each slot's card window (its first page, read-only), 0 when none
+vpu_path:	.skip 64
 
 	.text
 	.globl _start
@@ -287,10 +289,108 @@ slot_init:
 2:	xorl %edi, %edi
 	call w_byte
 	movq %r12, wp(%rip)
+	movq %rbx, %rdi
+	call slot_vpu_open
 	popq %r12
 	popq %rbx
 	ret
 STR s_phi, "phi"
+
+# slot_number(rdi = slot) -> rax: its index in slots.
+slot_number:
+	movq %rdi, %rax
+	leaq slots(%rip), %rcx
+	subq %rcx, %rax
+	xorl %edx, %edx
+	movq $SL_SIZE, %rcx
+	divq %rcx
+	ret
+
+# slot_vpu_open(rdi = slot): the card's host-memory window (the file the
+# daemon pinned for it: /dev/shm/phi-hostmem for card 0, phi-hostmem-N
+# after) mapped read-only, its first page, for the co-processor worker's
+# stats line (defs.inc, VPU_OFF_STATS); the slot's entry of vpu_maps is
+# the mapping, or 0 when there is no window (then no vpu line).
+slot_vpu_open:
+	pushq %rbx
+	pushq %r12
+	pushq %r13
+	movq %rdi, %rbx
+	call slot_number
+	movq %rax, %r12
+	leaq vpu_maps(%rip), %rax
+	movq $0, (%rax,%r12,8)
+	# the path, through the writer
+	movq wp(%rip), %r13
+	leaq vpu_path(%rip), %rax
+	movq %rax, wp(%rip)
+	leaq s_hostmem(%rip), %rsi
+	call w_cstr
+	movq SL_INDEX(%rbx), %rdi
+	testq %rdi, %rdi
+	jz 1f
+	pushq %rdi
+	movb $'-', %dil
+	call w_byte
+	popq %rdi
+	call w_dec
+1:	xorl %edi, %edi
+	call w_byte
+	movq %r13, wp(%rip)
+	leaq vpu_path(%rip), %rdi
+	movl $O_RDONLY, %esi
+	xorl %edx, %edx
+	SYS SYS_open
+	testq %rax, %rax
+	js 9f
+	movq %rax, %r13			# fd
+	xorl %edi, %edi
+	movl $4096, %esi
+	movl $PROT_READ, %edx
+	movl $MAP_SHARED, %r10d
+	movq %r13, %r8
+	xorl %r9d, %r9d
+	SYS SYS_mmap
+	movq %rax, %rbx
+	movl %r13d, %edi
+	SYS SYS_close
+	cmpq $-4096, %rbx
+	jae 9f
+	leaq vpu_maps(%rip), %rax
+	movq %rbx, (%rax,%r12,8)
+9:	popq %r13
+	popq %r12
+	popq %rbx
+	ret
+STR s_hostmem, "/dev/shm/phi-hostmem"
+
+# slot_vpu_sample(rdi = slot): the stats line copied into the current
+# snapshot (SN_VPU, SN_VPU_HAVE 1), or SN_VPU_HAVE 0 without a window.
+# Eight word loads: the worker stores the line whole, and its counters
+# only grow, so a line read while it changes is at worst one request
+# off between two of its fields.
+slot_vpu_sample:
+	pushq %rbx
+	movq %rdi, %rbx
+	call slot_number
+	leaq vpu_maps(%rip), %rcx
+	movq (%rcx,%rax,8), %rsi
+	movq SL_CUR(%rbx), %rdi
+	movq $0, SN_VPU_HAVE(%rdi)
+	testq %rsi, %rsi
+	jz 9f
+	addq $VPU_OFF_STATS, %rsi
+	movl $VS_SIZE / 8, %ecx
+1:	movq (%rsi), %rax
+	movq %rax, SN_VPU(%rdi)
+	addq $8, %rsi
+	addq $8, %rdi
+	decl %ecx
+	jnz 1b
+	movq SL_CUR(%rbx), %rdi
+	movq $1, SN_VPU_HAVE(%rdi)
+9:	popq %rbx
+	ret
 
 # make_slots: which cards to watch. One when anything names one; else
 # all of them.
@@ -619,6 +719,8 @@ slot_poll:
 	call now_us
 	movq SL_CUR(%rbx), %rdi
 	movq %rax, SN_AT_US(%rdi)
+	movq %rbx, %rdi
+	call slot_vpu_sample
 	movq %rbx, %rdi
 	movl $TAG_TRAFFIC, %esi
 	movl $TRAFFIC_TIMEOUT_MS, %edx

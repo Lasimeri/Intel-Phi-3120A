@@ -64,7 +64,24 @@
 	.set SN_DISKS, SN_CPUS + SN_CPU_CAP * 12
 	.set SN_NETS, SN_DISKS + SN_DEV_CAP * DEV_SIZE
 	.set SN_PROCS, SN_NETS + SN_DEV_CAP * DEV_SIZE
-	.set SN_SIZE, SN_PROCS + SN_PROC_CAP * PR_SIZE
+# The co-processor worker's stats line (Intel-Phi-AVX512's
+# card/vpu/vpu_proto.h, struct vpu_stats at VPU_OFF_STATS of the card's
+# host-memory window): its counters since it started, copied whole into
+# the snapshot when the window is mapped (SN_VPU_HAVE 1).
+	.set VPU_OFF_STATS, 320
+	.set VS_REQUESTS, 0
+	.set VS_ERRORS, 8
+	.set VS_BUSY_NS, 16
+	.set VS_COMPUTE_NS, 24
+	.set VS_PULL_NS, 32
+	.set VS_PUSH_NS, 40
+	.set VS_LAST_KERNEL, 48
+	.set VS_LAST_THREADS, 52
+	.set VS_LAST_SEQ, 56
+	.set VS_SIZE, 64
+	.set SN_VPU, SN_PROCS + SN_PROC_CAP * PR_SIZE
+	.set SN_VPU_HAVE, SN_VPU + VS_SIZE
+	.set SN_SIZE, SN_VPU_HAVE + 8
 # A rate entry.
 	.set RATE_NAME_LEN, 0
 	.set RATE_NAME, 4
@@ -95,7 +112,22 @@
 	.set DV_DISKS, DV_CORES + CORE_CAP * CORE_SIZE
 	.set DV_NETS, DV_DISKS + SN_DEV_CAP * RATE_SIZE
 	.set DV_PROC_CPU, DV_NETS + SN_DEV_CAP * RATE_SIZE
-	.set DV_SIZE, DV_PROC_CPU + SN_PROC_CAP * 4
+# The worker's rates over the interval (derive_vpu): requests a second and
+# busy percent in tenths, each stage's time per request, then what the
+# line carries as it is (the last request's kind and threads, the counts
+# since the worker started).
+	.set DV_VPU_HAVE, DV_PROC_CPU + SN_PROC_CAP * 4
+	.set DV_VPU_REQ_TENTHS, DV_VPU_HAVE + 8
+	.set DV_VPU_BUSY_TENTHS, DV_VPU_HAVE + 16
+	.set DV_VPU_PULL_NS, DV_VPU_HAVE + 24
+	.set DV_VPU_COMPUTE_NS, DV_VPU_HAVE + 32
+	.set DV_VPU_PUSH_NS, DV_VPU_HAVE + 40
+	.set DV_VPU_TOTAL_NS, DV_VPU_HAVE + 48
+	.set DV_VPU_ERRORS, DV_VPU_HAVE + 56
+	.set DV_VPU_KERNEL, DV_VPU_HAVE + 64
+	.set DV_VPU_THREADS, DV_VPU_HAVE + 72
+	.set DV_VPU_REQUESTS, DV_VPU_HAVE + 80
+	.set DV_SIZE, DV_VPU_HAVE + 88
 # The history table.
 	.set SEEN_BITS, 16
 	.set SEEN_CAP, 1 << SEEN_BITS

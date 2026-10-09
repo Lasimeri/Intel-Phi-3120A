@@ -14,7 +14,11 @@ percentage, the sample interval or the error in red), the temperature
 line (nine die sensors or `--`, the highest, the peak since boot, the
 clock and voltage, the board sensors that read above zero or "board
 sensors: n/a (SMC)"), memory and swap with bars, PCIe rates by path and
-direction, the card's disk and network rates, the core grid (a ruler
+direction, the co-processor worker's line (`vpu`: requests a second,
+busy percent, a request's pull, compute, push and total in
+milliseconds, the last request's kind and threads, and the requests and
+errors since the worker started; or that the card's window carries no
+stats line), the card's disk and network rates, the core grid (a ruler
 numbering every fifth core, one row per hardware thread, a mean row;
 cells two columns wide when the ruler fits, else one; eighth blocks for
 the load, 256-colour grey to red), the process table (PID, state, CPU

@@ -32,7 +32,13 @@ directory.
 interleave it with whatever session another client holds (ADR 0009); a
 `Stat` waits up to 5 s, a `Traffic` 2 s. A failure keeps the model and
 sets the slot's error, shown in the status (red in colour) or on the
-header line of the card's block.
+header line of the card's block. Beside the two requests, each sample
+copies the co-processor worker's stats line out of the card's
+host-memory window (`/dev/shm/phi-hostmem`, `phi-hostmem-N` after card
+0; `slot_vpu_open` maps its first page read-only when the slot is
+made, `slot_vpu_sample` reads the 64 bytes at `VPU_OFF_STATS`): no
+daemon, no socket, no card involved, and nothing when the window is
+not there.
 
 **Keys**: `q` or Ctrl-C quit, `c`/`m` sort by CPU or memory, `k` kernel
 threads, `+`/`-` the interval by half a second, `n`/`p` one card, `a`

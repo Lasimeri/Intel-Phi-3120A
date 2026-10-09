@@ -383,6 +383,47 @@ w_tenths:
 	movl $1, %edx
 	jmp w_fixed
 
+# w_vpu_ms(rdi = nanoseconds): milliseconds with three decimals, rounded.
+w_vpu_ms:
+	movl $1000000, %esi
+	movl $3, %edx
+	jmp w_fixed_r
+
+# w_vpu_kind(rdi = a request kind of the worker's protocol): its name,
+# else the number (vpu_proto.h, vpu_matmul.h: VPU_K_*).
+w_vpu_kind:
+	cmpq $8, %rdi
+	ja 1f
+	leaq vpu_kinds(%rip), %rax
+	movq (%rax,%rdi,8), %rsi
+	jmp w_cstr
+1:	jmp w_dec
+	.section .rodata
+	.balign 8
+vpu_kinds:	.quad k_none, k_poly, k_exec, k_upload, k_matmul, k_free, k_matmul_id, k_ffn, k_matmul_more
+k_none:	.asciz "none"
+k_poly:	.asciz "poly"
+k_exec:	.asciz "exec"
+k_upload:	.asciz "upload"
+k_matmul:	.asciz "matmul"
+k_free:	.asciz "free"
+k_matmul_id:	.asciz "matmul_id"
+k_ffn:	.asciz "ffn"
+k_matmul_more:	.asciz "matmul_more"
+	.text
+STR s_vpu, "vpu   "
+STR s_vpu_none, "no worker stats line in the card's window (no worker, or one from before the line)"
+STR s_vpu1, " requests/s, busy "
+STR s_vpu2, "%   a request: pull "
+STR s_vpu3, ", compute "
+STR s_vpu4, ", push "
+STR s_vpu5, ", total "
+STR s_vpu6, " ms   last "
+STR s_vpu7, " on "
+STR s_vpu8, " threads   "
+STR s_vpu9, " requests, "
+STR s_vpu10, " errors since the worker started"
+
 # tmp_begin / tmp_right(edi = width): a piece built in tmp_buf, then
 # right-aligned in width at the saved cursor.
 tmp_begin:
@@ -1145,7 +1186,58 @@ render:
 	movb $')', %dil
 	call w_byte
 	call line_end
-	# line 5: card devices
+	# line 5: the co-processor worker (the stats line of the card's
+	# window; Intel-Phi-AVX512's phi-vpu-worker)
+	call line_begin
+	leaq s_vpu(%rip), %rsi
+	call w_cstr
+	cmpq $0, DV_VPU_HAVE(%r13)
+	jne 41f
+	leaq s_vpu_none(%rip), %rsi
+	call w_cstr
+	jmp 42f
+41:	movq DV_VPU_REQ_TENTHS(%r13), %rdi
+	call w_tenths
+	leaq s_vpu1(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_BUSY_TENTHS(%r13), %rdi
+	call w_tenths
+	leaq s_vpu2(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_PULL_NS(%r13), %rdi
+	call w_vpu_ms
+	leaq s_vpu3(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_COMPUTE_NS(%r13), %rdi
+	call w_vpu_ms
+	leaq s_vpu4(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_PUSH_NS(%r13), %rdi
+	call w_vpu_ms
+	leaq s_vpu5(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_TOTAL_NS(%r13), %rdi
+	call w_vpu_ms
+	leaq s_vpu6(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_KERNEL(%r13), %rdi
+	call w_vpu_kind
+	leaq s_vpu7(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_THREADS(%r13), %rdi
+	call w_dec
+	leaq s_vpu8(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_REQUESTS(%r13), %rdi
+	call w_dec
+	leaq s_vpu9(%rip), %rsi
+	call w_cstr
+	movq DV_VPU_ERRORS(%r13), %rdi
+	call w_dec
+	leaq s_vpu10(%rip), %rsi
+	call w_cstr
+42:	call line_end
+	# line 6: card devices
 	call line_begin
 	leaq s_card(%rip), %rsi
 	leaq DV_DISKS(%r13), %rdi
