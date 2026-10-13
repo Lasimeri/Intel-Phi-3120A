@@ -69,7 +69,10 @@ install `/etc` from the skeleton and set the hostname and `TZ` from it;
 create the `/var` tree and link `/var/run` and `/var/lock` into `/run`;
 start `syslogd` and `klogd` on `/var/log/messages`; wait up to 3 s for
 `/dev/phiblk1` and `mkswap`/`swapon` it (host memory is volatile, so it is
-reformatted every boot); bring up `lo` and `phi0`; start `dropbear -s` bound
+reformatted every boot; a region of 4 GiB or more is shared with the
+AVX-512 co-processor's window, so the swap then sits on `/dev/loop0`,
+the region above 2 GiB, and the window keeps the first part); bring up
+`lo` and `phi0`; start `dropbear -s` bound
 to the card's own address (public keys only, root has no password) when the
 image has it and `phi0` exists; start `phi-agent` on `/dev/phirpc`; print
 the banner; then supervise an interactive login shell on the console through

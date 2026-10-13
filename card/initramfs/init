@@ -149,10 +149,20 @@ swap="no host memory"
 i=0
 while [ $i -lt 3 ] && [ ! -b /dev/phiblk1 ]; do $BB sleep 1; i=$((i+1)); done
 if [ -b /dev/phiblk1 ]; then
-	if $BB mkswap /dev/phiblk1 > /dev/null 2>&1 && $BB swapon /dev/phiblk1 2>/dev/console; then
-		swap="host memory as swap on /dev/phiblk1 ($($BB awk '/SwapTotal/ {printf "%d MiB", $2/1024}' /proc/meminfo))"
+	# A region of 4 GiB or more is shared with the AVX-512 co-processor,
+	# whose window is the region's first part (at most 768 MiB used): the
+	# swap then takes the half above 2 GiB through a loop device, so the
+	# card keeps 2 GiB of swap beside the window (2026-10-13). A smaller
+	# region is all swap, as before; the co-processor turns that off.
+	swapdev=/dev/phiblk1
+	sectors=$($BB cat /sys/block/phiblk1/size 2>/dev/null || echo 0)
+	if [ "$sectors" -ge 8388608 ] && $BB losetup -o 2147483648 /dev/loop0 /dev/phiblk1 2>/dev/console; then
+		swapdev=/dev/loop0
+	fi
+	if $BB mkswap $swapdev > /dev/null 2>&1 && $BB swapon $swapdev 2>/dev/console; then
+		swap="host memory as swap on $swapdev ($($BB awk '/SwapTotal/ {printf "%d MiB", $2/1024}' /proc/meminfo))"
 	else
-		swap="/dev/phiblk1 present but swapon failed"
+		swap="$swapdev present but swapon failed"
 	fi
 fi
 
